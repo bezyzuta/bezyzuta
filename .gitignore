@@ -1,0 +1,10 @@
+config.json
+*.mp4
+*.mp3
+*.wav
+*.ass
+*.log
+__pycache__/
+.venv/
+venv/
+.env

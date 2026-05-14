@@ -1,0 +1,9 @@
+{
+  "output_dir": "~/Desktop/Youtube",
+  "elevenlabs_api_key": "sk_replace_me_or_use_ELEVENLABS_API_KEY_env",
+  "elevenlabs_voice_id": "PUT_LARS_VOICE_ID_HERE",
+  "elevenlabs_model": "eleven_multilingual_v2",
+  "whisper_model": "small",
+  "target_resolution": [1080, 1920],
+  "ducking_db": -18
+}
