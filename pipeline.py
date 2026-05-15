@@ -68,6 +68,51 @@ def download_gameplay(url: str, out_dir: Path) -> Path:
     return files[0]
 
 
+def list_channel_videos(channel_url: str, limit: int = 50) -> list:
+    """Return [{id, url, title}, ...] for the most recent videos on a channel."""
+    result = subprocess.run(
+        [sys.executable, "-m", "yt_dlp",
+         "--flat-playlist", "-J",
+         "--playlist-end", str(limit),
+         channel_url],
+        capture_output=True, text=True, check=True,
+    )
+    data = json.loads(result.stdout)
+    entries = data.get("entries") or []
+    out = []
+    for e in entries:
+        vid = e.get("id")
+        if not vid:
+            continue
+        out.append({
+            "id": vid,
+            "url": e.get("url") or f"https://www.youtube.com/watch?v={vid}",
+            "title": e.get("title") or "",
+        })
+    return out
+
+
+def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 50) -> dict:
+    used = set()
+    if used_path.exists():
+        try:
+            used = set(json.loads(used_path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            used = set()
+    videos = list_channel_videos(channel_url, limit)
+    if not videos:
+        raise RuntimeError(f"channel returned no videos: {channel_url}")
+    available = [v for v in videos if v["id"] not in used]
+    if not available:
+        raise RuntimeError(
+            f"all {len(videos)} channel videos already used; delete {used_path.name} to reset"
+        )
+    pick = random.choice(available)
+    used.add(pick["id"])
+    used_path.write_text(json.dumps(sorted(used)), encoding="utf-8")
+    return pick
+
+
 SCRIPT_PROMPT = """Schreibe ein energetisches, jugendliches Skript fuer einen YouTube Short ueber Roblox auf Deutsch.
 
 Thema: {topic}
@@ -244,12 +289,27 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
 
 
 def run_one(job: dict, cfg: Config) -> Path:
-    slug = job["slug"]
+    base_slug = job["slug"]
+    source_url = (job.get("source_url") or "").strip()
+
+    if not source_url:
+        channel_url = (job.get("channel_url") or "").strip()
+        if not channel_url:
+            raise RuntimeError(f"job {base_slug!r} needs either 'source_url' or 'channel_url'")
+        used_path = cfg.output_dir / "used_videos.json"
+        cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        pick = pick_unused_channel_video(channel_url, used_path)
+        source_url = pick["url"]
+        slug = f"{base_slug}-{pick['id']}"
+        print(f"      channel pick: {pick['title'][:60]} ({pick['id']})")
+    else:
+        slug = base_slug
+
     work = cfg.output_dir / slug
     work.mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/5] download: {job['source_url']}")
-    raw = download_gameplay(job["source_url"], work / "source")
+    print(f"[1/5] download: {source_url}")
+    raw = download_gameplay(source_url, work / "source")
 
     script = (job.get("script") or "").strip()
     if not script:

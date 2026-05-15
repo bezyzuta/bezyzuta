@@ -1,17 +1,27 @@
 [
   {
-    "slug": "doors-monster-clutch",
-    "source_url": "https://www.youtube.com/watch?v=REPLACE_WITH_DOPE_GAMEPLAYS_VIDEO_ID",
-    "topic": "Knappes Entkommen vor dem Monster in Roblox Doors auf Level 100"
+    "slug": "channel-auto-pick",
+    "channel_url": "https://www.youtube.com/@DopeGameplays/videos",
+    "topic": "Krasser Roblox Action-Moment, Adrenalin pur"
   },
   {
-    "slug": "blox-fruits-leviathan",
-    "source_url": "https://www.youtube.com/watch?v=REPLACE_WITH_DOPE_GAMEPLAYS_VIDEO_ID",
-    "topic": "Seltener Leviathan-Spawn in Blox Fruits, der Loot ist der Wahnsinn"
+    "slug": "doors-batch-A",
+    "channel_url": "https://www.youtube.com/@DopeGameplays/videos",
+    "topic": "Spannende Doors-Momente, Monster und Verstecken"
   },
   {
-    "slug": "brookhaven-secret",
-    "source_url": "https://www.youtube.com/watch?v=REPLACE_WITH_DOPE_GAMEPLAYS_VIDEO_ID",
-    "script": "Wenn du Bock hast manuell ein Skript zu schreiben, geht das auch weiterhin — einfach hier reinschreiben und das topic-Feld weglassen."
+    "slug": "doors-batch-B",
+    "channel_url": "https://www.youtube.com/@DopeGameplays/videos",
+    "topic": "Spannende Doors-Momente, Monster und Verstecken"
+  },
+  {
+    "slug": "manual-job",
+    "source_url": "https://www.youtube.com/watch?v=REPLACE_WITH_VIDEO_ID",
+    "topic": "Hier gibst du URL und Thema selbst vor"
+  },
+  {
+    "slug": "fully-manual",
+    "source_url": "https://www.youtube.com/watch?v=REPLACE_WITH_VIDEO_ID",
+    "script": "Eigenes Skript hardgecoded, ueberschreibt topic. Du kannst alle drei Modi (channel, source+topic, source+script) in einer jobs.json mischen."
   }
 ]
