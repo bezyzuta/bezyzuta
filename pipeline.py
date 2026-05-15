@@ -24,6 +24,8 @@ class Config:
     target_w: int
     target_h: int
     ducking_db: float
+    gemini_api_key: str
+    gemini_model: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -41,6 +43,8 @@ class Config:
             target_w=int(w),
             target_h=int(h),
             ducking_db=float(data.get("ducking_db", -18)),
+            gemini_api_key=data.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", ""),
+            gemini_model=data.get("gemini_model", "gemini-2.5-flash"),
         )
 
 
@@ -62,6 +66,37 @@ def download_gameplay(url: str, out_dir: Path) -> Path:
     if not files:
         raise RuntimeError("yt-dlp produced no mp4")
     return files[0]
+
+
+SCRIPT_PROMPT = """Schreibe ein energetisches, jugendliches Skript fuer einen YouTube Short ueber Roblox auf Deutsch.
+
+Thema: {topic}
+
+Anforderungen:
+- Laenge: 25-35 Sekunden Sprechzeit (ca. 60-80 deutsche Woerter)
+- Starker Hook am Anfang (z.B. "Bro, schau dir das an!", "Achtung!", "99% der Spieler...")
+- Action-Beschreibung in der Mitte, spannend und mitreissend
+- Call-to-Action am Ende ("Folg fuer mehr...", "Lass ein Like da...")
+- Kein Markdown, keine Anfuehrungszeichen, keine Regie-Anweisungen
+- Gib NUR den reinen Sprechertext aus, sonst nichts"""
+
+
+def generate_script_via_gemini(topic: str, cfg: Config) -> str:
+    if not cfg.gemini_api_key:
+        raise RuntimeError("topic given but gemini_api_key missing in config (and GEMINI_API_KEY env not set)")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
+    body = {
+        "contents": [{"parts": [{"text": SCRIPT_PROMPT.format(topic=topic)}]}],
+        "generationConfig": {"temperature": 0.9, "maxOutputTokens": 400},
+    }
+    r = requests.post(url, params={"key": cfg.gemini_api_key}, json=body, timeout=60)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Gemini {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Gemini response shape unexpected: {data}") from e
 
 
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
@@ -202,8 +237,19 @@ def run_one(job: dict, cfg: Config) -> Path:
     print(f"[1/5] download: {job['source_url']}")
     raw = download_gameplay(job["source_url"], work / "source")
 
+    script = (job.get("script") or "").strip()
+    if not script:
+        topic = (job.get("topic") or "").strip()
+        if not topic:
+            raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
+        print(f"      generating script via Gemini for topic: {topic!r}")
+        script = generate_script_via_gemini(topic, cfg)
+        (work / "script.txt").write_text(script, encoding="utf-8")
+        preview = script[:80].replace("\n", " ")
+        print(f"      script: {preview}...")
+
     print("[2/5] voiceover")
-    vo = synthesize_voiceover(job["script"], cfg, work / "voice.mp3")
+    vo = synthesize_voiceover(script, cfg, work / "voice.mp3")
 
     vo_dur = probe_duration(vo)
     target = min(max(vo_dur + 0.6, 22.0), 45.0)
