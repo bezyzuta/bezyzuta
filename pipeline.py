@@ -87,7 +87,11 @@ def generate_script_via_gemini(topic: str, cfg: Config) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
     body = {
         "contents": [{"parts": [{"text": SCRIPT_PROMPT.format(topic=topic)}]}],
-        "generationConfig": {"temperature": 0.9, "maxOutputTokens": 400},
+        "generationConfig": {
+            "temperature": 0.9,
+            "maxOutputTokens": 2048,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     r = requests.post(url, params={"key": cfg.gemini_api_key}, json=body, timeout=60)
     if r.status_code >= 400:
