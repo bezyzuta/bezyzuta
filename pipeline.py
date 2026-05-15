@@ -52,7 +52,7 @@ def download_gameplay(url: str, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     template = str(out_dir / "%(id)s.%(ext)s")
     run([
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "-f", "bv*[height<=1080]+ba/b[height<=1080]",
         "--merge-output-format", "mp4",
         "-o", template,
