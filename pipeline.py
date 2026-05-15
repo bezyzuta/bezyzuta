@@ -369,6 +369,32 @@ def _image_schedule(n: int, duration: float, image_dur: float,
     return out
 
 
+_TILT_ANGLES_DEG = [-3.0, 2.5, -2.0, 3.0, -2.5]
+
+
+def _image_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
+                 overlay_w: int, angle_deg: float) -> str:
+    """Filter chain for one image overlay: white border, tilt, pop-in scale, fades."""
+    fade_in, fade_out, pop_dur = 0.2, 0.3, 0.25
+    angle_rad = angle_deg * 3.14159265 / 180.0
+    pop_start_w = int(overlay_w * 1.18)
+    pop_delta = pop_start_w - overlay_w
+    fade_out_start = max(0.0, image_dur - fade_out)
+    return (
+        f"[{idx_input}:v]"
+        f"trim=duration={image_dur:.2f},setpts=PTS-STARTPTS,"
+        f"format=rgba,"
+        f"pad=iw+18:ih+18:9:9:color=white@0.95,"
+        f"rotate={angle_rad:.4f}:c=black@0:ow=hypot(iw\\,ih):oh=ow,"
+        f"scale=w='if(lt(t\\,{pop_dur:.2f})\\,{pop_start_w}-{pop_delta}*(t/{pop_dur:.2f})\\,{overlay_w})'"
+        f":h=-1:eval=frame:flags=bicubic,"
+        f"fade=t=in:st=0:d={fade_in}:alpha=1,"
+        f"fade=t=out:st={fade_out_start:.2f}:d={fade_out}:alpha=1,"
+        f"tpad=start_duration={start:.2f}:color=black@0"
+        f"[img{image_idx}]"
+    )
+
+
 def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   cfg: Config, out_path: Path,
                   image_paths: list | None = None,
@@ -388,7 +414,6 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             cmd += ["-loop", "1", "-i", str(img)]
 
         overlay_w = int(cfg.target_w * 0.85)
-        fade_in, fade_out = 0.25, 0.35
         schedule = _image_schedule(len(image_paths), duration or 25.0, image_duration)
 
         parts = [
@@ -396,16 +421,15 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         ]
         cur = "bg0"
         for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
-            idx = 2 + i
-            parts.append(
-                f"[{idx}:v]scale={overlay_w}:-1:flags=lanczos,format=rgba,"
-                f"fade=t=in:st={start:.2f}:d={fade_in}:alpha=1,"
-                f"fade=t=out:st={max(start, end - fade_out):.2f}:d={fade_out}:alpha=1[img{i}]"
-            )
+            angle = _TILT_ANGLES_DEG[i % len(_TILT_ANGLES_DEG)]
+            parts.append(_image_chain(
+                idx_input=2 + i, image_idx=i,
+                image_dur=end - start, start=start,
+                overlay_w=overlay_w, angle_deg=angle,
+            ))
             nxt = f"bg{i+1}"
             parts.append(
-                f"[{cur}][img{i}]overlay=(W-w)/2:(H-h)/2-120:"
-                f"enable='between(t,{start:.2f},{end:.2f})'[{nxt}]"
+                f"[{cur}][img{i}]overlay=(W-w)/2:(H-h)/2-120:format=auto:eof_action=pass[{nxt}]"
             )
             cur = nxt
         parts.append(f"[{cur}]subtitles={ass_path.name}[v]")
