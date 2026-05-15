@@ -98,9 +98,19 @@ def generate_script_via_gemini(topic: str, cfg: Config) -> str:
         raise RuntimeError(f"Gemini {r.status_code}: {r.text[:300]}")
     data = r.json()
     try:
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        candidate = data["candidates"][0]
     except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Gemini response shape unexpected: {data}") from e
+        raise RuntimeError(f"Gemini response had no candidates: {data}") from e
+    parts = candidate.get("content", {}).get("parts", []) or []
+    text_parts = [p.get("text", "") for p in parts if not p.get("thought")]
+    text = "\n".join(text_parts).strip()
+    finish = candidate.get("finishReason", "")
+    if not text:
+        raise RuntimeError(f"Gemini returned no text (finishReason={finish}); full response: {data}")
+    if len(text) < 120 or finish not in ("STOP", ""):
+        print(f"      WARN: Gemini output looks short ({len(text)} chars, finishReason={finish})")
+        print(f"      full response: {json.dumps(data, ensure_ascii=False)[:1200]}")
+    return text
 
 
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
