@@ -92,7 +92,8 @@ def list_channel_videos(channel_url: str, limit: int = 50) -> list:
     return out
 
 
-def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 50) -> dict:
+def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 50,
+                              title_filter: list | None = None) -> dict:
     used = set()
     if used_path.exists():
         try:
@@ -102,10 +103,21 @@ def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 50
     videos = list_channel_videos(channel_url, limit)
     if not videos:
         raise RuntimeError(f"channel returned no videos: {channel_url}")
+    if title_filter:
+        keywords = [k.lower() for k in title_filter]
+        filtered = [v for v in videos if any(k in v["title"].lower() for k in keywords)]
+        if not filtered:
+            sample_titles = "; ".join(v["title"][:40] for v in videos[:5])
+            raise RuntimeError(
+                f"no channel videos matched title_filter {title_filter}. "
+                f"First titles: {sample_titles}"
+            )
+        videos = filtered
     available = [v for v in videos if v["id"] not in used]
     if not available:
         raise RuntimeError(
-            f"all {len(videos)} channel videos already used; delete {used_path.name} to reset"
+            f"all {len(videos)} matching channel videos already used; "
+            f"delete {used_path.name} to reset"
         )
     pick = random.choice(available)
     used.add(pick["id"])
@@ -298,7 +310,8 @@ def run_one(job: dict, cfg: Config) -> Path:
             raise RuntimeError(f"job {base_slug!r} needs either 'source_url' or 'channel_url'")
         used_path = cfg.output_dir / "used_videos.json"
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
-        pick = pick_unused_channel_video(channel_url, used_path)
+        title_filter = job.get("title_filter") or None
+        pick = pick_unused_channel_video(channel_url, used_path, title_filter=title_filter)
         source_url = pick["url"]
         slug = f"{base_slug}-{pick['id']}"
         print(f"      channel pick: {pick['title'][:60]} ({pick['id']})")
