@@ -113,7 +113,7 @@ def pick_clip(source: Path, target_seconds: float, out_path: Path) -> Path:
 
 def transcribe_words(audio_path: Path, model_name: str):
     from faster_whisper import WhisperModel
-    model = WhisperModel(model_name, device="auto", compute_type="auto")
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, _ = model.transcribe(str(audio_path), word_timestamps=True)
     words = []
     for seg in segments:
