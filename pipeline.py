@@ -281,11 +281,70 @@ def derive_image_prompt(seed_text: str) -> str:
     )
 
 
+SCENE_PROMPT = """Du bekommst ein deutsches Voiceover-Skript fuer einen Roblox YouTube Short.
+
+Teile das Skript gedanklich in {n} dramatische visuelle Schluesselmomente und schreibe pro Moment einen englischen Bild-Prompt fuer ein Text-zu-Bild-Modell.
+
+Pflicht-Stil pro Prompt:
+"vertical cartoon illustration, Roblox blocky aesthetic, vibrant saturated colors, [DEINE SZENE IN ENGLISCH], dramatic lighting, no text, no logos, no real people"
+
+Skript:
+\"\"\"
+{script}
+\"\"\"
+
+Antworte NUR mit einem gueltigen JSON-Array von genau {n} Strings.
+KEINE Markdown-Codeblocks, KEINE Kommentare, NUR das JSON-Array."""
+
+
+def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
+    base = derive_image_prompt(script[:200])
+    if not cfg.gemini_api_key:
+        return [base] * n
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
+    body = {
+        "contents": [{"parts": [{"text": SCENE_PROMPT.format(n=n, script=script)}]}],
+        "generationConfig": {
+            "temperature": 0.85,
+            "maxOutputTokens": 2048,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    r = requests.post(url, params={"key": cfg.gemini_api_key}, json=body, timeout=60)
+    if r.status_code >= 400:
+        print(f"      WARN: Gemini scene gen failed {r.status_code}, falling back to single prompt")
+        return [base] * n
+    data = r.json()
+    try:
+        candidate = data["candidates"][0]
+    except (KeyError, IndexError):
+        return [base] * n
+    parts = candidate.get("content", {}).get("parts", []) or []
+    text = "\n".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    try:
+        prompts = json.loads(text)
+        if not isinstance(prompts, list):
+            raise ValueError("expected JSON array")
+        prompts = [str(p).strip() for p in prompts if str(p).strip()]
+    except Exception:
+        prompts = []
+    while len(prompts) < n:
+        prompts.append(base)
+    return prompts[:n]
+
+
 def fetch_image_from_pollinations(prompt: str, out_path: Path,
-                                  width: int = 1024, height: int = 1024) -> Path:
+                                  width: int = 1024, height: int = 1024,
+                                  seed: int | None = None) -> Path:
     encoded = urllib.parse.quote(prompt)
     url = f"https://image.pollinations.ai/prompt/{encoded}"
     params = {"width": width, "height": height, "nologo": "true", "private": "true"}
+    if seed is not None:
+        params["seed"] = seed
     r = requests.get(url, params=params, timeout=180)
     if r.status_code >= 400 or not r.content:
         raise RuntimeError(f"Pollinations {r.status_code}: {r.text[:200]}")
@@ -293,53 +352,80 @@ def fetch_image_from_pollinations(prompt: str, out_path: Path,
     return out_path
 
 
+def _image_schedule(n: int, duration: float, image_dur: float,
+                    buffer: float = 1.0) -> list[tuple[float, float]]:
+    """Return [(start, end), ...] for n images evenly distributed."""
+    if n <= 0:
+        return []
+    usable = max(image_dur, duration - 2 * buffer)
+    if n == 1:
+        start = (duration - image_dur) / 2
+        return [(start, start + image_dur)]
+    gap = (usable - image_dur) / (n - 1) if n > 1 else 0
+    out = []
+    for i in range(n):
+        start = buffer + i * gap
+        out.append((start, start + image_dur))
+    return out
+
+
 def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
-                  cfg: Config, out_path: Path, image_path: Path | None = None) -> Path:
+                  cfg: Config, out_path: Path,
+                  image_paths: list | None = None,
+                  duration: float = 0.0,
+                  image_duration: float = 1.5) -> Path:
+    image_paths = list(image_paths or [])
     af = (
         f"[0:a]volume={cfg.ducking_db}dB[bg];"
         f"[bg][1:a]amix=inputs=2:duration=shortest:dropout_transition=0[a]"
     )
     cwd = ass_path.parent
 
-    if image_path is not None:
+    cmd = ["ffmpeg", "-y", "-i", str(gameplay_clip), "-i", str(voice_audio)]
+
+    if image_paths:
+        for img in image_paths:
+            cmd += ["-loop", "1", "-i", str(img)]
+
         overlay_w = int(cfg.target_w * 0.85)
-        y_shift = -120  # nudge image up so it sits well above the caption strip
-        vf = (
-            f"[0:v]crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos[bg];"
-            f"[2:v]scale={overlay_w}:-1:flags=lanczos,format=rgba,"
-            f"fade=t=in:st=0.3:d=0.5:alpha=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2+({y_shift}):enable='gte(t,0.2)'[withimg];"
-            f"[withimg]subtitles={ass_path.name}[v];{af}"
-        )
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(gameplay_clip),
-            "-i", str(voice_audio),
-            "-loop", "1", "-i", str(image_path),
-            "-filter_complex", vf,
-            "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-shortest", "-movflags", "+faststart",
-            str(out_path),
+        fade_in, fade_out = 0.25, 0.35
+        schedule = _image_schedule(len(image_paths), duration or 25.0, image_duration)
+
+        parts = [
+            f"[0:v]crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos[bg0]"
         ]
+        cur = "bg0"
+        for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
+            idx = 2 + i
+            parts.append(
+                f"[{idx}:v]scale={overlay_w}:-1:flags=lanczos,format=rgba,"
+                f"fade=t=in:st={start:.2f}:d={fade_in}:alpha=1,"
+                f"fade=t=out:st={max(start, end - fade_out):.2f}:d={fade_out}:alpha=1[img{i}]"
+            )
+            nxt = f"bg{i+1}"
+            parts.append(
+                f"[{cur}][img{i}]overlay=(W-w)/2:(H-h)/2-120:"
+                f"enable='between(t,{start:.2f},{end:.2f})'[{nxt}]"
+            )
+            cur = nxt
+        parts.append(f"[{cur}]subtitles={ass_path.name}[v]")
+        parts.append(af)
+        filter_complex = ";".join(parts)
     else:
         vf = (
             f"crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,"
             f"subtitles={ass_path.name}"
         )
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(gameplay_clip),
-            "-i", str(voice_audio),
-            "-filter_complex", f"[0:v]{vf}[v];{af}",
-            "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-shortest", "-movflags", "+faststart",
-            str(out_path),
-        ]
+        filter_complex = f"[0:v]{vf}[v];{af}"
 
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest", "-movflags", "+faststart",
+        str(out_path),
+    ]
     run(cmd, cwd=str(cwd))
     return out_path
 
@@ -393,27 +479,42 @@ def run_one(job: dict, cfg: Config) -> Path:
     words = transcribe_words(vo, cfg.whisper_model)
     ass = write_ass(words, cfg.target_w, cfg.target_h, work / "captions.ass")
 
-    image_path = None
+    image_paths: list = []
+    image_duration = float(job.get("image_duration", 1.5))
     if not job.get("no_image"):
-        explicit = (job.get("image_path") or "").strip()
-        if explicit:
-            image_path = Path(explicit).expanduser()
-            if not image_path.exists():
-                raise RuntimeError(f"image_path does not exist: {image_path}")
-            print(f"      using image: {image_path}")
+        explicit_paths = job.get("image_paths") or []
+        if explicit_paths:
+            image_paths = [Path(p).expanduser() for p in explicit_paths]
+            for p in image_paths:
+                if not p.exists():
+                    raise RuntimeError(f"image path does not exist: {p}")
+        elif job.get("image_path"):
+            single = Path(job["image_path"]).expanduser()
+            if not single.exists():
+                raise RuntimeError(f"image_path does not exist: {single}")
+            image_paths = [single]
         else:
-            seed = (job.get("image_prompt") or job.get("topic") or script[:200]).strip()
-            prompt = job.get("image_prompt") or derive_image_prompt(seed)
-            print(f"      generating image: {prompt[:80]}...")
-            try:
-                image_path = fetch_image_from_pollinations(prompt, work / "image.png")
-            except Exception as e:
-                print(f"      WARN: image generation failed, continuing without overlay: {e}")
-                image_path = None
+            n_images = max(1, min(int(job.get("image_count", 3)), 5))
+            print(f"      generating {n_images} scene prompts via Gemini")
+            prompts = generate_scene_prompts(script, n_images, cfg)
+            for i, prompt in enumerate(prompts, 1):
+                print(f"      [{i}/{n_images}] image: {prompt[:80]}")
+                try:
+                    p = fetch_image_from_pollinations(
+                        prompt, work / f"image_{i}.png", seed=random.randint(1, 1_000_000)
+                    )
+                    image_paths.append(p)
+                except Exception as e:
+                    print(f"      WARN: image {i} failed, skipping: {e}")
 
     print("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
-    compose_short(clip, vo, ass, cfg, out, image_path=image_path)
+    compose_short(
+        clip, vo, ass, cfg, out,
+        image_paths=image_paths,
+        duration=target,
+        image_duration=image_duration,
+    )
     print(f"      -> {out}")
     return out
 
