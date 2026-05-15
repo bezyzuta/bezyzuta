@@ -8,6 +8,7 @@ import random
 import subprocess
 import sys
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -272,31 +273,74 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path) -> Path:
     return out_path
 
 
-def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
-                  cfg: Config, out_path: Path) -> Path:
-    # crop center vertical strip from gameplay, scale to target, then burn captions
-    vf = (
-        f"crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,"
-        f"subtitles={ass_path.name}"
+def derive_image_prompt(seed_text: str) -> str:
+    return (
+        "vertical cartoon illustration, Roblox blocky aesthetic, vibrant saturated colors, "
+        "dramatic action scene, dynamic composition, bold lighting, no text, no logos, "
+        f"no real people, theme: {seed_text[:200]}"
     )
-    # duck original gameplay audio, mix with voice
+
+
+def fetch_image_from_pollinations(prompt: str, out_path: Path,
+                                  width: int = 1024, height: int = 1024) -> Path:
+    encoded = urllib.parse.quote(prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded}"
+    params = {"width": width, "height": height, "nologo": "true", "private": "true"}
+    r = requests.get(url, params=params, timeout=180)
+    if r.status_code >= 400 or not r.content:
+        raise RuntimeError(f"Pollinations {r.status_code}: {r.text[:200]}")
+    out_path.write_bytes(r.content)
+    return out_path
+
+
+def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
+                  cfg: Config, out_path: Path, image_path: Path | None = None) -> Path:
     af = (
         f"[0:a]volume={cfg.ducking_db}dB[bg];"
         f"[bg][1:a]amix=inputs=2:duration=shortest:dropout_transition=0[a]"
     )
-    # cwd = ass dir so the subtitles filter doesn't trip over Windows drive colons
     cwd = ass_path.parent
-    run([
-        "ffmpeg", "-y",
-        "-i", str(gameplay_clip),
-        "-i", str(voice_audio),
-        "-filter_complex", f"[0:v]{vf}[v];{af}",
-        "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
-        "-shortest", "-movflags", "+faststart",
-        str(out_path),
-    ], cwd=str(cwd))
+
+    if image_path is not None:
+        overlay_w = int(cfg.target_w * 0.85)
+        y_shift = -120  # nudge image up so it sits well above the caption strip
+        vf = (
+            f"[0:v]crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos[bg];"
+            f"[2:v]scale={overlay_w}:-1:flags=lanczos,format=rgba,"
+            f"fade=t=in:st=0.3:d=0.5:alpha=1[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2+({y_shift}):enable='gte(t,0.2)'[withimg];"
+            f"[withimg]subtitles={ass_path.name}[v];{af}"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(gameplay_clip),
+            "-i", str(voice_audio),
+            "-loop", "1", "-i", str(image_path),
+            "-filter_complex", vf,
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-shortest", "-movflags", "+faststart",
+            str(out_path),
+        ]
+    else:
+        vf = (
+            f"crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,"
+            f"subtitles={ass_path.name}"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(gameplay_clip),
+            "-i", str(voice_audio),
+            "-filter_complex", f"[0:v]{vf}[v];{af}",
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-shortest", "-movflags", "+faststart",
+            str(out_path),
+        ]
+
+    run(cmd, cwd=str(cwd))
     return out_path
 
 
@@ -349,9 +393,27 @@ def run_one(job: dict, cfg: Config) -> Path:
     words = transcribe_words(vo, cfg.whisper_model)
     ass = write_ass(words, cfg.target_w, cfg.target_h, work / "captions.ass")
 
+    image_path = None
+    if not job.get("no_image"):
+        explicit = (job.get("image_path") or "").strip()
+        if explicit:
+            image_path = Path(explicit).expanduser()
+            if not image_path.exists():
+                raise RuntimeError(f"image_path does not exist: {image_path}")
+            print(f"      using image: {image_path}")
+        else:
+            seed = (job.get("image_prompt") or job.get("topic") or script[:200]).strip()
+            prompt = job.get("image_prompt") or derive_image_prompt(seed)
+            print(f"      generating image: {prompt[:80]}...")
+            try:
+                image_path = fetch_image_from_pollinations(prompt, work / "image.png")
+            except Exception as e:
+                print(f"      WARN: image generation failed, continuing without overlay: {e}")
+                image_path = None
+
     print("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
-    compose_short(clip, vo, ass, cfg, out)
+    compose_short(clip, vo, ass, cfg, out, image_path=image_path)
     print(f"      -> {out}")
     return out
 
