@@ -669,6 +669,69 @@ def _extract_thumbnail(source: Path, at_seconds: float, out_path: Path,
         return False
 
 
+def _cloudflare_pick_thumbnails(thumb_paths: list, n_pick: int, cfg) -> list:
+    """Score each thumbnail via Cloudflare Llama 3.2 Vision (free tier) and
+    return the top n_pick indices sorted by score. Sequential, ~1-2s/image.
+    Raises only if every call fails."""
+    if not cfg.cloudflare_account_id or not cfg.cloudflare_api_token:
+        raise RuntimeError("cloudflare credentials missing")
+    model = "@cf/meta/llama-3.2-11b-vision-instruct"
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{cfg.cloudflare_account_id}/ai/run/{model}"
+    )
+    headers = {
+        "Authorization": f"Bearer {cfg.cloudflare_api_token}",
+        "Content-Type": "application/json",
+    }
+    prompt = (
+        "Rate this gaming video frame's action level on a scale of 1 to 10. "
+        "10 = exciting moment (combat, fall, explosion, chase, big motion, "
+        "dramatic colors). 1 = boring still (empty room, menu, loading "
+        "screen, idle). Respond ONLY with one integer between 1 and 10, "
+        "nothing else."
+    )
+    num_re = re.compile(r"\d+(?:\.\d+)?")
+    scores: list = []
+    failures = 0
+    for i, p in enumerate(thumb_paths):
+        try:
+            img_bytes = list(p.read_bytes())
+            body = {
+                "image": img_bytes,
+                "prompt": prompt,
+                "max_tokens": 8,
+                "temperature": 0.1,
+            }
+            r = requests.post(url, headers=headers, json=body, timeout=60)
+            if r.status_code >= 400:
+                failures += 1
+                scores.append((i, -1.0))
+                continue
+            data = r.json()
+            if not data.get("success"):
+                failures += 1
+                scores.append((i, -1.0))
+                continue
+            result = data.get("result") or {}
+            text = (result.get("response") or result.get("description") or "").strip()
+            m = num_re.search(text)
+            if not m:
+                failures += 1
+                scores.append((i, -1.0))
+                continue
+            score = max(0.0, min(10.0, float(m.group(0))))
+            scores.append((i, score))
+        except Exception:
+            failures += 1
+            scores.append((i, -1.0))
+    if failures >= len(thumb_paths):
+        raise RuntimeError(f"all {failures} Cloudflare vision calls failed")
+    # Sort highest score first; index breaks ties (earlier sample wins)
+    scores.sort(key=lambda s: (-s[1], s[0]))
+    return [i for i, sc in scores[:n_pick] if sc >= 0]
+
+
 def _gemini_pick_thumbnails(thumb_paths: list, n_pick: int, cfg) -> list:
     """Send thumbnails to Gemini and ask which N look most exciting.
     Returns indices into thumb_paths sorted by interest. Raises on failure."""
@@ -779,14 +842,25 @@ def pick_ai_scenes(source: Path, total_seconds: float, n_segments: int,
             return pick_clip(source, total_seconds, out_path)
         return pick_multi_clips(source, total_seconds, n_segments, out_path)
 
-    log(f"      AI pick: scoring {len(thumbs)} candidate scenes via Gemini Vision")
-    try:
-        picks = _gemini_pick_thumbnails([t[1] for t in thumbs], n_segments, cfg)
-    except Exception as e:
-        log(f"      AI pick: Gemini failed ({str(e)[:160]}); falling back")
-        if n_segments <= 1:
-            return pick_clip(source, total_seconds, out_path)
-        return pick_multi_clips(source, total_seconds, n_segments, out_path)
+    thumb_files = [t[1] for t in thumbs]
+    cf_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
+    picks: list = []
+    if cf_ready:
+        log(f"      AI pick: scoring {len(thumbs)} scenes via Cloudflare Llama Vision (free)")
+        try:
+            picks = _cloudflare_pick_thumbnails(thumb_files, n_segments, cfg)
+        except Exception as e:
+            log(f"      AI pick: Cloudflare failed ({str(e)[:160]})")
+            picks = []
+    if not picks:
+        log(f"      AI pick: trying Gemini Vision for {len(thumbs)} scenes")
+        try:
+            picks = _gemini_pick_thumbnails(thumb_files, n_segments, cfg)
+        except Exception as e:
+            log(f"      AI pick: Gemini failed ({str(e)[:160]}); falling back to even pick")
+            if n_segments <= 1:
+                return pick_clip(source, total_seconds, out_path)
+            return pick_multi_clips(source, total_seconds, n_segments, out_path)
 
     if len(picks) < n_segments:
         existing = set(picks)
