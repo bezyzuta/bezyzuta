@@ -1,5 +1,5 @@
 @echo off
-title Roblox Shorts Generator
+title Bezys Shorts Generator
 cd /d "%~dp0"
 
 if not exist "gui.py" (
@@ -37,7 +37,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo ===========================================
-echo  Roblox Shorts Generator
+echo  Bezys Shorts Generator
 echo ===========================================
 echo Browser oeffnet sich gleich automatisch.
 echo Zum Beenden: dieses Fenster schliessen oder Strg+C.

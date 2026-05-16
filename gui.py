@@ -2,12 +2,24 @@
 
 import queue
 import re
+import socket
 import threading
 import time
 import traceback
 from pathlib import Path
 
 import gradio as gr
+
+
+def find_free_port(start: int = 7860, end: int = 7880) -> int:
+    for port in range(start, end + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return start
 
 from pipeline import Config, run_one
 
@@ -416,9 +428,11 @@ if __name__ == "__main__":
     app = build_app()
     # Gradio 6 sandboxes file delivery; let it serve videos from the user's home
     allowed = [str(Path.home())]
+    port = find_free_port()
+    print(f"Starte GUI auf http://127.0.0.1:{port}")
     try:
-        app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True,
+        app.launch(server_name="127.0.0.1", server_port=port, inbrowser=True,
                    theme=gr.themes.Soft(), allowed_paths=allowed)
     except TypeError:
-        app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True,
+        app.launch(server_name="127.0.0.1", server_port=port, inbrowser=True,
                    allowed_paths=allowed)
