@@ -676,12 +676,16 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               font_size: int | None = None,
               primary_color: str = "#FFFFFF",
               outline_color: str = "#000000",
-              outline_width: int = 5) -> Path:
-    """Bold center-bottom karaoke captions; styling exposed for the GUI."""
+              outline_width: int = 5,
+              hook_text: str = "",
+              hook_duration: float = 3.0) -> Path:
+    """Bold center-bottom karaoke captions; styling exposed for the GUI.
+    Optional hook_text shown big at the top for the first hook_duration seconds."""
     if font_size is None or font_size <= 0:
         font_size = max(56, int(video_h * 0.048))
     primary = _hex_to_ass_color(primary_color)
     outline = _hex_to_ass_color(outline_color)
+    hook_size = int(font_size * 1.4)
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -693,7 +697,9 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Pop, {font_name}, {int(font_size)}, {primary}, &H000000FF, {outline}, &H64000000, "
-        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width)}, 2, 2, 80, 80, 360, 1\n\n"
+        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width)}, 2, 2, 80, 80, 360, 1\n"
+        f"Style: Hook, {font_name}, {hook_size}, &H00FFFFFF, &H000000FF, &H00000000, &H64000000, "
+        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width) + 2}, 3, 8, 60, 60, 280, 1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -707,6 +713,16 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
         chunks.append(buf)
 
     lines = []
+    if hook_text.strip():
+        ht = (hook_text.strip()
+              .replace("{", "(").replace("}", ")")
+              .replace("\r\n", "\n").replace("\n", "\\N"))
+        dur = max(0.5, min(float(hook_duration), 10.0))
+        lines.append(
+            f"Dialogue: 1,{_ass_time(0.0)},{_ass_time(dur)},Hook,,0,0,0,,"
+            f"{{\\fad(120,200)}}{ht}"
+        )
+
     for ch in chunks:
         start, end = ch[0][0], ch[-1][1]
         text = " ".join(w[2] for w in ch).upper().replace("{", "(").replace("}", ")")
@@ -1131,6 +1147,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         primary_color=str(job.get("caption_color", "#FFFFFF")),
         outline_color=str(job.get("caption_stroke_color", "#000000")),
         outline_width=int(job.get("caption_stroke_width", 5)),
+        hook_text=str(job.get("hook_text", "")),
+        hook_duration=float(job.get("hook_duration", 3.0)),
     )
 
     image_paths: list = []

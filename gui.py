@@ -102,6 +102,8 @@ def generate(
     caption_color: str,
     caption_stroke_color: str,
     caption_font_size: int,
+    hook_text: str,
+    hook_duration: float,
     batch_count: int,
 ):
     log = ""
@@ -133,6 +135,8 @@ def generate(
             "caption_font_size": int(caption_font_size),
             "caption_color": str(caption_color or "#FFFFFF"),
             "caption_stroke_color": str(caption_stroke_color or "#000000"),
+            "hook_text": str(hook_text or "").strip(),
+            "hook_duration": float(hook_duration),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
             "music_track": "" if not music_track or music_track == RANDOM_PICK else str(music_track),
@@ -333,6 +337,20 @@ def build_app() -> gr.Blocks:
                     label="SFX Lautstärke (%)",
                 )
 
+        # ───────────── Hook ─────────────
+        with gr.Accordion("🪝 Hook-Overlay (großer Text am Anfang)", open=True):
+            hook_text = gr.Textbox(
+                value="",
+                label="Hook-Text",
+                lines=2,
+                placeholder="z.B. POV: Du wirst nicht glauben was passiert ist...",
+                info="Erscheint groß und mittig-oben für die ersten paar Sekunden. Leer = kein Hook. Mehrere Zeilen für Zeilenumbruch.",
+            )
+            hook_duration = gr.Slider(
+                1.0, 6.0, value=3.0, step=0.5,
+                label="Anzeigedauer (Sekunden)",
+            )
+
         # ───────────── Bild-Overlays ─────────────
         with gr.Accordion("🖼️ Bild-Overlays", open=True):
             with gr.Row():
@@ -424,6 +442,7 @@ def build_app() -> gr.Blocks:
                 image_count, image_duration, custom_image_prompts, uploaded_images,
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
+                hook_text, hook_duration,
                 batch_count,
             ],
             outputs=[status_log, video_out],
