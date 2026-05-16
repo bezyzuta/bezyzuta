@@ -642,16 +642,18 @@ def pick_loud_multi_clips(source: Path, total_seconds: float, n_segments: int,
     return _extract_and_concat(source, segments, out_path)
 
 
-def _register_cuda_dlls_windows() -> None:
+def _register_cuda_dlls_windows() -> list[str]:
     """faster-whisper on Windows can't find cuBLAS/cuDNN DLLs from the
     pip-installed nvidia-* wheels unless we explicitly add them to the DLL
-    search path. No-op on non-Windows."""
+    search path. Returns the list of directories actually registered (empty
+    on non-Windows or if nothing was found)."""
     if sys.platform != "win32":
-        return
+        return []
     try:
         import importlib.util
     except Exception:
-        return
+        return []
+    registered: list[str] = []
     for pkg in ("nvidia.cublas", "nvidia.cudnn"):
         try:
             spec = importlib.util.find_spec(pkg)
@@ -664,14 +666,19 @@ def _register_cuda_dlls_windows() -> None:
             if os.path.isdir(bin_dir):
                 try:
                     os.add_dll_directory(bin_dir)
+                    # also prepend to PATH so dependent DLLs (like cudnn's
+                    # internal deps) can still be discovered by the loader
+                    os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+                    registered.append(bin_dir)
                 except Exception:
                     pass
+    return registered
 
 
 def transcribe_words(audio_path: Path, model_name: str, device: str = "auto"):
     """Transcribe to word-level timestamps. device in {"auto","cuda","cpu"}.
     "auto" tries CUDA first and silently falls back to CPU if CUDA isn't available."""
-    _register_cuda_dlls_windows()
+    registered = _register_cuda_dlls_windows()
     from faster_whisper import WhisperModel
     tried = []
     candidates = []
@@ -695,7 +702,22 @@ def transcribe_words(audio_path: Path, model_name: str, device: str = "auto"):
             tried.append(dev)
             last_err = e
             continue
-    raise RuntimeError(f"faster-whisper failed on {tried}: {last_err}")
+    # CUDA failed with no fallback available -> add hint to error
+    hint = ""
+    if sys.platform == "win32" and "cuda" in tried:
+        if not registered:
+            hint = (
+                "\n  Hinweis: nvidia-cublas-cu12 / nvidia-cudnn-cu12 sind nicht "
+                "installiert. Im venv ausfuehren:\n"
+                "    .venv\\Scripts\\python.exe -m pip install nvidia-cublas-cu12 \"nvidia-cudnn-cu12<10\""
+            )
+        else:
+            hint = (
+                f"\n  CUDA DLL Pfade registriert: {registered}\n"
+                "  Trotzdem nicht gefunden - eventuell falsche cuDNN-Version. "
+                "Versuch 'pip install --upgrade nvidia-cudnn-cu12<10' oder waehle 'CPU forcieren'."
+            )
+    raise RuntimeError(f"faster-whisper failed on {tried}: {last_err}{hint}")
 
 
 def _ass_time(t: float) -> str:
