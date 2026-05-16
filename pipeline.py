@@ -139,6 +139,24 @@ Anforderungen:
 - Gib NUR den reinen Sprechertext aus, sonst nichts"""
 
 
+def _gemini_post(url: str, params: dict, body: dict, retries: int = 3,
+                 backoff: tuple = (5, 15, 30)) -> dict:
+    """POST to Gemini with exponential backoff on 429/503."""
+    last_err = None
+    for attempt in range(retries + 1):
+        r = requests.post(url, params=params, json=body, timeout=60)
+        if r.status_code < 400:
+            return r.json()
+        last_err = f"Gemini {r.status_code}: {r.text[:300]}"
+        if r.status_code in (429, 503) and attempt < retries:
+            wait = backoff[min(attempt, len(backoff) - 1)]
+            print(f"      Gemini {r.status_code}, retrying in {wait}s (attempt {attempt + 2}/{retries + 1})")
+            time.sleep(wait)
+            continue
+        break
+    raise RuntimeError(last_err)
+
+
 def generate_script_via_gemini(topic: str, cfg: Config) -> str:
     if not cfg.gemini_api_key:
         raise RuntimeError("topic given but gemini_api_key missing in config (and GEMINI_API_KEY env not set)")
@@ -151,10 +169,7 @@ def generate_script_via_gemini(topic: str, cfg: Config) -> str:
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    r = requests.post(url, params={"key": cfg.gemini_api_key}, json=body, timeout=60)
-    if r.status_code >= 400:
-        raise RuntimeError(f"Gemini {r.status_code}: {r.text[:300]}")
-    data = r.json()
+    data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
     try:
         candidate = data["candidates"][0]
     except (KeyError, IndexError) as e:
@@ -323,11 +338,11 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    r = requests.post(url, params={"key": cfg.gemini_api_key}, json=body, timeout=60)
-    if r.status_code >= 400:
-        print(f"      WARN: Gemini scene gen failed {r.status_code}, falling back to single prompt")
+    try:
+        data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
+    except RuntimeError as e:
+        print(f"      WARN: Gemini scene gen failed ({e}); falling back to single prompt")
         return [base] * n
-    data = r.json()
     try:
         candidate = data["candidates"][0]
     except (KeyError, IndexError):
