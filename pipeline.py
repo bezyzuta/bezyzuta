@@ -675,10 +675,74 @@ Antworte NUR mit einem gueltigen JSON-Array von genau {n} Strings.
 KEINE Markdown-Codeblocks, KEINE Kommentare, NUR das JSON-Array."""
 
 
+def generate_scene_prompts_cloudflare(script: str, n: int, cfg: Config) -> list[str]:
+    """Generate scene prompts via Cloudflare Workers AI (Llama). Raises on failure."""
+    if not cfg.cloudflare_account_id or not cfg.cloudflare_api_token:
+        raise RuntimeError("cloudflare credentials missing")
+    model = "@cf/meta/llama-3.1-8b-instruct"
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{cfg.cloudflare_account_id}/ai/run/{model}"
+    )
+    headers = {
+        "Authorization": f"Bearer {cfg.cloudflare_api_token}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "messages": [
+            {"role": "system", "content": "You output only a JSON array of strings. No prose, no markdown, no code fences."},
+            {"role": "user", "content": SCENE_PROMPT.format(n=n, script=script)},
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.85,
+    }
+    r = requests.post(url, headers=headers, json=body, timeout=60)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Cloudflare LLM {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    if not data.get("success"):
+        raise RuntimeError(f"Cloudflare LLM error: {str(data.get('errors'))[:200]}")
+    text = (data.get("result") or {}).get("response", "").strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    start, end = text.find("["), text.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        text = text[start:end + 1]
+    prompts = json.loads(text)
+    if not isinstance(prompts, list):
+        raise ValueError("expected JSON array")
+    prompts = [str(p).strip() for p in prompts if str(p).strip()]
+    if not prompts:
+        raise ValueError("empty prompt list")
+    return prompts[:n]
+
+
 def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
     base = derive_image_prompt(script[:200])
-    if not cfg.gemini_api_key:
-        return [base] * n
+    if cfg.gemini_api_key:
+        try:
+            return _scene_prompts_gemini(script, n, cfg, base)
+        except _SceneGenError as e:
+            print(f"      WARN: Gemini scene gen failed ({e})")
+    if cfg.cloudflare_account_id and cfg.cloudflare_api_token:
+        try:
+            print(f"      trying Cloudflare Llama for {n} scene prompts")
+            prompts = generate_scene_prompts_cloudflare(script, n, cfg)
+            while len(prompts) < n:
+                prompts.append(base)
+            return prompts[:n]
+        except Exception as e:
+            print(f"      WARN: Cloudflare scene gen failed ({e}); falling back to single prompt")
+    return [base] * n
+
+
+class _SceneGenError(RuntimeError):
+    pass
+
+
+def _scene_prompts_gemini(script: str, n: int, cfg: Config, base: str) -> list[str]:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
     body = {
         "contents": [{"parts": [{"text": SCENE_PROMPT.format(n=n, script=script)}]}],
@@ -691,12 +755,11 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
     try:
         data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
     except RuntimeError as e:
-        print(f"      WARN: Gemini scene gen failed ({e}); falling back to single prompt")
-        return [base] * n
+        raise _SceneGenError(str(e))
     try:
         candidate = data["candidates"][0]
     except (KeyError, IndexError):
-        return [base] * n
+        raise _SceneGenError("no candidates in Gemini response")
     parts = candidate.get("content", {}).get("parts", []) or []
     text = "\n".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
     if text.startswith("```"):
@@ -708,8 +771,10 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
         if not isinstance(prompts, list):
             raise ValueError("expected JSON array")
         prompts = [str(p).strip() for p in prompts if str(p).strip()]
-    except Exception:
-        prompts = []
+    except Exception as e:
+        raise _SceneGenError(f"parse error: {e}")
+    if not prompts:
+        raise _SceneGenError("empty prompt list")
     while len(prompts) < n:
         prompts.append(base)
     return prompts[:n]
