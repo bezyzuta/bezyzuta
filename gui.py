@@ -86,13 +86,16 @@ def generate(
     clip_segments: int,
     smart_picking: bool,
     voice_id: str,
+    enable_music: bool,
     music_dir: str,
     music_track: str,
     music_volume_pct: int,
     smart_music_start: bool,
+    enable_sfx: bool,
     sfx_dir: str,
     sfx_track: str,
     sfx_volume_pct: int,
+    enable_captions: bool,
     image_count: int,
     image_duration: float,
     custom_image_prompts: str,
@@ -145,10 +148,13 @@ def generate(
             "progress_bar": bool(progress_bar),
             "subscribe_overlay": bool(subscribe_overlay),
             "whisper_device": str(whisper_device or "auto"),
+            "enable_music": bool(enable_music),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
             "music_track": "" if not music_track or music_track == RANDOM_PICK else str(music_track),
             "smart_music_start": bool(smart_music_start),
+            "enable_sfx": bool(enable_sfx),
+            "enable_captions": bool(enable_captions),
             "sfx_dir": str(sfx_dir or ""),
             "sfx_volume_pct": float(sfx_volume_pct),
             "sfx_track": "" if not sfx_track or sfx_track == RANDOM_PICK else str(sfx_track),
@@ -301,6 +307,11 @@ def build_app() -> gr.Blocks:
         # ───────────── Audio (BGM + SFX) ─────────────
         with gr.Accordion("🎵 Audio (Musik + SFX)", open=False):
             with gr.Tab("🎶 Hintergrundmusik"):
+                enable_music = gr.Checkbox(
+                    value=True,
+                    label="Hintergrundmusik aktiv",
+                    info="Aus = kein BGM, egal was unten eingestellt ist.",
+                )
                 music_dir = gr.Textbox(
                     value=r"C:\Users\bezy\Desktop\music",
                     label="Hintergrundmusik-Ordner",
@@ -326,6 +337,11 @@ def build_app() -> gr.Blocks:
                     info="Analysiert den Track und startet nicht zwingend bei 0:00, sondern wo es richtig losgeht. +2–5s pro Track.",
                 )
             with gr.Tab("💥 Sound-Effects"):
+                enable_sfx = gr.Checkbox(
+                    value=True,
+                    label="Sound-Effects aktiv",
+                    info="Aus = keine SFX bei Bild-Pop-ins oder Szenen-Cuts.",
+                )
                 sfx_dir = gr.Textbox(
                     value=r"C:\Users\bezy\Desktop\sfx",
                     label="Sound-Effects-Ordner",
@@ -403,6 +419,11 @@ def build_app() -> gr.Blocks:
 
         # ───────────── Untertitel ─────────────
         with gr.Accordion("🎨 Untertitel-Einstellungen", open=False):
+            enable_captions = gr.Checkbox(
+                value=True,
+                label="Gesprochene Untertitel einblenden",
+                info="Aus = keine Wort-für-Wort-Captions. Hook & Subscribe-Button (falls aktiv) bleiben.",
+            )
             caption_font = gr.Dropdown(
                 choices=[
                     ("Impact", "Impact"),
@@ -473,9 +494,11 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, smart_picking, voice_id, music_dir, music_track, music_volume_pct,
+                clip_segments, smart_picking, voice_id,
+                enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
-                sfx_dir, sfx_track, sfx_volume_pct,
+                enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
+                enable_captions,
                 image_count, image_duration, custom_image_prompts, uploaded_images,
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,

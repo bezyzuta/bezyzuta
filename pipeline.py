@@ -760,7 +760,8 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               pop_captions: bool = False,
               subscribe_overlay: bool = False,
               subscribe_text: str = "ABONNIEREN",
-              total_duration: float = 0.0) -> Path:
+              total_duration: float = 0.0,
+              enable_captions: bool = True) -> Path:
     """Bold center-bottom karaoke captions; styling exposed for the GUI.
     Optional hook_text shown big at the top for the first hook_duration seconds.
     pop_captions: every chunk pops in with a scale animation (TikTok-style).
@@ -813,13 +814,14 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
 
     # TikTok-style pop animation: start scaled up, shrink to 100% over 150ms.
     pop_tag = "\\fscx125\\fscy125\\t(0,150,\\fscx100\\fscy100)" if pop_captions else ""
-    for ch in chunks:
-        start, end = ch[0][0], ch[-1][1]
-        text = " ".join(w[2] for w in ch).upper().replace("{", "(").replace("}", ")")
-        lines.append(
-            f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Pop,,0,0,0,,"
-            f"{{{pop_tag}\\fad(80,80)}}{text}"
-        )
+    if enable_captions:
+        for ch in chunks:
+            start, end = ch[0][0], ch[-1][1]
+            text = " ".join(w[2] for w in ch).upper().replace("{", "(").replace("}", ")")
+            lines.append(
+                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Pop,,0,0,0,,"
+                f"{{{pop_tag}\\fad(80,80)}}{text}"
+            )
 
     if subscribe_overlay and total_duration > 1.0:
         sub_start = max(0.0, total_duration - 2.5)
@@ -1281,6 +1283,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         subscribe_overlay=bool(job.get("subscribe_overlay", False)),
         subscribe_text=str(job.get("subscribe_text", "ABONNIEREN")),
         total_duration=vo_dur,
+        enable_captions=bool(job.get("enable_captions", True)),
     )
 
     image_paths: list = []
@@ -1362,7 +1365,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     sfx_dir = (job.get("sfx_dir") or "").strip()
     sfx_pct = float(job.get("sfx_volume_pct", 0.0))
     sfx_track = (job.get("sfx_track") or "").strip()
-    if sfx_dir and sfx_pct > 0:
+    enable_sfx = bool(job.get("enable_sfx", True))
+    if enable_sfx and sfx_dir and sfx_pct > 0:
         events = []
 
         if image_paths:
@@ -1407,7 +1411,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     music_pct = float(job.get("music_volume_pct", 0.0))
     music_track = (job.get("music_track") or "").strip()
     smart_music_start = bool(job.get("smart_music_start", True))
-    if music_dir and music_pct > 0:
+    enable_music = bool(job.get("enable_music", True))
+    if enable_music and music_dir and music_pct > 0:
         track = pick_music_track(music_dir, music_track)
         if track is None:
             step(f"      WARN: no music tracks found in {music_dir!r}, skipping BGM")
