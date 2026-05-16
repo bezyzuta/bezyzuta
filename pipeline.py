@@ -170,6 +170,10 @@ def _gemini_post(url: str, params: dict, body: dict, retries: int = 4,
             err_msg = r.text
         err_msg = err_msg[:600]
         last_err = f"Gemini {r.status_code}: {err_msg}"
+        # Permanent failures (billing/quota exhausted) — no point retrying
+        low = err_msg.lower()
+        if any(s in low for s in ("prepayment credits", "billing", "quota exceeded", "exceeded your current quota")):
+            break
         if r.status_code in (429, 503) and attempt < retries:
             wait = backoff[min(attempt, len(backoff) - 1)]
             print(f"      Gemini {r.status_code}, retrying in {wait}s (attempt {attempt + 2}/{retries + 1})")
