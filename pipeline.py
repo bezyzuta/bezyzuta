@@ -574,12 +574,17 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   cfg: Config, out_path: Path,
                   image_paths: list | None = None,
                   duration: float = 0.0,
-                  image_duration: float = 1.5) -> Path:
+                  image_duration: float = 1.5,
+                  mute_source_audio: bool = False) -> Path:
     image_paths = list(image_paths or [])
-    af = (
-        f"[0:a]volume={cfg.ducking_db}dB[bg];"
-        f"[bg][1:a]amix=inputs=2:duration=shortest:dropout_transition=0[a]"
-    )
+    if mute_source_audio:
+        # ignore gameplay audio; output is just the voice/music track
+        af = "[1:a]anull[a]"
+    else:
+        af = (
+            f"[0:a]volume={cfg.ducking_db}dB[bg];"
+            f"[bg][1:a]amix=inputs=2:duration=shortest:dropout_transition=0[a]"
+        )
     cwd = ass_path.parent
 
     cmd = ["ffmpeg", "-y", "-i", str(gameplay_clip), "-i", str(voice_audio)]
@@ -749,6 +754,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
     # Background music: mix AFTER transcription (so captions stay clean)
     audio_for_compose = vo
+    using_bgm = False
     music_dir = (job.get("music_dir") or "").strip()
     music_pct = float(job.get("music_volume_pct", 0.0))
     music_track = (job.get("music_track") or "").strip()
@@ -757,10 +763,11 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         if track is None:
             step(f"      WARN: no music tracks found in {music_dir!r}, skipping BGM")
         else:
-            step(f"      mixing background music: {track.name} @ {music_pct:.0f}%")
+            step(f"      mixing background music: {track.name} @ {music_pct:.0f}% (gameplay-audio muted)")
             audio_for_compose = mix_voice_with_music(
                 vo, track, music_pct, work / "audio_final.mp3"
             )
+            using_bgm = True
 
     step("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
@@ -769,6 +776,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         image_paths=image_paths,
         duration=target,
         image_duration=image_duration,
+        mute_source_audio=using_bgm,
     )
     step(f"      -> {out}")
     return out
