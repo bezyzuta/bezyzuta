@@ -139,15 +139,20 @@ Anforderungen:
 - Gib NUR den reinen Sprechertext aus, sonst nichts"""
 
 
-def _gemini_post(url: str, params: dict, body: dict, retries: int = 3,
-                 backoff: tuple = (5, 15, 30)) -> dict:
+def _gemini_post(url: str, params: dict, body: dict, retries: int = 4,
+                 backoff: tuple = (10, 30, 60, 60)) -> dict:
     """POST to Gemini with exponential backoff on 429/503."""
     last_err = None
     for attempt in range(retries + 1):
         r = requests.post(url, params=params, json=body, timeout=60)
         if r.status_code < 400:
             return r.json()
-        last_err = f"Gemini {r.status_code}: {r.text[:300]}"
+        try:
+            err_msg = (r.json().get("error", {}) or {}).get("message", "") or r.text
+        except Exception:
+            err_msg = r.text
+        err_msg = err_msg[:600]
+        last_err = f"Gemini {r.status_code}: {err_msg}"
         if r.status_code in (429, 503) and attempt < retries:
             wait = backoff[min(attempt, len(backoff) - 1)]
             print(f"      Gemini {r.status_code}, retrying in {wait}s (attempt {attempt + 2}/{retries + 1})")
@@ -155,6 +160,29 @@ def _gemini_post(url: str, params: dict, body: dict, retries: int = 3,
             continue
         break
     raise RuntimeError(last_err)
+
+
+_SCRIPT_TEMPLATES = [
+    "Bro, schau dir das an! {topic} – das ist absolut der Wahnsinn! Pure Action, "
+    "jeder Move sitzt, ich kann das selbst kaum glauben. Wenn du sowas auch drauf "
+    "hast, lass ein Like da und folg fuer mehr Roblox-Highlights!",
+
+    "Achtung Leute! {topic} – du wirst nicht glauben was hier gerade passiert. "
+    "Ein Move, eine Entscheidung, und alles steht auf dem Spiel. Schau genau hin, "
+    "denn solche Momente siehst du nicht jeden Tag. Folg mir fuer noch mehr Action!",
+
+    "99 Prozent der Spieler kriegen das nicht hin. {topic} und ich war live dabei. "
+    "Adrenalin pur, das Herz auf Hochtouren. Wenn du das auch erlebt hast, "
+    "Kommentar drunter – und folg fuer mehr verrueckte Roblox-Momente!",
+
+    "Alter, das musst du dir ansehen! {topic} – komplett unerwartet, komplett wild. "
+    "Ich hab gedacht das wars, aber dann kam alles anders. Like wenn du auch "
+    "schon mal so eine Situation hattest und folg mir fuer mehr!",
+]
+
+
+def fallback_template_script(topic: str) -> str:
+    return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein krasser Roblox Moment")
 
 
 def generate_script_via_gemini(topic: str, cfg: Config) -> str:
@@ -521,7 +549,12 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         if not topic:
             raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
         step(f"      generating script via Gemini for topic: {topic!r}")
-        script = generate_script_via_gemini(topic, cfg)
+        try:
+            script = generate_script_via_gemini(topic, cfg)
+        except RuntimeError as e:
+            step(f"      WARN: Gemini failed: {e}")
+            step(f"      using template fallback script (pipeline continues)")
+            script = fallback_template_script(topic)
         (work / "script.txt").write_text(script, encoding="utf-8")
         preview = script[:80].replace("\n", " ")
         step(f"      script: {preview}...")
