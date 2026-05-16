@@ -951,22 +951,48 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     audio_for_compose = vo
     using_bgm = False
 
-    # SFX layer first — hit on each image pop-in
+    # SFX layer first — hit on each image pop-in AND on each scene cut
     sfx_dir = (job.get("sfx_dir") or "").strip()
     sfx_pct = float(job.get("sfx_volume_pct", 0.0))
     sfx_track = (job.get("sfx_track") or "").strip()
-    if sfx_dir and sfx_pct > 0 and image_paths:
-        schedule = _image_schedule(len(image_paths), target, image_duration)
+    if sfx_dir and sfx_pct > 0:
         events = []
-        for start, _end in schedule:
-            picked = pick_sfx_track(sfx_dir, sfx_track)
-            if picked is not None:
-                events.append((float(start), picked, sfx_pct))
+
+        if image_paths:
+            schedule = _image_schedule(len(image_paths), target, image_duration)
+            for start, _end in schedule:
+                picked = pick_sfx_track(sfx_dir, sfx_track)
+                if picked is not None:
+                    events.append((float(start), picked, sfx_pct))
+
+        if clip_segments > 1:
+            seg_dur = target / clip_segments
+            for i in range(1, clip_segments):  # skip t=0 start
+                picked = pick_sfx_track(sfx_dir, sfx_track)
+                if picked is not None:
+                    events.append((i * seg_dur, picked, sfx_pct))
+
+        # dedupe near-collisions (image pop-in landing on a scene cut)
+        events.sort(key=lambda e: e[0])
+        deduped = []
+        for ev in events:
+            if not deduped or abs(ev[0] - deduped[-1][0]) > 0.3:
+                deduped.append(ev)
+        events = deduped
+
         if events:
-            step(f"      adding {len(events)} SFX hits @ {sfx_pct:.0f}%")
+            cuts_part = ""
+            n_image = len(image_paths) if image_paths else 0
+            n_cuts = max(0, clip_segments - 1)
+            step(
+                f"      adding {len(events)} SFX hits @ {sfx_pct:.0f}% "
+                f"({n_image} image pop-ins + {n_cuts} scene cuts, deduped to {len(events)})"
+            )
             audio_for_compose = mix_voice_with_sfx(
                 audio_for_compose, events, work / "voice_with_sfx.mp3"
             )
+        elif not image_paths and clip_segments <= 1:
+            step("      no SFX trigger events (no images, no scene cuts) — skipping")
         else:
             step(f"      WARN: no SFX files found in {sfx_dir!r}, skipping")
 
