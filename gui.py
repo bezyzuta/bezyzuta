@@ -128,7 +128,7 @@ def generate(
 
 
 def build_app() -> gr.Blocks:
-    with gr.Blocks(title="Roblox Shorts Generator", theme=gr.themes.Soft()) as app:
+    with gr.Blocks(title="Roblox Shorts Generator") as app:
         gr.Markdown("# 🎬 Roblox Shorts Generator")
         gr.Markdown("Automatischer Pipeline-Lauf: YouTube-Download → Gemini-Skript → "
                     "ElevenLabs Voiceover → Pollinations Bilder → 9:16 Schnitt mit Untertiteln.")
@@ -185,7 +185,7 @@ def build_app() -> gr.Blocks:
             gr.Markdown("### 🔁 Batch")
             batch_count = gr.Slider(1, 10, value=1, step=1, label="Anzahl Shorts hintereinander")
 
-        generate_btn = gr.Button("🎬 Short generieren", variant="primary", size="lg")
+        generate_btn = gr.Button("🎬 Short generieren", variant="primary")
 
         with gr.Row():
             status_log = gr.Textbox(
@@ -193,7 +193,6 @@ def build_app() -> gr.Blocks:
                 lines=20,
                 max_lines=40,
                 interactive=False,
-                show_copy_button=True,
             )
 
         video_out = gr.Video(label="Fertiger Short", autoplay=False)
@@ -226,4 +225,9 @@ def build_app() -> gr.Blocks:
 
 if __name__ == "__main__":
     app = build_app()
-    app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
+    try:
+        app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True,
+                   theme=gr.themes.Soft())
+    except TypeError:
+        # Older Gradio (<6) doesn't accept theme on launch
+        app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
