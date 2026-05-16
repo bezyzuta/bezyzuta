@@ -1157,14 +1157,14 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         parts = [f"[0:v]{vf}[{main_label}]"]
 
     if use_bar:
-        # Generate a full-width colored strip and reveal it left-to-right via
-        # crop's per-frame eval (drawbox's width expression is config-time only
-        # in many ffmpeg builds, hence the workaround).
+        # Generate a colored strip and shrink/grow its width per frame.
+        # scale (not crop) supports eval=frame in ffmpeg 8.x; drawbox's width
+        # expression is config-time only in most builds, hence this workaround.
         parts.append(
             f"color=c={progress_color}@0.9:s={cfg.target_w}x{bar_h}:d={progress_duration:.2f}:r=30[barfull]"
         )
         parts.append(
-            f"[barfull]crop=w='max(2\\,iw*t/{progress_duration:.2f})':h=ih:x=0:y=0:eval=frame[bar]"
+            f"[barfull]scale=w='max(2\\,iw*t/{progress_duration:.2f})':h={bar_h}:eval=frame[bar]"
         )
         parts.append(
             f"[vmain][bar]overlay=x=0:y=H-{bar_h}:eof_action=pass[v]"
