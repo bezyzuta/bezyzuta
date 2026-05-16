@@ -2,18 +2,38 @@
 title Roblox Shorts Generator
 cd /d "%~dp0"
 
-if not exist ".venv\Scripts\python.exe" (
-    echo FEHLER: virtuelle Umgebung nicht gefunden in .venv
-    echo Stelle sicher dass diese BAT-Datei im Projektordner liegt
-    echo (neben pipeline.py und gui.py^).
-    pause
-    exit /b 1
-)
-
 if not exist "gui.py" (
     echo FEHLER: gui.py nicht gefunden in %CD%
     pause
     exit /b 1
+)
+
+if not exist ".venv\Scripts\python.exe" (
+    echo .venv nicht gefunden - erstelle virtuelle Umgebung...
+    where python >nul 2>nul
+    if errorlevel 1 (
+        echo FEHLER: python ist nicht installiert oder nicht im PATH.
+        echo Installiere Python von https://www.python.org/downloads/
+        echo und aktiviere "Add python.exe to PATH" beim Installieren.
+        pause
+        exit /b 1
+    )
+    python -m venv .venv
+    if errorlevel 1 (
+        echo FEHLER: konnte .venv nicht erstellen.
+        pause
+        exit /b 1
+    )
+    echo Installiere Abhaengigkeiten - das dauert 1-2 Minuten...
+    .venv\Scripts\python.exe -m pip install --upgrade pip
+    .venv\Scripts\python.exe -m pip install -r requirements.txt
+    if errorlevel 1 (
+        echo FEHLER: pip install fehlgeschlagen.
+        pause
+        exit /b 1
+    )
+    echo Setup fertig.
+    echo.
 )
 
 echo ===========================================
