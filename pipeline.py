@@ -297,17 +297,75 @@ def pick_music_track(music_dir: str, specific: str = "") -> Path | None:
     return random.choice(candidates)
 
 
+def _media_duration(path: Path) -> float:
+    """Return duration in seconds via ffprobe, or 0 on failure."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        return float(r.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def find_loudest_music_offset(music_path: Path, voice_duration: float,
+                              window: float = 3.0, step: float = 8.0) -> float:
+    """Sample loudness in `window`-sec chunks across the track and return the
+    start offset that has the highest mean volume and still leaves at least
+    `voice_duration` seconds before the end (so no mid-mix loop). Falls back to 0."""
+    duration = _media_duration(music_path)
+    if duration <= 0 or duration <= voice_duration + 5:
+        return 0.0
+    max_start = max(0.0, duration - voice_duration - 1.0)
+    if max_start <= 0:
+        return 0.0
+    starts = []
+    t = 0.0
+    while t <= max_start + 0.01:
+        starts.append(round(t, 2))
+        t += step
+    if not starts:
+        return 0.0
+    vol_re = re.compile(r"mean_volume:\s*([-\d.]+)\s*dB")
+    scored: list[tuple[float, float]] = []  # (volume_dB, offset)
+    for s in starts:
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-ss", f"{s}", "-t", f"{window}",
+                 "-i", str(music_path),
+                 "-af", "volumedetect", "-vn", "-f", "null", "-"],
+                capture_output=True, text=True,
+            )
+            m = vol_re.search(proc.stderr)
+            if m:
+                scored.append((float(m.group(1)), s))
+        except Exception:
+            continue
+    if not scored:
+        return 0.0
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # Pick randomly from the top 3 loudest windows for variety between runs.
+    top = scored[:3]
+    return random.choice(top)[1]
+
+
 def mix_voice_with_music(voice_path: Path, music_path: Path, volume_pct: float,
-                         out_path: Path) -> Path:
-    """Loop music under voice at given volume (%). Output ends with the voice."""
+                         out_path: Path, start_offset: float = 0.0) -> Path:
+    """Loop music under voice at given volume (%). Output ends with the voice.
+    `start_offset` skips into the music track before mixing."""
     pct = max(0.0, min(volume_pct, 100.0)) / 100.0
     # Quadratic taper: matches perceived loudness so low slider values are actually quiet.
     # e.g. 3% -> 0.0009 (~-60dB), 10% -> 0.01 (~-40dB), 30% -> 0.09 (~-21dB).
     vol = pct * pct
+    music_args = ["-stream_loop", "-1"]
+    if start_offset > 0.05:
+        music_args = ["-ss", f"{start_offset:.2f}", "-stream_loop", "-1"]
     run([
         "ffmpeg", "-y",
         "-i", str(voice_path),
-        "-stream_loop", "-1", "-i", str(music_path),
+        *music_args, "-i", str(music_path),
         "-filter_complex",
         f"[1:a]volume={vol:.3f}[bgm];"
         f"[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]",
@@ -1198,14 +1256,24 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     music_dir = (job.get("music_dir") or "").strip()
     music_pct = float(job.get("music_volume_pct", 0.0))
     music_track = (job.get("music_track") or "").strip()
+    smart_music_start = bool(job.get("smart_music_start", True))
     if music_dir and music_pct > 0:
         track = pick_music_track(music_dir, music_track)
         if track is None:
             step(f"      WARN: no music tracks found in {music_dir!r}, skipping BGM")
         else:
-            step(f"      mixing background music: {track.name} @ {music_pct:.0f}% (gameplay-audio muted)")
+            offset = 0.0
+            if smart_music_start:
+                voice_dur = _media_duration(audio_for_compose)
+                step(f"      analyzing {track.name} for best start offset")
+                offset = find_loudest_music_offset(track, voice_dur)
+            if offset > 0:
+                step(f"      mixing background music: {track.name} @ {music_pct:.0f}% from {offset:.1f}s (gameplay-audio muted)")
+            else:
+                step(f"      mixing background music: {track.name} @ {music_pct:.0f}% (gameplay-audio muted)")
             audio_for_compose = mix_voice_with_music(
-                audio_for_compose, track, music_pct, work / "audio_final.mp3"
+                audio_for_compose, track, music_pct, work / "audio_final.mp3",
+                start_offset=offset,
             )
             using_bgm = True
 

@@ -89,6 +89,7 @@ def generate(
     music_dir: str,
     music_track: str,
     music_volume_pct: int,
+    smart_music_start: bool,
     sfx_dir: str,
     sfx_track: str,
     sfx_volume_pct: int,
@@ -135,6 +136,7 @@ def generate(
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
             "music_track": "" if not music_track or music_track == RANDOM_PICK else str(music_track),
+            "smart_music_start": bool(smart_music_start),
             "sfx_dir": str(sfx_dir or ""),
             "sfx_volume_pct": float(sfx_volume_pct),
             "sfx_track": "" if not sfx_track or sfx_track == RANDOM_PICK else str(sfx_track),
@@ -306,6 +308,11 @@ def build_app() -> gr.Blocks:
                     label="Hintergrundmusik Lautstärke (%)",
                     info="Quadratisch skaliert — 3% ist quasi unhörbar, 10% sehr leise, 30% deutlich.",
                 )
+                smart_music_start = gr.Checkbox(
+                    value=True,
+                    label="🎯 Smart Music Start (lauteste Stelle / Drop finden)",
+                    info="Analysiert den Track und startet nicht zwingend bei 0:00, sondern wo es richtig losgeht. +2–5s pro Track.",
+                )
             with gr.Tab("💥 Sound-Effects"):
                 sfx_dir = gr.Textbox(
                     value=r"C:\Users\bezy\Desktop\sfx",
@@ -412,6 +419,7 @@ def build_app() -> gr.Blocks:
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, smart_picking, voice_id, music_dir, music_track, music_volume_pct,
+                smart_music_start,
                 sfx_dir, sfx_track, sfx_volume_pct,
                 image_count, image_duration, custom_image_prompts, uploaded_images,
                 skip_images,
