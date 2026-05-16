@@ -50,6 +50,10 @@ def generate(
     image_duration: float,
     custom_image_prompts: str,
     skip_images: bool,
+    caption_font: str,
+    caption_color: str,
+    caption_stroke_color: str,
+    caption_font_size: int,
     batch_count: int,
 ):
     log = ""
@@ -76,6 +80,10 @@ def generate(
             "image_count": int(image_count),
             "image_duration": float(image_duration),
             "no_image": bool(skip_images),
+            "caption_font": str(caption_font or "Impact"),
+            "caption_font_size": int(caption_font_size),
+            "caption_color": str(caption_color or "#FFFFFF"),
+            "caption_stroke_color": str(caption_stroke_color or "#000000"),
         }
         if custom_script.strip():
             job["script"] = custom_script.strip()
@@ -226,6 +234,24 @@ def build_app() -> gr.Blocks:
             )
             skip_images = gr.Checkbox(value=False, label="Bilder komplett überspringen")
 
+        with gr.Accordion("🎨 Untertitel-Einstellungen", open=False):
+            caption_font = gr.Dropdown(
+                choices=[
+                    ("Impact", "Impact"),
+                    ("Arial-Bold", "Arial Black"),
+                    ("Verdana", "Verdana"),
+                ],
+                value="Impact",
+                label="Schriftart",
+            )
+            with gr.Row():
+                caption_color = gr.ColorPicker(value="#FFFF00", label="Textfarbe")
+                caption_stroke_color = gr.ColorPicker(value="#000000", label="Randfarbe (Stroke)")
+            caption_font_size = gr.Slider(
+                30, 90, value=60, step=1,
+                label="Schriftgröße",
+            )
+
         with gr.Group():
             gr.Markdown("### 🔁 Batch")
             batch_count = gr.Slider(1, 10, value=1, step=1, label="Anzahl Shorts hintereinander")
@@ -264,7 +290,9 @@ def build_app() -> gr.Blocks:
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, voice_id,
                 image_count, image_duration, custom_image_prompts,
-                skip_images, batch_count,
+                skip_images,
+                caption_font, caption_color, caption_stroke_color, caption_font_size,
+                batch_count,
             ],
             outputs=[status_log, video_out],
         )

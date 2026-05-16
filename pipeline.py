@@ -352,9 +352,28 @@ def _ass_time(t: float) -> str:
     return f"{h:d}:{m:02d}:{s:05.2f}"
 
 
-def write_ass(words, video_w: int, video_h: int, out_path: Path) -> Path:
-    """Bold, center-bottom karaoke captions, 2-3 words per chunk."""
-    fontsize = max(56, int(video_h * 0.048))
+def _hex_to_ass_color(hex_color: str) -> str:
+    """Convert '#RRGGBB' (or '#RGB') to ASS '&H00BBGGRR' (BGR, alpha 00)."""
+    h = (hex_color or "").lstrip("#").strip()
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    if len(h) != 6:
+        return "&H00FFFFFF"
+    rr, gg, bb = h[0:2], h[2:4], h[4:6]
+    return f"&H00{bb}{gg}{rr}".upper()
+
+
+def write_ass(words, video_w: int, video_h: int, out_path: Path,
+              font_name: str = "Impact",
+              font_size: int | None = None,
+              primary_color: str = "#FFFFFF",
+              outline_color: str = "#000000",
+              outline_width: int = 5) -> Path:
+    """Bold center-bottom karaoke captions; styling exposed for the GUI."""
+    if font_size is None or font_size <= 0:
+        font_size = max(56, int(video_h * 0.048))
+    primary = _hex_to_ass_color(primary_color)
+    outline = _hex_to_ass_color(outline_color)
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -365,8 +384,8 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path) -> Path:
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Pop, Impact, {fontsize}, &H00FFFFFF, &H000000FF, &H00000000, &H64000000, "
-        "1, 0, 0, 0, 100, 100, 0, 0, 1, 6, 2, 2, 80, 80, 360, 1\n\n"
+        f"Style: Pop, {font_name}, {int(font_size)}, {primary}, &H000000FF, {outline}, &H64000000, "
+        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width)}, 2, 2, 80, 80, 360, 1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -642,7 +661,14 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
     step("[4/5] transcribe + captions (CPU, kann ~30s dauern)")
     words = transcribe_words(vo, cfg.whisper_model)
-    ass = write_ass(words, cfg.target_w, cfg.target_h, work / "captions.ass")
+    ass = write_ass(
+        words, cfg.target_w, cfg.target_h, work / "captions.ass",
+        font_name=str(job.get("caption_font", "Impact")),
+        font_size=int(job.get("caption_font_size", 0)) or None,
+        primary_color=str(job.get("caption_color", "#FFFFFF")),
+        outline_color=str(job.get("caption_stroke_color", "#000000")),
+        outline_width=int(job.get("caption_stroke_width", 5)),
+    )
 
     image_paths: list = []
     image_duration = float(job.get("image_duration", 1.5))
