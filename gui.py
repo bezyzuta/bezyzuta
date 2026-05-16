@@ -83,6 +83,7 @@ def generate(
     image_count: int,
     image_duration: float,
     custom_image_prompts: str,
+    uploaded_images,
     skip_images: bool,
     caption_font: str,
     caption_color: str,
@@ -131,6 +132,16 @@ def generate(
         img_prompts = [p.strip() for p in custom_image_prompts.splitlines() if p.strip()]
         if img_prompts:
             job["image_prompts"] = img_prompts
+        # uploaded files (Gradio File component returns list of file objects or paths)
+        uploaded_paths: list = []
+        if uploaded_images:
+            for f in uploaded_images:
+                if hasattr(f, "name"):
+                    uploaded_paths.append(str(f.name))
+                elif isinstance(f, str):
+                    uploaded_paths.append(f)
+        if uploaded_paths:
+            job["image_paths"] = uploaded_paths
         if source_mode == "Direkt-URL":
             if not source_url.strip():
                 yield log + "\nFEHLER: Direkt-URL ist leer\n", last_video
@@ -314,6 +325,11 @@ def build_app() -> gr.Blocks:
                 ),
                 info="Leer = Gemini erzeugt aus dem Skript. Weniger Zeilen als Bilder = Rest wird auto-generiert.",
             )
+            uploaded_images = gr.File(
+                file_count="multiple",
+                file_types=["image"],
+                label="Eigene Bilder hochladen (überschreibt Auto-Generierung komplett)",
+            )
             skip_images = gr.Checkbox(value=False, label="Bilder komplett überspringen")
 
         with gr.Accordion("🎨 Untertitel-Einstellungen", open=False):
@@ -380,7 +396,7 @@ def build_app() -> gr.Blocks:
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, smart_picking, voice_id, music_dir, music_track, music_volume_pct,
                 sfx_dir, sfx_track, sfx_volume_pct,
-                image_count, image_duration, custom_image_prompts,
+                image_count, image_duration, custom_image_prompts, uploaded_images,
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 batch_count,

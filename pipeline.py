@@ -27,6 +27,9 @@ class Config:
     ducking_db: float
     gemini_api_key: str
     gemini_model: str
+    cloudflare_account_id: str
+    cloudflare_api_token: str
+    cloudflare_image_model: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -46,6 +49,9 @@ class Config:
             ducking_db=float(data.get("ducking_db", -18)),
             gemini_api_key=data.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", ""),
             gemini_model=data.get("gemini_model", "gemini-2.5-flash"),
+            cloudflare_account_id=data.get("cloudflare_account_id") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
+            cloudflare_api_token=data.get("cloudflare_api_token") or os.environ.get("CLOUDFLARE_API_TOKEN", ""),
+            cloudflare_image_model=data.get("cloudflare_image_model", "@cf/black-forest-labs/flux-1-schnell"),
         )
 
 
@@ -698,6 +704,53 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
     return prompts[:n]
 
 
+def fetch_image_from_cloudflare(prompt: str, out_path: Path, cfg: Config,
+                                width: int = 1024, height: int = 1024,
+                                seed: int | None = None) -> Path:
+    """Cloudflare Workers AI image generation. Requires account_id + api_token in cfg."""
+    if not cfg.cloudflare_account_id or not cfg.cloudflare_api_token:
+        raise RuntimeError("cloudflare_account_id or cloudflare_api_token missing in config")
+    model = cfg.cloudflare_image_model or "@cf/black-forest-labs/flux-1-schnell"
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{cfg.cloudflare_account_id}/ai/run/{model}"
+    )
+    headers = {
+        "Authorization": f"Bearer {cfg.cloudflare_api_token}",
+        "Content-Type": "application/json",
+    }
+    body: dict = {"prompt": prompt, "width": width, "height": height, "num_steps": 4}
+    if seed is not None:
+        body["seed"] = int(seed)
+    r = requests.post(url, headers=headers, json=body, timeout=120)
+    if r.status_code >= 400:
+        try:
+            err = r.json().get("errors", [])
+            msg = str(err)[:300] if err else r.text[:300]
+        except Exception:
+            msg = r.text[:300]
+        raise RuntimeError(f"Cloudflare {r.status_code}: {msg}")
+    ctype = (r.headers.get("content-type") or "").lower()
+    if "image" in ctype:
+        out_path.write_bytes(r.content)
+        return out_path
+    if "json" in ctype:
+        import base64
+        data = r.json()
+        if not data.get("success"):
+            raise RuntimeError(f"Cloudflare API error: {str(data.get('errors'))[:200]}")
+        result = data.get("result") or {}
+        if isinstance(result, dict):
+            b64 = result.get("image") or result.get("response") or ""
+            if isinstance(b64, str) and b64:
+                out_path.write_bytes(base64.b64decode(b64))
+                return out_path
+        raise RuntimeError(f"Cloudflare result shape unexpected: {str(data)[:200]}")
+    # treat as raw bytes
+    out_path.write_bytes(r.content)
+    return out_path
+
+
 def fetch_image_from_pollinations(prompt: str, out_path: Path,
                                   width: int = 1024, height: int = 1024,
                                   seed: int | None = None,
@@ -967,20 +1020,42 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 step(f"      generating {n_images} scene prompts via Gemini")
                 prompts = generate_scene_prompts(script, n_images, cfg)
             consecutive_failures = 0
+            cloudflare_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
             for i, prompt in enumerate(prompts, 1):
                 step(f"      [{i}/{n_images}] image: {prompt[:80]}")
+                target_path = work / f"image_{i}.png"
+                ok = False
+                pollinations_err: str | None = None
                 try:
-                    p = fetch_image_from_pollinations(
-                        prompt, work / f"image_{i}.png", seed=random.randint(1, 1_000_000)
+                    fetch_image_from_pollinations(
+                        prompt, target_path, seed=random.randint(1, 1_000_000)
                     )
-                    image_paths.append(p)
-                    consecutive_failures = 0
+                    image_paths.append(target_path)
+                    ok = True
                 except Exception as e:
+                    pollinations_err = str(e)
+
+                if not ok and cloudflare_ready:
+                    step("      Pollinations failed, trying Cloudflare Workers AI")
+                    try:
+                        fetch_image_from_cloudflare(
+                            prompt, target_path, cfg,
+                            seed=random.randint(1, 1_000_000),
+                        )
+                        image_paths.append(target_path)
+                        ok = True
+                    except Exception as cf_err:
+                        step(f"      Cloudflare also failed: {cf_err}")
+
+                if ok:
+                    consecutive_failures = 0
+                else:
                     consecutive_failures += 1
-                    step(f"      WARN: image {i} failed: {e}")
+                    err_summary = pollinations_err or "unknown"
+                    step(f"      WARN: image {i} failed: {err_summary[:160]}")
                     if consecutive_failures >= 2 and i < n_images:
                         step(
-                            f"      Pollinations seems down, skipping remaining "
+                            f"      image generators seem down, skipping remaining "
                             f"{n_images - i} image(s); pipeline continues without them"
                         )
                         break
