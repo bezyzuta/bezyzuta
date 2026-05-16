@@ -254,6 +254,46 @@ def trim_leading_silence(in_path: Path, out_path: Path,
     return out_path
 
 
+_MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
+
+
+def pick_music_track(music_dir: str, specific: str = "") -> Path | None:
+    """Pick a music file from a folder. Specific filename wins, else random."""
+    if not music_dir:
+        return None
+    d = Path(music_dir).expanduser()
+    if not d.is_dir():
+        return None
+    if specific:
+        p = Path(specific).expanduser()
+        if not p.is_absolute():
+            p = d / specific
+        if p.is_file():
+            return p
+    candidates = [f for f in d.iterdir() if f.is_file() and f.suffix.lower() in _MUSIC_EXTS]
+    if not candidates:
+        return None
+    return random.choice(candidates)
+
+
+def mix_voice_with_music(voice_path: Path, music_path: Path, volume_pct: float,
+                         out_path: Path) -> Path:
+    """Loop music under voice at given volume (%). Output ends with the voice."""
+    vol = max(0.0, min(volume_pct / 100.0, 1.0))
+    run([
+        "ffmpeg", "-y",
+        "-i", str(voice_path),
+        "-stream_loop", "-1", "-i", str(music_path),
+        "-filter_complex",
+        f"[1:a]volume={vol:.3f}[bgm];"
+        f"[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]",
+        "-map", "[mix]",
+        "-c:a", "libmp3lame", "-q:a", "4",
+        str(out_path),
+    ])
+    return out_path
+
+
 def probe_duration(media: Path) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -707,10 +747,25 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 except Exception as e:
                     step(f"      WARN: image {i} failed, skipping: {e}")
 
+    # Background music: mix AFTER transcription (so captions stay clean)
+    audio_for_compose = vo
+    music_dir = (job.get("music_dir") or "").strip()
+    music_pct = float(job.get("music_volume_pct", 0.0))
+    music_track = (job.get("music_track") or "").strip()
+    if music_dir and music_pct > 0:
+        track = pick_music_track(music_dir, music_track)
+        if track is None:
+            step(f"      WARN: no music tracks found in {music_dir!r}, skipping BGM")
+        else:
+            step(f"      mixing background music: {track.name} @ {music_pct:.0f}%")
+            audio_for_compose = mix_voice_with_music(
+                vo, track, music_pct, work / "audio_final.mp3"
+            )
+
     step("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
     compose_short(
-        clip, vo, ass, cfg, out,
+        clip, audio_for_compose, ass, cfg, out,
         image_paths=image_paths,
         duration=target,
         image_duration=image_duration,

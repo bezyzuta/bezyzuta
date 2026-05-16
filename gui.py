@@ -46,6 +46,8 @@ def generate(
     target_duration: float,
     clip_segments: int,
     voice_id: str,
+    music_dir: str,
+    music_volume_pct: int,
     image_count: int,
     image_duration: float,
     custom_image_prompts: str,
@@ -84,6 +86,8 @@ def generate(
             "caption_font_size": int(caption_font_size),
             "caption_color": str(caption_color or "#FFFFFF"),
             "caption_stroke_color": str(caption_stroke_color or "#000000"),
+            "music_dir": str(music_dir or ""),
+            "music_volume_pct": float(music_volume_pct),
         }
         if custom_script.strip():
             job["script"] = custom_script.strip()
@@ -214,6 +218,15 @@ def build_app() -> gr.Blocks:
                 value=VOICES[0][1],
                 label="ElevenLabs Stimme",
             )
+            music_dir = gr.Textbox(
+                value=r"C:\Users\bezy\Desktop\music",
+                label="Hintergrundmusik-Ordner",
+                info="MP3/WAV-Dateien hier rein. Leer oder leerer Ordner = keine Musik.",
+            )
+            music_volume_pct = gr.Slider(
+                0, 30, value=10, step=1,
+                label="Hintergrundmusik Lautstärke (%)",
+            )
 
         with gr.Group():
             gr.Markdown("### 🖼️ Bild-Overlays")
@@ -288,7 +301,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, voice_id,
+                clip_segments, voice_id, music_dir, music_volume_pct,
                 image_count, image_duration, custom_image_prompts,
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
