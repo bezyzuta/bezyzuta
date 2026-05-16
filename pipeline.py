@@ -736,10 +736,41 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     return max(0.0, min(1.0, avg / 100.0))
 
 
+_CF_VISION_AGREED: set = set()
+
+
+def _cloudflare_accept_vision_agreement(cfg) -> str:
+    """Meta requires a one-time license acceptance for the Llama 3.2 Vision
+    model on Cloudflare Workers AI. Send the magic 'agree' prompt to record
+    consent for this account. Idempotent. Returns '' on success or an error
+    string."""
+    key = cfg.cloudflare_account_id
+    if key in _CF_VISION_AGREED:
+        return ""
+    model = "@cf/meta/llama-3.2-11b-vision-instruct"
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{cfg.cloudflare_account_id}/ai/run/{model}"
+    )
+    headers = {
+        "Authorization": f"Bearer {cfg.cloudflare_api_token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        r = requests.post(url, headers=headers, json={"prompt": "agree"}, timeout=30)
+    except Exception as e:
+        return f"agreement request error: {e}"
+    if r.status_code >= 400:
+        return f"agreement HTTP {r.status_code}: {r.text[:200]}"
+    _CF_VISION_AGREED.add(key)
+    return ""
+
+
 def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
     """Send one image to Cloudflare Llama 3.2 Vision and return (text, err).
     Uses the OpenAI-style messages format with base64 data URL (most reliable
-    across Cloudflare Workers AI versions)."""
+    across Cloudflare Workers AI versions). On the Meta licensing 403, auto-
+    submit the 'agree' acceptance and retry once."""
     import base64
     model = "@cf/meta/llama-3.2-11b-vision-instruct"
     url = (
@@ -761,34 +792,39 @@ def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
         "max_tokens": 16,
         "temperature": 0.1,
     }
-    try:
-        r = requests.post(url, headers=headers, json=body, timeout=60)
-    except Exception as e:
-        return ("", f"request error: {e}")
-    if r.status_code >= 400:
-        return ("", f"HTTP {r.status_code}: {r.text[:240]}")
-    try:
-        data = r.json()
-    except Exception:
-        return ("", f"non-json response: {r.text[:240]}")
-    if not data.get("success", True):
-        return ("", f"api error: {str(data.get('errors'))[:240]}")
-    result = data.get("result") or {}
-    # Possible response shapes across versions
-    if isinstance(result, dict):
-        text = (
-            result.get("response")
-            or result.get("description")
-            or ""
-        )
-        # OpenAI-style choices array
-        choices = result.get("choices")
-        if not text and isinstance(choices, list) and choices:
-            msg = (choices[0] or {}).get("message") or {}
-            text = msg.get("content") or ""
-    else:
-        text = ""
-    return (str(text).strip(), "")
+    for attempt in range(2):
+        try:
+            r = requests.post(url, headers=headers, json=body, timeout=60)
+        except Exception as e:
+            return ("", f"request error: {e}")
+        if r.status_code == 403 and "Model Agreement" in r.text and attempt == 0:
+            agree_err = _cloudflare_accept_vision_agreement(cfg)
+            if agree_err:
+                return ("", f"could not accept Meta license: {agree_err}")
+            continue  # retry
+        if r.status_code >= 400:
+            return ("", f"HTTP {r.status_code}: {r.text[:240]}")
+        try:
+            data = r.json()
+        except Exception:
+            return ("", f"non-json response: {r.text[:240]}")
+        if not data.get("success", True):
+            return ("", f"api error: {str(data.get('errors'))[:240]}")
+        result = data.get("result") or {}
+        if isinstance(result, dict):
+            text = (
+                result.get("response")
+                or result.get("description")
+                or ""
+            )
+            choices = result.get("choices")
+            if not text and isinstance(choices, list) and choices:
+                msg = (choices[0] or {}).get("message") or {}
+                text = msg.get("content") or ""
+        else:
+            text = ""
+        return (str(text).strip(), "")
+    return ("", "retry loop exhausted")
 
 
 def _cloudflare_pick_thumbnails(thumb_paths: list, n_pick: int, cfg,
