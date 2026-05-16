@@ -12,6 +12,24 @@ import gradio as gr
 from pipeline import Config, run_one
 
 
+_MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
+RANDOM_PICK = "🎲 Zufällig"
+
+
+def list_music_tracks(folder: str) -> list[str]:
+    """Scan folder for music files, return [Zufällig, filename1, filename2, ...]."""
+    if not folder:
+        return [RANDOM_PICK]
+    p = Path(folder.strip()).expanduser()
+    if not p.is_dir():
+        return [RANDOM_PICK]
+    tracks = sorted(
+        f.name for f in p.iterdir()
+        if f.is_file() and f.suffix.lower() in _MUSIC_EXTS
+    )
+    return [RANDOM_PICK] + tracks
+
+
 # (display label, voice_id)
 VOICES = [
     ("Harry — jung, energetisch (Empfohlen für Roblox)", "SOYHLrjzK2X1ezoPC6cr"),
@@ -47,6 +65,7 @@ def generate(
     clip_segments: int,
     voice_id: str,
     music_dir: str,
+    music_track: str,
     music_volume_pct: int,
     image_count: int,
     image_duration: float,
@@ -88,6 +107,7 @@ def generate(
             "caption_stroke_color": str(caption_stroke_color or "#000000"),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
+            "music_track": "" if not music_track or music_track == RANDOM_PICK else str(music_track),
         }
         if custom_script.strip():
             job["script"] = custom_script.strip()
@@ -223,6 +243,15 @@ def build_app() -> gr.Blocks:
                 label="Hintergrundmusik-Ordner",
                 info="MP3/WAV-Dateien hier rein. Leer oder leerer Ordner = keine Musik.",
             )
+            with gr.Row():
+                music_track = gr.Dropdown(
+                    choices=list_music_tracks(r"C:\Users\bezy\Desktop\music"),
+                    value=RANDOM_PICK,
+                    label="Track",
+                    info="Wähle eine Datei oder lass auf Zufällig",
+                    scale=4,
+                )
+                music_refresh = gr.Button("🔄", scale=1)
             music_volume_pct = gr.Slider(
                 0, 30, value=10, step=1,
                 label="Hintergrundmusik Lautstärke (%)",
@@ -296,12 +325,18 @@ def build_app() -> gr.Blocks:
             outputs=[channel_url, title_filter, channel_scan_limit, source_url],
         )
 
+        def _refresh_tracks(folder: str):
+            return gr.update(choices=list_music_tracks(folder), value=RANDOM_PICK)
+
+        music_dir.change(_refresh_tracks, inputs=[music_dir], outputs=[music_track])
+        music_refresh.click(_refresh_tracks, inputs=[music_dir], outputs=[music_track])
+
         generate_btn.click(
             generate,
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, voice_id, music_dir, music_volume_pct,
+                clip_segments, voice_id, music_dir, music_track, music_volume_pct,
                 image_count, image_duration, custom_image_prompts,
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
