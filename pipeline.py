@@ -1361,14 +1361,15 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     audio_for_compose = vo
     using_bgm = False
 
-    # SFX layer first — hit on each image pop-in AND on each scene cut
+    # SFX layer first — hit on each image pop-in AND on each scene cut.
+    # We collect events first, optionally add a subscribe-sting, then mix once.
     sfx_dir = (job.get("sfx_dir") or "").strip()
     sfx_pct = float(job.get("sfx_volume_pct", 0.0))
     sfx_track = (job.get("sfx_track") or "").strip()
     enable_sfx = bool(job.get("enable_sfx", True))
-    if enable_sfx and sfx_dir and sfx_pct > 0:
-        events = []
+    events: list = []
 
+    if enable_sfx and sfx_dir and sfx_pct > 0:
         if image_paths:
             schedule = _image_schedule(len(image_paths), target, image_duration)
             for start, _end in schedule:
@@ -1392,20 +1393,37 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         events = deduped
 
         if events:
-            cuts_part = ""
             n_image = len(image_paths) if image_paths else 0
             n_cuts = max(0, clip_segments - 1)
             step(
                 f"      adding {len(events)} SFX hits @ {sfx_pct:.0f}% "
                 f"({n_image} image pop-ins + {n_cuts} scene cuts, deduped to {len(events)})"
             )
-            audio_for_compose = mix_voice_with_sfx(
-                audio_for_compose, events, work / "voice_with_sfx.mp3"
-            )
         elif not image_paths and clip_segments <= 1:
             step("      no SFX trigger events (no images, no scene cuts) — skipping")
         else:
             step(f"      WARN: no SFX files found in {sfx_dir!r}, skipping")
+
+    # Optional sting that fires the moment the Subscribe banner pops in.
+    # Independent of the regular SFX toggle so the user can keep SFX off but
+    # still want the sub sting (or vice versa).
+    if bool(job.get("subscribe_overlay", False)):
+        sting_path_str = str(job.get("subscribe_sting_file") or "").strip()
+        sting_vol = float(job.get("subscribe_sting_volume", 60.0))
+        if sting_path_str and sting_vol > 0:
+            sting_path = Path(sting_path_str).expanduser()
+            if sting_path.is_file():
+                sting_at = max(0.0, vo_dur - 2.5)
+                events.append((sting_at, sting_path, sting_vol))
+                step(f"      adding subscribe sting @ {sting_vol:.0f}% at {sting_at:.1f}s")
+            else:
+                step(f"      WARN: subscribe sting file not found: {sting_path_str}")
+
+    if events:
+        events.sort(key=lambda e: e[0])
+        audio_for_compose = mix_voice_with_sfx(
+            audio_for_compose, events, work / "voice_with_sfx.mp3"
+        )
 
     music_dir = (job.get("music_dir") or "").strip()
     music_pct = float(job.get("music_volume_pct", 0.0))

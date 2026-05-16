@@ -110,6 +110,8 @@ def generate(
     pop_captions: bool,
     progress_bar: bool,
     subscribe_overlay: bool,
+    subscribe_sting_file: str,
+    subscribe_sting_volume: int,
     whisper_device: str,
     batch_count: int,
 ):
@@ -147,6 +149,8 @@ def generate(
             "pop_captions": bool(pop_captions),
             "progress_bar": bool(progress_bar),
             "subscribe_overlay": bool(subscribe_overlay),
+            "subscribe_sting_file": str(subscribe_sting_file or "").strip(),
+            "subscribe_sting_volume": float(subscribe_sting_volume),
             "whisper_device": str(whisper_device or "auto"),
             "enable_music": bool(enable_music),
             "music_dir": str(music_dir or ""),
@@ -416,6 +420,16 @@ def build_app() -> gr.Blocks:
                 label="🔔 Subscribe-Button am Ende",
                 info='Rotes "ABONNIEREN" Banner in den letzten 2,5 Sekunden.',
             )
+            subscribe_sting_file = gr.Textbox(
+                value="",
+                label="🎵 Sound-Effekt zum Subscribe-Banner (optional)",
+                placeholder=r"z.B. C:\Users\bezy\Desktop\sfx\bell.mp3",
+                info="Wird genau dann abgespielt wenn das Banner erscheint. Leer = kein Sting.",
+            )
+            subscribe_sting_volume = gr.Slider(
+                0, 100, value=60, step=1,
+                label="Sting-Lautstärke (%)",
+            )
 
         # ───────────── Untertitel ─────────────
         with gr.Accordion("🎨 Untertitel-Einstellungen", open=False):
@@ -504,6 +518,7 @@ def build_app() -> gr.Blocks:
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 hook_text, hook_duration,
                 pop_captions, progress_bar, subscribe_overlay,
+                subscribe_sting_file, subscribe_sting_volume,
                 whisper_device,
                 batch_count,
             ],
