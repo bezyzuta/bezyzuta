@@ -30,20 +30,29 @@ def list_music_tracks(folder: str) -> list[str]:
     return [RANDOM_PICK] + tracks
 
 
-# (display label, voice_id)
+# (display label, voice_id) — only current ElevenLabs default voices that ship with every free account.
+# Legacy voices like Adam/Rachel/Domi are not guaranteed available for accounts created after their migration.
 VOICES = [
-    ("Harry — jung, energetisch (Empfohlen für Roblox)", "SOYHLrjzK2X1ezoPC6cr"),
-    ("Josh — jung, tief",                                "TxGEqnHWrfWFTfGW9XjX"),
-    ("Liam — jung, conversational",                      "TX3LPaxmHKxFdv7VOQHJ"),
-    ("Antoni — warm, jung",                              "ErXwobaYiN019PkySvjV"),
-    ("Sam — rau, casual",                                "yoZ06aMxZJJ28mfd3POQ"),
-    ("Charlie — jung, australisch",                      "IKne3meq5aSn9XLyUdCD"),
-    ("Adam — tief, mature",                              "pNInz6obpgDQGcFmaJgB"),
-    ("Brian — tief, narrativ",                           "nPczCjzI2devNBz1zQrb"),
-    ("Daniel — britisch, news",                          "onwK4e9ZLuTAKqWW03F9"),
-    ("Michael — ruhig, sympathisch",                     "flq6f7yk4E4fJM5XTYuZ"),
-    ("Rachel — weiblich, klar",                          "21m00Tcm4TlvDq8ikWAM"),
-    ("Domi — weiblich, stark",                           "AZnzlk1XvdvUeBnXmlld"),
+    # --- Male: young / energetic (fit for Roblox shorts) ---
+    ("Liam — irisch, jung (empfohlen für Roblox)", "TX3LPaxmHKxFdv7VOQHJ"),
+    ("Charlie — australisch, jung",                 "IKne3meq5aSn9XLyUdCD"),
+    ("Will — jung, freundlich",                     "bIHbv24MWmeRgasZH58o"),
+    ("Roger — konfident, mittlere Stimme",          "CwhRBWXzGAHq8TQ4Fs17"),
+    # --- Male: deep / narrator ---
+    ("Brian — tief, narrativ",                      "nPczCjzI2devNBz1zQrb"),
+    ("Daniel — britisch, news",                     "onwK4e9ZLuTAKqWW03F9"),
+    ("George — britisch, warm",                     "JBFqnCBsd6RMkjVDRZzb"),
+    ("Bill — vertrauenswürdig",                     "pqHfZKP75CvOlQylNhV4"),
+    # --- Female: young / energetic ---
+    ("Aria — expressiv, vielseitig",                "9BWtsMINqrJLrRacOk9x"),
+    ("Sarah — jung, sanft",                         "EXAVITQu4vr4xnSDxMaL"),
+    ("Laura — jung, energisch",                     "FGY2WhTYpPnrIDTdsKH5"),
+    ("Jessica — jung, expressiv",                   "cgSgspJ2msm6clMCkdW9"),
+    ("Matilda — freundlich, jung",                  "XrExE9yKIg1WjnnlVkGX"),
+    # --- Female: deeper / mature ---
+    ("Charlotte — schwedisch, mystisch",            "XB0fDUnXU5powFXDhCwa"),
+    ("Alice — britisch, selbstbewusst",             "Xb7hH8MSUJpSbSDYk0k2"),
+    ("Lily — britisch, warm",                       "pFZP5JQG7iQjIQuC4Bku"),
 ]
 
 
