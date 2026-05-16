@@ -642,9 +642,36 @@ def pick_loud_multi_clips(source: Path, total_seconds: float, n_segments: int,
     return _extract_and_concat(source, segments, out_path)
 
 
+def _register_cuda_dlls_windows() -> None:
+    """faster-whisper on Windows can't find cuBLAS/cuDNN DLLs from the
+    pip-installed nvidia-* wheels unless we explicitly add them to the DLL
+    search path. No-op on non-Windows."""
+    if sys.platform != "win32":
+        return
+    try:
+        import importlib.util
+    except Exception:
+        return
+    for pkg in ("nvidia.cublas", "nvidia.cudnn"):
+        try:
+            spec = importlib.util.find_spec(pkg)
+        except Exception:
+            spec = None
+        if not spec or not spec.submodule_search_locations:
+            continue
+        for loc in spec.submodule_search_locations:
+            bin_dir = os.path.join(loc, "bin")
+            if os.path.isdir(bin_dir):
+                try:
+                    os.add_dll_directory(bin_dir)
+                except Exception:
+                    pass
+
+
 def transcribe_words(audio_path: Path, model_name: str, device: str = "auto"):
     """Transcribe to word-level timestamps. device in {"auto","cuda","cpu"}.
     "auto" tries CUDA first and silently falls back to CPU if CUDA isn't available."""
+    _register_cuda_dlls_windows()
     from faster_whisper import WhisperModel
     tried = []
     candidates = []
