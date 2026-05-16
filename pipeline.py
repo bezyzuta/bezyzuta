@@ -765,8 +765,8 @@ def fetch_image_from_cloudflare(prompt: str, out_path: Path, cfg: Config,
 def fetch_image_from_pollinations(prompt: str, out_path: Path,
                                   width: int = 1024, height: int = 1024,
                                   seed: int | None = None,
-                                  retries: int = 2,
-                                  backoff: tuple = (5, 12)) -> Path:
+                                  retries: int = 1,
+                                  backoff: tuple = (5,)) -> Path:
     encoded = urllib.parse.quote(prompt)
     # Try the newer documented endpoint first, fall back to the legacy one
     endpoints = [
@@ -1036,18 +1036,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 step(f"      [{i}/{n_images}] image: {prompt[:80]}")
                 target_path = work / f"image_{i}.png"
                 ok = False
-                pollinations_err: str | None = None
-                try:
-                    fetch_image_from_pollinations(
-                        prompt, target_path, seed=random.randint(1, 1_000_000)
-                    )
-                    image_paths.append(target_path)
-                    ok = True
-                except Exception as e:
-                    pollinations_err = str(e)
+                primary_err: str | None = None
 
-                if not ok and cloudflare_ready:
-                    step("      Pollinations failed, trying Cloudflare Workers AI")
+                if cloudflare_ready:
                     try:
                         fetch_image_from_cloudflare(
                             prompt, target_path, cfg,
@@ -1055,15 +1046,27 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                         )
                         image_paths.append(target_path)
                         ok = True
-                    except Exception as cf_err:
-                        step(f"      Cloudflare also failed: {cf_err}")
+                    except Exception as e:
+                        primary_err = f"Cloudflare: {e}"
+                        step(f"      Cloudflare failed, falling back to Pollinations")
+
+                if not ok:
+                    try:
+                        fetch_image_from_pollinations(
+                            prompt, target_path, seed=random.randint(1, 1_000_000)
+                        )
+                        image_paths.append(target_path)
+                        ok = True
+                    except Exception as e:
+                        poll_err = f"Pollinations: {e}"
+                        primary_err = f"{primary_err}; {poll_err}" if primary_err else poll_err
 
                 if ok:
                     consecutive_failures = 0
                 else:
                     consecutive_failures += 1
-                    err_summary = pollinations_err or "unknown"
-                    step(f"      WARN: image {i} failed: {err_summary[:160]}")
+                    err_summary = primary_err or "unknown"
+                    step(f"      WARN: image {i} failed: {err_summary[:200]}")
                     if consecutive_failures >= 2 and i < n_images:
                         step(
                             f"      image generators seem down, skipping remaining "
