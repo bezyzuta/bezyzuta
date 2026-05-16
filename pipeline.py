@@ -701,8 +701,8 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
 def fetch_image_from_pollinations(prompt: str, out_path: Path,
                                   width: int = 1024, height: int = 1024,
                                   seed: int | None = None,
-                                  retries: int = 3,
-                                  backoff: tuple = (8, 20, 40)) -> Path:
+                                  retries: int = 2,
+                                  backoff: tuple = (5, 12)) -> Path:
     encoded = urllib.parse.quote(prompt)
     # Try the newer documented endpoint first, fall back to the legacy one
     endpoints = [
@@ -721,7 +721,7 @@ def fetch_image_from_pollinations(prompt: str, out_path: Path,
     for attempt in range(retries + 1):
         for url in endpoints:
             try:
-                r = requests.get(url, params=params, timeout=180)
+                r = requests.get(url, params=params, timeout=90)
             except requests.RequestException as e:
                 last_err = f"Pollinations request error: {e}"
                 continue
@@ -734,7 +734,7 @@ def fetch_image_from_pollinations(prompt: str, out_path: Path,
                 msg = err_json.get("message") if isinstance(err_json, dict) else r.text
             except Exception:
                 msg = r.text
-            last_err = f"Pollinations {r.status_code} ({url.split('/p/')[0]}...): {str(msg)[:180]}"
+            last_err = f"Pollinations {r.status_code}: {str(msg)[:160]}"
         if attempt < retries:
             wait = backoff[min(attempt, len(backoff) - 1)]
             print(f"      Pollinations all endpoints failed, retrying in {wait}s")
@@ -966,6 +966,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             else:
                 step(f"      generating {n_images} scene prompts via Gemini")
                 prompts = generate_scene_prompts(script, n_images, cfg)
+            consecutive_failures = 0
             for i, prompt in enumerate(prompts, 1):
                 step(f"      [{i}/{n_images}] image: {prompt[:80]}")
                 try:
@@ -973,8 +974,16 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                         prompt, work / f"image_{i}.png", seed=random.randint(1, 1_000_000)
                     )
                     image_paths.append(p)
+                    consecutive_failures = 0
                 except Exception as e:
-                    step(f"      WARN: image {i} failed, skipping: {e}")
+                    consecutive_failures += 1
+                    step(f"      WARN: image {i} failed: {e}")
+                    if consecutive_failures >= 2 and i < n_images:
+                        step(
+                            f"      Pollinations seems down, skipping remaining "
+                            f"{n_images - i} image(s); pipeline continues without them"
+                        )
+                        break
 
     # Background music: mix AFTER transcription (so captions stay clean)
     audio_for_compose = vo
