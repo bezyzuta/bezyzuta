@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -13,6 +14,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import requests
+
+
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _loads_lenient(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return json.loads(_TRAILING_COMMA_RE.sub(r"\1", text))
 
 
 @dataclass
@@ -33,7 +44,7 @@ class Config:
 
     @classmethod
     def load(cls, path: Path) -> "Config":
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _loads_lenient(path.read_text(encoding="utf-8"))
         api_key = data.get("elevenlabs_api_key") or os.environ.get("ELEVENLABS_API_KEY", "")
         if not api_key:
             raise SystemExit("elevenlabs_api_key missing in config and ELEVENLABS_API_KEY not set")
@@ -1143,7 +1154,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = Config.load(Path(args.config))
-    jobs = json.loads(Path(args.jobs).read_text(encoding="utf-8"))
+    jobs = _loads_lenient(Path(args.jobs).read_text(encoding="utf-8"))
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     logfile = cfg.output_dir / "logdatei.txt"
 
