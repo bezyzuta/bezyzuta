@@ -294,6 +294,66 @@ def mix_voice_with_music(voice_path: Path, music_path: Path, volume_pct: float,
     return out_path
 
 
+def list_sfx_files(sfx_dir: str) -> list[Path]:
+    if not sfx_dir:
+        return []
+    d = Path(sfx_dir).expanduser()
+    if not d.is_dir():
+        return []
+    return sorted(f for f in d.iterdir() if f.is_file() and f.suffix.lower() in _MUSIC_EXTS)
+
+
+def pick_sfx_track(sfx_dir: str, specific: str = "") -> Path | None:
+    """Pick a specific SFX or a random one from the folder."""
+    if not sfx_dir:
+        return None
+    d = Path(sfx_dir).expanduser()
+    if not d.is_dir():
+        return None
+    if specific:
+        p = Path(specific).expanduser()
+        if not p.is_absolute():
+            p = d / specific
+        if p.is_file():
+            return p
+    tracks = list_sfx_files(sfx_dir)
+    return random.choice(tracks) if tracks else None
+
+
+def mix_voice_with_sfx(voice_path: Path, sfx_events: list, out_path: Path) -> Path:
+    """sfx_events: list of (time_seconds: float, sfx_path: Path, volume_pct: float)."""
+    if not sfx_events:
+        return voice_path
+    cmd = ["ffmpeg", "-y", "-i", str(voice_path)]
+    for _, sfx_path, _ in sfx_events:
+        cmd += ["-i", str(sfx_path)]
+
+    parts = []
+    sfx_labels = []
+    for i, (t, _, vol_pct) in enumerate(sfx_events):
+        vol = max(0.0, min(vol_pct / 100.0, 1.5))
+        delay_ms = max(0, int(t * 1000))
+        parts.append(
+            f"[{i + 1}:a]volume={vol:.3f},adelay={delay_ms}|{delay_ms}[s{i}]"
+        )
+        sfx_labels.append(f"[s{i}]")
+
+    n_total = 1 + len(sfx_events)
+    all_inputs = "[0:a]" + "".join(sfx_labels)
+    parts.append(
+        f"{all_inputs}amix=inputs={n_total}:duration=first:normalize=0:dropout_transition=0[mix]"
+    )
+
+    cmd += [
+        "-filter_complex", ";".join(parts),
+        "-map", "[mix]",
+        "-c:a", "libmp3lame", "-q:a", "4",
+        str(out_path),
+    ]
+    run(cmd)
+    return out_path
+
+
 def probe_duration(media: Path) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -890,6 +950,26 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     # Background music: mix AFTER transcription (so captions stay clean)
     audio_for_compose = vo
     using_bgm = False
+
+    # SFX layer first — hit on each image pop-in
+    sfx_dir = (job.get("sfx_dir") or "").strip()
+    sfx_pct = float(job.get("sfx_volume_pct", 0.0))
+    sfx_track = (job.get("sfx_track") or "").strip()
+    if sfx_dir and sfx_pct > 0 and image_paths:
+        schedule = _image_schedule(len(image_paths), target, image_duration)
+        events = []
+        for start, _end in schedule:
+            picked = pick_sfx_track(sfx_dir, sfx_track)
+            if picked is not None:
+                events.append((float(start), picked, sfx_pct))
+        if events:
+            step(f"      adding {len(events)} SFX hits @ {sfx_pct:.0f}%")
+            audio_for_compose = mix_voice_with_sfx(
+                audio_for_compose, events, work / "voice_with_sfx.mp3"
+            )
+        else:
+            step(f"      WARN: no SFX files found in {sfx_dir!r}, skipping")
+
     music_dir = (job.get("music_dir") or "").strip()
     music_pct = float(job.get("music_volume_pct", 0.0))
     music_track = (job.get("music_track") or "").strip()
@@ -900,7 +980,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         else:
             step(f"      mixing background music: {track.name} @ {music_pct:.0f}% (gameplay-audio muted)")
             audio_for_compose = mix_voice_with_music(
-                vo, track, music_pct, work / "audio_final.mp3"
+                audio_for_compose, track, music_pct, work / "audio_final.mp3"
             )
             using_bgm = True
 

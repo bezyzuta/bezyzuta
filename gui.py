@@ -77,6 +77,9 @@ def generate(
     music_dir: str,
     music_track: str,
     music_volume_pct: int,
+    sfx_dir: str,
+    sfx_track: str,
+    sfx_volume_pct: int,
     image_count: int,
     image_duration: float,
     custom_image_prompts: str,
@@ -119,6 +122,9 @@ def generate(
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
             "music_track": "" if not music_track or music_track == RANDOM_PICK else str(music_track),
+            "sfx_dir": str(sfx_dir or ""),
+            "sfx_volume_pct": float(sfx_volume_pct),
+            "sfx_track": "" if not sfx_track or sfx_track == RANDOM_PICK else str(sfx_track),
         }
         if custom_script.strip():
             job["script"] = custom_script.strip()
@@ -272,6 +278,24 @@ def build_app() -> gr.Blocks:
                 0, 30, value=10, step=1,
                 label="Hintergrundmusik Lautstärke (%)",
             )
+            sfx_dir = gr.Textbox(
+                value=r"C:\Users\bezy\Desktop\sfx",
+                label="Sound-Effects-Ordner",
+                info="MP3/WAV-Dateien (Whoosh, Ding, Boom etc.) — werden bei jedem Bild-Pop-In abgespielt.",
+            )
+            with gr.Row():
+                sfx_track = gr.Dropdown(
+                    choices=list_music_tracks(r"C:\Users\bezy\Desktop\sfx"),
+                    value=RANDOM_PICK,
+                    label="SFX-Datei",
+                    info="Zufällig pickt pro Bild eine andere Datei aus dem Ordner",
+                    scale=4,
+                )
+                sfx_refresh = gr.Button("🔄", scale=1)
+            sfx_volume_pct = gr.Slider(
+                0, 100, value=40, step=1,
+                label="SFX Lautstärke (%)",
+            )
 
         with gr.Group():
             gr.Markdown("### 🖼️ Bild-Overlays")
@@ -346,6 +370,8 @@ def build_app() -> gr.Blocks:
 
         music_dir.change(_refresh_tracks, inputs=[music_dir], outputs=[music_track])
         music_refresh.click(_refresh_tracks, inputs=[music_dir], outputs=[music_track])
+        sfx_dir.change(_refresh_tracks, inputs=[sfx_dir], outputs=[sfx_track])
+        sfx_refresh.click(_refresh_tracks, inputs=[sfx_dir], outputs=[sfx_track])
 
         generate_btn.click(
             generate,
@@ -353,6 +379,7 @@ def build_app() -> gr.Blocks:
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, smart_picking, voice_id, music_dir, music_track, music_volume_pct,
+                sfx_dir, sfx_track, sfx_volume_pct,
                 image_count, image_duration, custom_image_prompts,
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
