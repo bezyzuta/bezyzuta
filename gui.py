@@ -72,6 +72,7 @@ def generate(
     custom_script: str,
     target_duration: float,
     clip_segments: int,
+    smart_picking: bool,
     voice_id: str,
     music_dir: str,
     music_track: str,
@@ -107,6 +108,7 @@ def generate(
             "topic": topic,
             "target_duration": float(target_duration),
             "clip_segments": int(clip_segments),
+            "smart_picking": bool(smart_picking),
             "image_count": int(image_count),
             "image_duration": float(image_duration),
             "no_image": bool(skip_images),
@@ -242,6 +244,11 @@ def build_app() -> gr.Blocks:
                 label="Anzahl Szenen-Cuts (1 = ein Stück, mehr = Highlight-Reel)",
                 info="z.B. 6 Cuts in einem 30s Video = je 5s aus verschiedenen Teilen des Source-Videos",
             )
+            smart_picking = gr.Checkbox(
+                value=False,
+                label="🔊 Smart Scene-Picking (laute Stellen finden)",
+                info="Analysiert die Audio-Lautstärke und schneidet rund um die Peaks (~+10s Analyse pro Video)",
+            )
             voice_id = gr.Dropdown(
                 choices=VOICES,
                 value=VOICES[0][1],
@@ -345,7 +352,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, voice_id, music_dir, music_track, music_volume_pct,
+                clip_segments, smart_picking, voice_id, music_dir, music_track, music_volume_pct,
                 image_count, image_duration, custom_image_prompts,
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,

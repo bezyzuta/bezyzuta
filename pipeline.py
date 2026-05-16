@@ -346,6 +346,12 @@ def pick_multi_clips(source: Path, total_seconds: float, n_segments: int,
         s = random.uniform(b_start, latest) if latest > b_start else b_start
         segments.append((s, seg_dur))
 
+    return _extract_and_concat(source, segments, out_path)
+
+
+def _extract_and_concat(source: Path, segments: list[tuple[float, float]],
+                        out_path: Path) -> Path:
+    """Cut each (start, dur) segment from source, re-encode with matching params, concat."""
     work_dir = out_path.parent
     seg_paths = []
     for i, (s, d) in enumerate(segments):
@@ -372,6 +378,126 @@ def pick_multi_clips(source: Path, total_seconds: float, n_segments: int,
         str(out_path),
     ], cwd=str(work_dir))
     return out_path
+
+
+def analyze_loudness(source: Path, work_dir: Path,
+                     window_seconds: float = 1.0) -> list[tuple[float, float]]:
+    """Return [(time, rms_db), ...] for each window of audio in the source."""
+    out_file = work_dir / "loudness.txt"
+    sample_rate = 48000
+    chunk_samples = int(sample_rate * window_seconds)
+    try:
+        run([
+            "ffmpeg", "-y", "-i", str(source),
+            "-vn",
+            "-af",
+            f"aresample={sample_rate},"
+            f"asetnsamples=n={chunk_samples}:p=0,"
+            f"astats=metadata=1:reset=1,"
+            f"ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:"
+            f"file={out_file.as_posix()}",
+            "-f", "null", "-",
+        ])
+    except subprocess.CalledProcessError:
+        return []
+    if not out_file.exists():
+        return []
+    samples = []
+    current_time = None
+    for line in out_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if line.startswith("frame:"):
+            for tok in line.split():
+                if tok.startswith("pts_time:"):
+                    try:
+                        current_time = float(tok.split(":", 1)[1])
+                    except ValueError:
+                        current_time = None
+        elif "RMS_level" in line and "=" in line:
+            val = line.split("=", 1)[1].strip()
+            if val in ("-inf", "nan", "inf", ""):
+                current_time = None
+                continue
+            try:
+                rms = float(val)
+                if current_time is not None:
+                    samples.append((current_time, rms))
+            except ValueError:
+                pass
+            current_time = None
+    return samples
+
+
+def pick_loud_clip(source: Path, target_seconds: float, out_path: Path,
+                   work_dir: Path | None = None) -> Path:
+    """Pick a single window centered on the loudest sub-window."""
+    wd = work_dir or out_path.parent
+    samples = analyze_loudness(source, wd)
+    total = probe_duration(source)
+    margin = 5.0
+    if not samples or total <= target_seconds + 2 * margin:
+        return pick_clip(source, target_seconds, out_path)
+    eligible = [
+        (t, r) for t, r in samples
+        if margin + target_seconds / 2 <= t <= total - margin - target_seconds / 2
+    ]
+    if not eligible:
+        return pick_clip(source, target_seconds, out_path)
+    peak_t, _ = max(eligible, key=lambda x: x[1])
+    start = max(margin, peak_t - target_seconds * 0.4)  # peak ~40% in
+    start = min(start, total - target_seconds - margin)
+    run([
+        "ffmpeg", "-y",
+        "-ss", f"{start:.2f}", "-i", str(source),
+        "-t", f"{target_seconds:.2f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-b:a", "160k",
+        str(out_path),
+    ])
+    return out_path
+
+
+def pick_loud_multi_clips(source: Path, total_seconds: float, n_segments: int,
+                          out_path: Path) -> Path:
+    """Pick top-N loud peaks with min separation, sort by time, extract + concat."""
+    if n_segments <= 1:
+        return pick_loud_clip(source, total_seconds, out_path)
+
+    work_dir = out_path.parent
+    samples = analyze_loudness(source, work_dir)
+    total = probe_duration(source)
+    margin = 5.0
+    seg_dur = total_seconds / n_segments
+
+    if not samples or total <= n_segments * seg_dur * 1.3:
+        return pick_multi_clips(source, total_seconds, n_segments, out_path)
+
+    # pre-roll: start each cut a bit before the peak so the build-up is visible
+    pre_roll = min(seg_dur * 0.4, 2.0)
+    min_gap = seg_dur + 2.0  # gap between cut starts so no overlap
+
+    eligible = [
+        (t, r) for t, r in samples
+        if margin + pre_roll <= t and t + (seg_dur - pre_roll) <= total - margin
+    ]
+    if not eligible:
+        return pick_multi_clips(source, total_seconds, n_segments, out_path)
+
+    eligible.sort(key=lambda x: x[1], reverse=True)
+    picked: list[float] = []
+    for t, _ in eligible:
+        start = t - pre_roll
+        if all(abs(start - p) >= min_gap for p in picked):
+            picked.append(start)
+            if len(picked) >= n_segments:
+                break
+
+    if len(picked) < n_segments:
+        return pick_multi_clips(source, total_seconds, n_segments, out_path)
+
+    picked.sort()
+    segments = [(s, seg_dur) for s in picked]
+    return _extract_and_concat(source, segments, out_path)
 
 
 def transcribe_words(audio_path: Path, model_name: str):
@@ -697,12 +823,21 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s (target {target_duration:.0f}s)")
 
     clip_segments = max(1, min(int(job.get("clip_segments", 1)), 8))
+    smart_picking = bool(job.get("smart_picking", False))
     if clip_segments > 1:
-        step(f"[3/5] pick {clip_segments} gameplay scenes (~{target / clip_segments:.1f}s each, stitched)")
-        clip = pick_multi_clips(raw, target, clip_segments, work / "clip.mp4")
+        if smart_picking:
+            step(f"[3/5] smart pick {clip_segments} loudest scenes (~{target / clip_segments:.1f}s each)")
+            clip = pick_loud_multi_clips(raw, target, clip_segments, work / "clip.mp4")
+        else:
+            step(f"[3/5] pick {clip_segments} gameplay scenes (~{target / clip_segments:.1f}s each, stitched)")
+            clip = pick_multi_clips(raw, target, clip_segments, work / "clip.mp4")
     else:
-        step("[3/5] pick gameplay segment")
-        clip = pick_clip(raw, target, work / "clip.mp4")
+        if smart_picking:
+            step("[3/5] smart pick: loudest window of gameplay")
+            clip = pick_loud_clip(raw, target, work / "clip.mp4", work_dir=work)
+        else:
+            step("[3/5] pick gameplay segment")
+            clip = pick_clip(raw, target, work / "clip.mp4")
 
     step("[4/5] transcribe + captions (CPU, kann ~30s dauern)")
     words = transcribe_words(vo, cfg.whisper_model)
