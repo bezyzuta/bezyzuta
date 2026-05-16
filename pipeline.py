@@ -700,17 +700,46 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
 
 def fetch_image_from_pollinations(prompt: str, out_path: Path,
                                   width: int = 1024, height: int = 1024,
-                                  seed: int | None = None) -> Path:
+                                  seed: int | None = None,
+                                  retries: int = 3,
+                                  backoff: tuple = (8, 20, 40)) -> Path:
     encoded = urllib.parse.quote(prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded}"
-    params = {"width": width, "height": height, "nologo": "true", "private": "true"}
+    # Try the newer documented endpoint first, fall back to the legacy one
+    endpoints = [
+        f"https://pollinations.ai/p/{encoded}",
+        f"https://image.pollinations.ai/prompt/{encoded}",
+    ]
+    params = {
+        "width": width, "height": height,
+        "nologo": "true", "private": "true",
+        "model": "flux",
+    }
     if seed is not None:
         params["seed"] = seed
-    r = requests.get(url, params=params, timeout=180)
-    if r.status_code >= 400 or not r.content:
-        raise RuntimeError(f"Pollinations {r.status_code}: {r.text[:200]}")
-    out_path.write_bytes(r.content)
-    return out_path
+
+    last_err = None
+    for attempt in range(retries + 1):
+        for url in endpoints:
+            try:
+                r = requests.get(url, params=params, timeout=180)
+            except requests.RequestException as e:
+                last_err = f"Pollinations request error: {e}"
+                continue
+            ctype = (r.headers.get("content-type") or "").lower()
+            if r.status_code < 400 and r.content and "image" in ctype:
+                out_path.write_bytes(r.content)
+                return out_path
+            try:
+                err_json = r.json().get("error") or {}
+                msg = err_json.get("message") if isinstance(err_json, dict) else r.text
+            except Exception:
+                msg = r.text
+            last_err = f"Pollinations {r.status_code} ({url.split('/p/')[0]}...): {str(msg)[:180]}"
+        if attempt < retries:
+            wait = backoff[min(attempt, len(backoff) - 1)]
+            print(f"      Pollinations all endpoints failed, retrying in {wait}s")
+            time.sleep(wait)
+    raise RuntimeError(last_err or "Pollinations failed (unknown)")
 
 
 def _image_schedule(n: int, duration: float, image_dur: float,
