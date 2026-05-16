@@ -190,6 +190,19 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     return out_path
 
 
+def trim_leading_silence(in_path: Path, out_path: Path,
+                         threshold_db: float = -45.0,
+                         keep_seconds: float = 0.05) -> Path:
+    """Strip ElevenLabs' leading dead air so the voiceover starts at t~=0."""
+    run([
+        "ffmpeg", "-y", "-i", str(in_path),
+        "-af", f"silenceremove=start_periods=1:start_silence={keep_seconds}:start_threshold={threshold_db}dB",
+        "-c:a", "libmp3lame", "-q:a", "4",
+        str(out_path),
+    ])
+    return out_path
+
+
 def probe_duration(media: Path) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -498,7 +511,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         step(f"      script: {preview}...")
 
     step("[2/5] voiceover")
-    vo = synthesize_voiceover(script, cfg, work / "voice.mp3")
+    vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
+    vo = trim_leading_silence(vo_raw, work / "voice.mp3")
 
     vo_dur = probe_duration(vo)
     target = min(max(vo_dur + 0.6, 22.0), 45.0)

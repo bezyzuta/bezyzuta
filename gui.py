@@ -225,9 +225,11 @@ def build_app() -> gr.Blocks:
 
 if __name__ == "__main__":
     app = build_app()
+    # Gradio 6 sandboxes file delivery; let it serve videos from the user's home
+    allowed = [str(Path.home())]
     try:
         app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True,
-                   theme=gr.themes.Soft())
+                   theme=gr.themes.Soft(), allowed_paths=allowed)
     except TypeError:
-        # Older Gradio (<6) doesn't accept theme on launch
-        app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
+        app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True,
+                   allowed_paths=allowed)
