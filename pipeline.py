@@ -694,16 +694,6 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     work = source.parent
     work.mkdir(parents=True, exist_ok=True)
     sample_times = [src_dur * (i + 0.5) / n_samples for i in range(n_samples)]
-
-    model = "@cf/meta/llama-3.2-11b-vision-instruct"
-    url = (
-        f"https://api.cloudflare.com/client/v4/accounts/"
-        f"{cfg.cloudflare_account_id}/ai/run/{model}"
-    )
-    headers = {
-        "Authorization": f"Bearer {cfg.cloudflare_api_token}",
-        "Content-Type": "application/json",
-    }
     prompt = (
         "Look at this video frame. Where is the main subject (people, faces, "
         "main action) located horizontally in the image? Respond with ONLY "
@@ -712,35 +702,28 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     )
     num_re = re.compile(r"\d+")
     positions: list[float] = []
+    first_err = ""
     for i, t in enumerate(sample_times):
         thumb = work / f"reframe_sample_{i}.jpg"
         if not _extract_thumbnail(source, t, thumb, width=480):
             continue
-        try:
-            body = {
-                "image": list(thumb.read_bytes()),
-                "prompt": prompt,
-                "max_tokens": 8,
-                "temperature": 0.1,
-            }
-            r = requests.post(url, headers=headers, json=body, timeout=60)
-            if r.status_code >= 400:
-                continue
-            data = r.json()
-            if not data.get("success"):
-                continue
-            result = data.get("result") or {}
-            text = (result.get("response") or result.get("description") or "").strip()
-            m = num_re.search(text)
-            if not m:
-                continue
-            val = float(m.group(0))
-            if 0 <= val <= 100:
-                positions.append(val)
-        except Exception:
+        text, err = _cloudflare_vision_score(thumb, prompt, cfg)
+        if err:
+            if not first_err:
+                first_err = err
             continue
+        m = num_re.search(text)
+        if not m:
+            if not first_err:
+                first_err = f"unparseable: {text!r}"
+            continue
+        val = float(m.group(0))
+        if 0 <= val <= 100:
+            positions.append(val)
 
     if not positions:
+        if first_err:
+            log(f"      auto-reframe: cloudflare error: {first_err[:200]}")
         log("      auto-reframe: no usable responses, using centered crop")
         return 0.5
 
@@ -753,12 +736,11 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     return max(0.0, min(1.0, avg / 100.0))
 
 
-def _cloudflare_pick_thumbnails(thumb_paths: list, n_pick: int, cfg) -> list:
-    """Score each thumbnail via Cloudflare Llama 3.2 Vision (free tier) and
-    return the top n_pick indices sorted by score. Sequential, ~1-2s/image.
-    Raises only if every call fails."""
-    if not cfg.cloudflare_account_id or not cfg.cloudflare_api_token:
-        raise RuntimeError("cloudflare credentials missing")
+def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
+    """Send one image to Cloudflare Llama 3.2 Vision and return (text, err).
+    Uses the OpenAI-style messages format with base64 data URL (most reliable
+    across Cloudflare Workers AI versions)."""
+    import base64
     model = "@cf/meta/llama-3.2-11b-vision-instruct"
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/"
@@ -768,6 +750,53 @@ def _cloudflare_pick_thumbnails(thumb_paths: list, n_pick: int, cfg) -> list:
         "Authorization": f"Bearer {cfg.cloudflare_api_token}",
         "Content-Type": "application/json",
     }
+    b64 = base64.b64encode(thumb_path.read_bytes()).decode("ascii")
+    body = {
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]},
+        ],
+        "max_tokens": 16,
+        "temperature": 0.1,
+    }
+    try:
+        r = requests.post(url, headers=headers, json=body, timeout=60)
+    except Exception as e:
+        return ("", f"request error: {e}")
+    if r.status_code >= 400:
+        return ("", f"HTTP {r.status_code}: {r.text[:240]}")
+    try:
+        data = r.json()
+    except Exception:
+        return ("", f"non-json response: {r.text[:240]}")
+    if not data.get("success", True):
+        return ("", f"api error: {str(data.get('errors'))[:240]}")
+    result = data.get("result") or {}
+    # Possible response shapes across versions
+    if isinstance(result, dict):
+        text = (
+            result.get("response")
+            or result.get("description")
+            or ""
+        )
+        # OpenAI-style choices array
+        choices = result.get("choices")
+        if not text and isinstance(choices, list) and choices:
+            msg = (choices[0] or {}).get("message") or {}
+            text = msg.get("content") or ""
+    else:
+        text = ""
+    return (str(text).strip(), "")
+
+
+def _cloudflare_pick_thumbnails(thumb_paths: list, n_pick: int, cfg,
+                                on_step=None) -> list:
+    """Score each thumbnail via Cloudflare Llama 3.2 Vision (free tier) and
+    return the top n_pick indices sorted by score. Sequential, ~1-2s/image."""
+    if not cfg.cloudflare_account_id or not cfg.cloudflare_api_token:
+        raise RuntimeError("cloudflare credentials missing")
     prompt = (
         "Rate this gaming video frame's action level on a scale of 1 to 10. "
         "10 = exciting moment (combat, fall, explosion, chase, big motion, "
@@ -778,40 +807,33 @@ def _cloudflare_pick_thumbnails(thumb_paths: list, n_pick: int, cfg) -> list:
     num_re = re.compile(r"\d+(?:\.\d+)?")
     scores: list = []
     failures = 0
+    first_err = ""
     for i, p in enumerate(thumb_paths):
-        try:
-            img_bytes = list(p.read_bytes())
-            body = {
-                "image": img_bytes,
-                "prompt": prompt,
-                "max_tokens": 8,
-                "temperature": 0.1,
-            }
-            r = requests.post(url, headers=headers, json=body, timeout=60)
-            if r.status_code >= 400:
-                failures += 1
-                scores.append((i, -1.0))
-                continue
-            data = r.json()
-            if not data.get("success"):
-                failures += 1
-                scores.append((i, -1.0))
-                continue
-            result = data.get("result") or {}
-            text = (result.get("response") or result.get("description") or "").strip()
-            m = num_re.search(text)
-            if not m:
-                failures += 1
-                scores.append((i, -1.0))
-                continue
-            score = max(0.0, min(10.0, float(m.group(0))))
-            scores.append((i, score))
-        except Exception:
+        text, err = _cloudflare_vision_score(p, prompt, cfg)
+        if err:
             failures += 1
+            if not first_err:
+                first_err = err
             scores.append((i, -1.0))
+            continue
+        m = num_re.search(text)
+        if not m:
+            failures += 1
+            if not first_err:
+                first_err = f"unparseable response: {text!r}"
+            scores.append((i, -1.0))
+            continue
+        score = max(0.0, min(10.0, float(m.group(0))))
+        scores.append((i, score))
     if failures >= len(thumb_paths):
-        raise RuntimeError(f"all {failures} Cloudflare vision calls failed")
-    # Sort highest score first; index breaks ties (earlier sample wins)
+        raise RuntimeError(
+            f"all {failures} Cloudflare vision calls failed. First error: {first_err}"
+        )
+    if failures and on_step:
+        try:
+            on_step(f"      AI pick: {failures}/{len(thumb_paths)} cloudflare calls failed: {first_err[:160]}")
+        except Exception:
+            pass
     scores.sort(key=lambda s: (-s[1], s[0]))
     return [i for i, sc in scores[:n_pick] if sc >= 0]
 
@@ -932,9 +954,9 @@ def pick_ai_scenes(source: Path, total_seconds: float, n_segments: int,
     if cf_ready:
         log(f"      AI pick: scoring {len(thumbs)} scenes via Cloudflare Llama Vision (free)")
         try:
-            picks = _cloudflare_pick_thumbnails(thumb_files, n_segments, cfg)
+            picks = _cloudflare_pick_thumbnails(thumb_files, n_segments, cfg, on_step=log)
         except Exception as e:
-            log(f"      AI pick: Cloudflare failed ({str(e)[:160]})")
+            log(f"      AI pick: Cloudflare failed: {str(e)[:240]}")
             picks = []
     if not picks:
         log(f"      AI pick: trying Gemini Vision for {len(thumbs)} scenes")
