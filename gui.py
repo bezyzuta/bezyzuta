@@ -104,6 +104,7 @@ def generate(
     caption_font_size: int,
     hook_text: str,
     hook_duration: float,
+    whisper_device: str,
     batch_count: int,
 ):
     log = ""
@@ -137,6 +138,7 @@ def generate(
             "caption_stroke_color": str(caption_stroke_color or "#000000"),
             "hook_text": str(hook_text or "").strip(),
             "hook_duration": float(hook_duration),
+            "whisper_device": str(whisper_device or "auto"),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
             "music_track": "" if not music_track or music_track == RANDOM_PICK else str(music_track),
@@ -394,6 +396,17 @@ def build_app() -> gr.Blocks:
                 label="Schriftgröße",
             )
 
+        # ───────────── Performance ─────────────
+        with gr.Accordion("⚡ Performance", open=False):
+            whisper_device = gr.Radio(
+                choices=[("Auto (GPU bevorzugt, fallback CPU)", "auto"),
+                         ("GPU forcieren (NVIDIA CUDA)", "cuda"),
+                         ("CPU forcieren (langsamer aber kompatibel)", "cpu")],
+                value="auto",
+                label="Whisper-Transkription auf",
+                info="Mit RTX-Karte: 5-10x schneller als CPU. Erstmaliger GPU-Start lädt CUDA-Libs (~3s extra).",
+            )
+
         # ───────────── Batch ─────────────
         with gr.Accordion("🔁 Batch", open=False):
             batch_count = gr.Slider(1, 10, value=1, step=1, label="Anzahl Shorts hintereinander")
@@ -443,6 +456,7 @@ def build_app() -> gr.Blocks:
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 hook_text, hook_duration,
+                whisper_device,
                 batch_count,
             ],
             outputs=[status_log, video_out],

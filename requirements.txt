@@ -2,3 +2,6 @@ requests>=2.31
 yt-dlp>=2024.5.27
 faster-whisper>=1.0.3
 gradio>=4.40
+# CUDA runtime libs for faster-whisper GPU mode (no-op on AMD/Intel/CPU-only)
+nvidia-cublas-cu12; platform_system != "Darwin"
+nvidia-cudnn-cu12<10; platform_system != "Darwin"

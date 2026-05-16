@@ -642,15 +642,33 @@ def pick_loud_multi_clips(source: Path, total_seconds: float, n_segments: int,
     return _extract_and_concat(source, segments, out_path)
 
 
-def transcribe_words(audio_path: Path, model_name: str):
+def transcribe_words(audio_path: Path, model_name: str, device: str = "auto"):
+    """Transcribe to word-level timestamps. device in {"auto","cuda","cpu"}.
+    "auto" tries CUDA first and silently falls back to CPU if CUDA isn't available."""
     from faster_whisper import WhisperModel
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(str(audio_path), word_timestamps=True)
-    words = []
-    for seg in segments:
-        for w in seg.words or []:
-            words.append((float(w.start), float(w.end), w.word.strip()))
-    return words
+    tried = []
+    candidates = []
+    if device == "cuda":
+        candidates = [("cuda", "float16")]
+    elif device == "cpu":
+        candidates = [("cpu", "int8")]
+    else:  # auto
+        candidates = [("cuda", "float16"), ("cpu", "int8")]
+    last_err = None
+    for dev, ct in candidates:
+        try:
+            model = WhisperModel(model_name, device=dev, compute_type=ct)
+            segments, _ = model.transcribe(str(audio_path), word_timestamps=True)
+            words = []
+            for seg in segments:
+                for w in seg.words or []:
+                    words.append((float(w.start), float(w.end), w.word.strip()))
+            return words, dev
+        except Exception as e:
+            tried.append(dev)
+            last_err = e
+            continue
+    raise RuntimeError(f"faster-whisper failed on {tried}: {last_err}")
 
 
 def _ass_time(t: float) -> str:
@@ -1138,8 +1156,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             step("[3/5] pick gameplay segment")
             clip = pick_clip(raw, target, work / "clip.mp4")
 
-    step("[4/5] transcribe + captions (CPU, kann ~30s dauern)")
-    words = transcribe_words(vo, cfg.whisper_model)
+    whisper_device = str(job.get("whisper_device", "auto"))
+    step(f"[4/5] transcribe + captions (device={whisper_device})")
+    words, used_dev = transcribe_words(vo, cfg.whisper_model, device=whisper_device)
+    step(f"      whisper ran on {used_dev}")
     ass = write_ass(
         words, cfg.target_w, cfg.target_h, work / "captions.ass",
         font_name=str(job.get("caption_font", "Impact")),
