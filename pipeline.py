@@ -300,7 +300,10 @@ def pick_music_track(music_dir: str, specific: str = "") -> Path | None:
 def mix_voice_with_music(voice_path: Path, music_path: Path, volume_pct: float,
                          out_path: Path) -> Path:
     """Loop music under voice at given volume (%). Output ends with the voice."""
-    vol = max(0.0, min(volume_pct / 100.0, 1.0))
+    pct = max(0.0, min(volume_pct, 100.0)) / 100.0
+    # Quadratic taper: matches perceived loudness so low slider values are actually quiet.
+    # e.g. 3% -> 0.0009 (~-60dB), 10% -> 0.01 (~-40dB), 30% -> 0.09 (~-21dB).
+    vol = pct * pct
     run([
         "ffmpeg", "-y",
         "-i", str(voice_path),

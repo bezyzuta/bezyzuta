@@ -201,69 +201,69 @@ def generate(
 
 
 def build_app() -> gr.Blocks:
-    with gr.Blocks(title="Roblox Shorts Generator") as app:
-        gr.Markdown("# 🎬 Roblox Shorts Generator")
-        gr.Markdown("Automatischer Pipeline-Lauf: YouTube-Download → Gemini-Skript → "
-                    "ElevenLabs Voiceover → Pollinations Bilder → 9:16 Schnitt mit Untertiteln.")
+    with gr.Blocks(title="Bezys Shorts Generator") as app:
+        gr.Markdown("# 🎬 Bezys Shorts Generator")
+        gr.Markdown("Automatischer Pipeline-Lauf: YouTube-Download → Gemini/Llama-Skript → "
+                    "ElevenLabs Voiceover → Cloudflare/Pollinations Bilder → 9:16 Schnitt mit Untertiteln.")
 
         with gr.Accordion("⚙️ Config-Datei", open=False):
             config_path = gr.Textbox(value="config.json", label="Pfad zur config.json")
 
-        with gr.Group():
-            gr.Markdown("### 📺 Video-Quelle")
+        # ───────────── Video-Quelle ─────────────
+        with gr.Accordion("📺 Video-Quelle", open=True):
             source_mode = gr.Radio(
                 ["Kanal scrapen", "Direkt-URL"],
                 value="Kanal scrapen",
                 label="Modus",
             )
-            channel_url = gr.Textbox(
-                value="https://www.youtube.com/@DopeGameplays/videos",
-                label="YouTube-Kanal-URL",
-                visible=True,
-            )
-            title_filter = gr.Textbox(
-                value="roblox, doors, blox fruits, brookhaven, tower of hell, obby, blox, evade, adopt me, jailbreak, bedwars, piggy",
-                label="Titel-Filter (Stichwörter, kommagetrennt — mindestens eines muss matchen)",
-                visible=True,
-            )
-            channel_scan_limit = gr.Slider(
-                30, 500, value=200, step=10,
-                label="Channel-Tiefe (wie viele letzte Videos im Pool)",
-                visible=True,
-            )
-            source_url = gr.Textbox(
-                value="",
-                label="YouTube-Video-URL",
-                placeholder="https://www.youtube.com/watch?v=...",
-                visible=False,
-            )
+            with gr.Group() as channel_group:
+                channel_url = gr.Textbox(
+                    value="https://www.youtube.com/@DopeGameplays/videos",
+                    label="YouTube-Kanal-URL",
+                )
+                title_filter = gr.Textbox(
+                    value="roblox, doors, blox fruits, brookhaven, tower of hell, obby, blox, evade, adopt me, jailbreak, bedwars, piggy",
+                    label="Titel-Filter (Stichwörter, kommagetrennt — mindestens eines muss matchen)",
+                )
+                channel_scan_limit = gr.Slider(
+                    30, 500, value=200, step=10,
+                    label="Channel-Tiefe (wie viele letzte Videos im Pool)",
+                )
+            with gr.Group(visible=False) as url_group:
+                source_url = gr.Textbox(
+                    value="",
+                    label="YouTube-Video-URL",
+                    placeholder="https://www.youtube.com/watch?v=...",
+                    interactive=True,
+                )
 
-        with gr.Group():
-            gr.Markdown("### 🎤 Skript & Stimme")
+        # ───────────── Skript & Stimme ─────────────
+        with gr.Accordion("🎤 Skript & Stimme", open=True):
             topic = gr.Textbox(
-                value="Krasser Roblox Moment, totaler Wahnsinn",
+                value="Krasser Moment, totaler Wahnsinn",
                 label="Skript-Thema",
                 lines=2,
-                info="Gemini schreibt daraus das Skript zur Ziel-Länge",
+                info="Gemini/Llama schreibt daraus das Skript zur Ziel-Länge",
             )
             custom_script = gr.Textbox(
                 value="",
                 label="Eigenes Skript (optional, überschreibt Thema)",
                 lines=5,
-                placeholder="Wenn ausgefüllt, wird das hier 1:1 als Sprechertext genommen — kein Gemini-Call.",
+                placeholder="Wenn ausgefüllt, wird das hier 1:1 als Sprechertext genommen — kein LLM-Call.",
             )
-            target_duration = gr.Slider(
-                15, 120, value=30, step=1,
-                label="Ziel-Länge des Shorts (Sekunden)",
-            )
-            clip_segments = gr.Slider(
-                1, 8, value=1, step=1,
-                label="Anzahl Szenen-Cuts (1 = ein Stück, mehr = Highlight-Reel)",
-                info="z.B. 6 Cuts in einem 30s Video = je 5s aus verschiedenen Teilen des Source-Videos",
-            )
+            with gr.Row():
+                target_duration = gr.Slider(
+                    15, 120, value=30, step=1,
+                    label="Ziel-Länge (Sekunden)",
+                )
+                clip_segments = gr.Slider(
+                    1, 24, value=1, step=1,
+                    label="Anzahl Szenen-Cuts",
+                    info="1 = ein Stück, mehr = Highlight-Reel",
+                )
             smart_picking = gr.Checkbox(
                 value=False,
-                label="🔊 Smart Scene-Picking (laute Stellen finden)",
+                label="🔊 Smart Scene-Picking (laute Stellen im Source-Video finden)",
                 info="Analysiert die Audio-Lautstärke und schneidet rund um die Peaks (~+10s Analyse pro Video)",
             )
             voice_id = gr.Dropdown(
@@ -271,45 +271,51 @@ def build_app() -> gr.Blocks:
                 value=VOICES[0][1],
                 label="ElevenLabs Stimme",
             )
-            music_dir = gr.Textbox(
-                value=r"C:\Users\bezy\Desktop\music",
-                label="Hintergrundmusik-Ordner",
-                info="MP3/WAV-Dateien hier rein. Leer oder leerer Ordner = keine Musik.",
-            )
-            with gr.Row():
-                music_track = gr.Dropdown(
-                    choices=list_music_tracks(r"C:\Users\bezy\Desktop\music"),
-                    value=RANDOM_PICK,
-                    label="Track",
-                    info="Wähle eine Datei oder lass auf Zufällig",
-                    scale=4,
-                )
-                music_refresh = gr.Button("🔄", scale=1)
-            music_volume_pct = gr.Slider(
-                0, 30, value=10, step=1,
-                label="Hintergrundmusik Lautstärke (%)",
-            )
-            sfx_dir = gr.Textbox(
-                value=r"C:\Users\bezy\Desktop\sfx",
-                label="Sound-Effects-Ordner",
-                info="MP3/WAV-Dateien (Whoosh, Ding, Boom etc.) — werden bei jedem Bild-Pop-In abgespielt.",
-            )
-            with gr.Row():
-                sfx_track = gr.Dropdown(
-                    choices=list_music_tracks(r"C:\Users\bezy\Desktop\sfx"),
-                    value=RANDOM_PICK,
-                    label="SFX-Datei",
-                    info="Zufällig pickt pro Bild eine andere Datei aus dem Ordner",
-                    scale=4,
-                )
-                sfx_refresh = gr.Button("🔄", scale=1)
-            sfx_volume_pct = gr.Slider(
-                0, 100, value=40, step=1,
-                label="SFX Lautstärke (%)",
-            )
 
-        with gr.Group():
-            gr.Markdown("### 🖼️ Bild-Overlays")
+        # ───────────── Audio (BGM + SFX) ─────────────
+        with gr.Accordion("🎵 Audio (Musik + SFX)", open=False):
+            with gr.Tab("🎶 Hintergrundmusik"):
+                music_dir = gr.Textbox(
+                    value=r"C:\Users\bezy\Desktop\music",
+                    label="Hintergrundmusik-Ordner",
+                    info="MP3/WAV-Dateien hier rein. Leer oder leerer Ordner = keine Musik.",
+                )
+                with gr.Row():
+                    music_track = gr.Dropdown(
+                        choices=list_music_tracks(r"C:\Users\bezy\Desktop\music"),
+                        value=RANDOM_PICK,
+                        label="Track",
+                        info="Wähle eine Datei oder lass auf Zufällig",
+                        scale=4,
+                    )
+                    music_refresh = gr.Button("🔄", scale=1)
+                music_volume_pct = gr.Slider(
+                    0, 30, value=5, step=1,
+                    label="Hintergrundmusik Lautstärke (%)",
+                    info="Quadratisch skaliert — 3% ist quasi unhörbar, 10% sehr leise, 30% deutlich.",
+                )
+            with gr.Tab("💥 Sound-Effects"):
+                sfx_dir = gr.Textbox(
+                    value=r"C:\Users\bezy\Desktop\sfx",
+                    label="Sound-Effects-Ordner",
+                    info="MP3/WAV-Dateien (Whoosh, Ding, Boom etc.) — werden bei jedem Bild-Pop-In abgespielt.",
+                )
+                with gr.Row():
+                    sfx_track = gr.Dropdown(
+                        choices=list_music_tracks(r"C:\Users\bezy\Desktop\sfx"),
+                        value=RANDOM_PICK,
+                        label="SFX-Datei",
+                        info="Zufällig pickt pro Bild eine andere Datei aus dem Ordner",
+                        scale=4,
+                    )
+                    sfx_refresh = gr.Button("🔄", scale=1)
+                sfx_volume_pct = gr.Slider(
+                    0, 100, value=40, step=1,
+                    label="SFX Lautstärke (%)",
+                )
+
+        # ───────────── Bild-Overlays ─────────────
+        with gr.Accordion("🖼️ Bild-Overlays", open=True):
             with gr.Row():
                 image_count = gr.Slider(1, 5, value=3, step=1, label="Anzahl Bilder")
                 image_duration = gr.Slider(0.8, 3.0, value=1.5, step=0.1, label="Bild-Dauer (Sekunden)")
@@ -319,11 +325,11 @@ def build_app() -> gr.Blocks:
                 lines=4,
                 placeholder=(
                     "z.B.\n"
-                    "vertical cartoon, Roblox character mid-jump, neon colors\n"
-                    "vertical cartoon, Roblox monster chase scene, dramatic lighting\n"
+                    "vertical cartoon, character mid-jump, neon colors\n"
+                    "vertical cartoon, monster chase scene, dramatic lighting\n"
                     "vertical cartoon, victory pose, confetti, vibrant colors"
                 ),
-                info="Leer = Gemini erzeugt aus dem Skript. Weniger Zeilen als Bilder = Rest wird auto-generiert.",
+                info="Leer = LLM erzeugt aus dem Skript. Weniger Zeilen als Bilder = Rest wird auto-generiert.",
             )
             uploaded_images = gr.File(
                 file_count="multiple",
@@ -332,6 +338,7 @@ def build_app() -> gr.Blocks:
             )
             skip_images = gr.Checkbox(value=False, label="Bilder komplett überspringen")
 
+        # ───────────── Untertitel ─────────────
         with gr.Accordion("🎨 Untertitel-Einstellungen", open=False):
             caption_font = gr.Dropdown(
                 choices=[
@@ -350,11 +357,11 @@ def build_app() -> gr.Blocks:
                 label="Schriftgröße",
             )
 
-        with gr.Group():
-            gr.Markdown("### 🔁 Batch")
+        # ───────────── Batch ─────────────
+        with gr.Accordion("🔁 Batch", open=False):
             batch_count = gr.Slider(1, 10, value=1, step=1, label="Anzahl Shorts hintereinander")
 
-        generate_btn = gr.Button("🎬 Short generieren", variant="primary")
+        generate_btn = gr.Button("🎬 Short generieren", variant="primary", size="lg")
 
         with gr.Row():
             status_log = gr.Textbox(
@@ -370,15 +377,13 @@ def build_app() -> gr.Blocks:
             is_channel = mode == "Kanal scrapen"
             return (
                 gr.update(visible=is_channel),
-                gr.update(visible=is_channel),
-                gr.update(visible=is_channel),
                 gr.update(visible=not is_channel),
             )
 
         source_mode.change(
             toggle_source,
             inputs=[source_mode],
-            outputs=[channel_url, title_filter, channel_scan_limit, source_url],
+            outputs=[channel_group, url_group],
         )
 
         def _refresh_tracks(folder: str):
