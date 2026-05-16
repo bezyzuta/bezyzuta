@@ -131,7 +131,7 @@ SCRIPT_PROMPT = """Schreibe ein energetisches, jugendliches Skript fuer einen Yo
 Thema: {topic}
 
 Anforderungen:
-- Laenge: 25-35 Sekunden Sprechzeit (ca. 60-80 deutsche Woerter)
+- Laenge: ca. {target_low}-{target_high} Sekunden Sprechzeit (etwa {words_low}-{words_high} deutsche Woerter)
 - Starker Hook am Anfang (z.B. "Bro, schau dir das an!", "Achtung!", "99% der Spieler...")
 - Action-Beschreibung in der Mitte, spannend und mitreissend
 - Call-to-Action am Ende ("Folg fuer mehr...", "Lass ein Like da...")
@@ -185,12 +185,20 @@ def fallback_template_script(topic: str) -> str:
     return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein krasser Roblox Moment")
 
 
-def generate_script_via_gemini(topic: str, cfg: Config) -> str:
+def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0) -> str:
     if not cfg.gemini_api_key:
         raise RuntimeError("topic given but gemini_api_key missing in config (and GEMINI_API_KEY env not set)")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
+    target_low = max(10, int(target_seconds - 3))
+    target_high = int(target_seconds + 3)
+    words_low = int(target_seconds * 2.0)
+    words_high = int(target_seconds * 2.6)
+    prompt_text = SCRIPT_PROMPT.format(
+        topic=topic, target_low=target_low, target_high=target_high,
+        words_low=words_low, words_high=words_high,
+    )
     body = {
-        "contents": [{"parts": [{"text": SCRIPT_PROMPT.format(topic=topic)}]}],
+        "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "temperature": 0.9,
             "maxOutputTokens": 2048,
@@ -543,29 +551,34 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     step(f"[1/5] download: {source_url}")
     raw = download_gameplay(source_url, work / "source")
 
+    target_duration = float(job.get("target_duration", 30.0))
+
     script = (job.get("script") or "").strip()
-    if not script:
+    if script:
+        step(f"      using user-provided script ({len(script)} chars)")
+    else:
         topic = (job.get("topic") or "").strip()
         if not topic:
             raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
-        step(f"      generating script via Gemini for topic: {topic!r}")
+        step(f"      generating script via Gemini for topic: {topic!r} (target {target_duration:.0f}s)")
         try:
-            script = generate_script_via_gemini(topic, cfg)
+            script = generate_script_via_gemini(topic, cfg, target_seconds=target_duration)
         except RuntimeError as e:
             step(f"      WARN: Gemini failed: {e}")
             step(f"      using template fallback script (pipeline continues)")
             script = fallback_template_script(topic)
-        (work / "script.txt").write_text(script, encoding="utf-8")
-        preview = script[:80].replace("\n", " ")
-        step(f"      script: {preview}...")
+    (work / "script.txt").write_text(script, encoding="utf-8")
+    preview = script[:80].replace("\n", " ")
+    step(f"      script: {preview}...")
 
     step("[2/5] voiceover")
     vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
     vo = trim_leading_silence(vo_raw, work / "voice.mp3")
 
     vo_dur = probe_duration(vo)
-    target = min(max(vo_dur + 0.6, 22.0), 45.0)
-    step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s")
+    # bias clip duration toward target_duration but never cut the voiceover
+    target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0, 60.0)
+    step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s (target {target_duration:.0f}s)")
 
     step("[3/5] pick gameplay segment")
     clip = pick_clip(raw, target, work / "clip.mp4")
@@ -590,8 +603,17 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             image_paths = [single]
         else:
             n_images = max(1, min(int(job.get("image_count", 3)), 5))
-            step(f"      generating {n_images} scene prompts via Gemini")
-            prompts = generate_scene_prompts(script, n_images, cfg)
+            user_prompts = [p.strip() for p in (job.get("image_prompts") or []) if p and p.strip()]
+            if user_prompts:
+                step(f"      using {len(user_prompts)} user-provided image prompt(s)")
+                prompts = user_prompts[:n_images]
+                if len(prompts) < n_images:
+                    step(f"      filling remaining {n_images - len(prompts)} prompt(s) via Gemini")
+                    auto = generate_scene_prompts(script, n_images - len(prompts), cfg)
+                    prompts.extend(auto)
+            else:
+                step(f"      generating {n_images} scene prompts via Gemini")
+                prompts = generate_scene_prompts(script, n_images, cfg)
             for i, prompt in enumerate(prompts, 1):
                 step(f"      [{i}/{n_images}] image: {prompt[:80]}")
                 try:

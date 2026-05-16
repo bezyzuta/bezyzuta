@@ -42,9 +42,12 @@ def generate(
     title_filter: str,
     channel_scan_limit: int,
     topic: str,
+    custom_script: str,
+    target_duration: float,
     voice_id: str,
     image_count: int,
     image_duration: float,
+    custom_image_prompts: str,
     skip_images: bool,
     batch_count: int,
 ):
@@ -67,10 +70,16 @@ def generate(
         job = {
             "slug": base_slug,
             "topic": topic,
+            "target_duration": float(target_duration),
             "image_count": int(image_count),
             "image_duration": float(image_duration),
             "no_image": bool(skip_images),
         }
+        if custom_script.strip():
+            job["script"] = custom_script.strip()
+        img_prompts = [p.strip() for p in custom_image_prompts.splitlines() if p.strip()]
+        if img_prompts:
+            job["image_prompts"] = img_prompts
         if source_mode == "Direkt-URL":
             if not source_url.strip():
                 yield log + "\nFEHLER: Direkt-URL ist leer\n", last_video
@@ -173,7 +182,17 @@ def build_app() -> gr.Blocks:
                 value="Krasser Roblox Moment, totaler Wahnsinn",
                 label="Skript-Thema",
                 lines=2,
-                info="Gemini schreibt daraus das 25-35s Skript",
+                info="Gemini schreibt daraus das Skript zur Ziel-Länge",
+            )
+            custom_script = gr.Textbox(
+                value="",
+                label="Eigenes Skript (optional, überschreibt Thema)",
+                lines=5,
+                placeholder="Wenn ausgefüllt, wird das hier 1:1 als Sprechertext genommen — kein Gemini-Call.",
+            )
+            target_duration = gr.Slider(
+                15, 50, value=30, step=1,
+                label="Ziel-Länge des Shorts (Sekunden)",
             )
             voice_id = gr.Dropdown(
                 choices=VOICES,
@@ -186,6 +205,18 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 image_count = gr.Slider(1, 5, value=3, step=1, label="Anzahl Bilder")
                 image_duration = gr.Slider(0.8, 3.0, value=1.5, step=0.1, label="Bild-Dauer (Sekunden)")
+            custom_image_prompts = gr.Textbox(
+                value="",
+                label="Eigene Bild-Prompts (optional, eine Zeile pro Bild)",
+                lines=4,
+                placeholder=(
+                    "z.B.\n"
+                    "vertical cartoon, Roblox character mid-jump, neon colors\n"
+                    "vertical cartoon, Roblox monster chase scene, dramatic lighting\n"
+                    "vertical cartoon, victory pose, confetti, vibrant colors"
+                ),
+                info="Leer = Gemini erzeugt aus dem Skript. Weniger Zeilen als Bilder = Rest wird auto-generiert.",
+            )
             skip_images = gr.Checkbox(value=False, label="Bilder komplett überspringen")
 
         with gr.Group():
@@ -223,7 +254,8 @@ def build_app() -> gr.Blocks:
             generate,
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
-                channel_scan_limit, topic, voice_id, image_count, image_duration,
+                channel_scan_limit, topic, custom_script, target_duration, voice_id,
+                image_count, image_duration, custom_image_prompts,
                 skip_images, batch_count,
             ],
             outputs=[status_log, video_out],
