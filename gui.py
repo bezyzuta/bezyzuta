@@ -44,6 +44,7 @@ def generate(
     topic: str,
     custom_script: str,
     target_duration: float,
+    clip_segments: int,
     voice_id: str,
     image_count: int,
     image_duration: float,
@@ -71,6 +72,7 @@ def generate(
             "slug": base_slug,
             "topic": topic,
             "target_duration": float(target_duration),
+            "clip_segments": int(clip_segments),
             "image_count": int(image_count),
             "image_duration": float(image_duration),
             "no_image": bool(skip_images),
@@ -194,6 +196,11 @@ def build_app() -> gr.Blocks:
                 15, 50, value=30, step=1,
                 label="Ziel-Länge des Shorts (Sekunden)",
             )
+            clip_segments = gr.Slider(
+                1, 8, value=1, step=1,
+                label="Anzahl Szenen-Cuts (1 = ein Stück, mehr = Highlight-Reel)",
+                info="z.B. 6 Cuts in einem 30s Video = je 5s aus verschiedenen Teilen des Source-Videos",
+            )
             voice_id = gr.Dropdown(
                 choices=VOICES,
                 value=VOICES[0][1],
@@ -254,7 +261,8 @@ def build_app() -> gr.Blocks:
             generate,
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
-                channel_scan_limit, topic, custom_script, target_duration, voice_id,
+                channel_scan_limit, topic, custom_script, target_duration,
+                clip_segments, voice_id,
                 image_count, image_duration, custom_image_prompts,
                 skip_images, batch_count,
             ],

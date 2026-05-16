@@ -282,6 +282,58 @@ def pick_clip(source: Path, target_seconds: float, out_path: Path) -> Path:
     return out_path
 
 
+def pick_multi_clips(source: Path, total_seconds: float, n_segments: int,
+                     out_path: Path) -> Path:
+    """Pick n non-overlapping random segments distributed across the source and stitch them."""
+    if n_segments <= 1:
+        return pick_clip(source, total_seconds, out_path)
+
+    total = probe_duration(source)
+    margin = 5.0
+    usable = max(0.0, total - 2 * margin)
+    seg_dur = total_seconds / n_segments
+
+    # need enough room: each bucket must be at least seg_dur wide
+    if usable < n_segments * seg_dur * 1.2:
+        return pick_clip(source, total_seconds, out_path)
+
+    bucket = usable / n_segments
+    segments = []
+    for i in range(n_segments):
+        b_start = margin + i * bucket
+        b_end = b_start + bucket
+        latest = max(b_start, b_end - seg_dur)
+        s = random.uniform(b_start, latest) if latest > b_start else b_start
+        segments.append((s, seg_dur))
+
+    work_dir = out_path.parent
+    seg_paths = []
+    for i, (s, d) in enumerate(segments):
+        seg_path = work_dir / f"seg_{i:02d}.mp4"
+        run([
+            "ffmpeg", "-y",
+            "-ss", f"{s:.2f}", "-i", str(source),
+            "-t", f"{d:.2f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+            "-r", "60",
+            str(seg_path),
+        ])
+        seg_paths.append(seg_path)
+
+    concat_list = work_dir / "concat.txt"
+    concat_list.write_text("\n".join(f"file '{p.name}'" for p in seg_paths), encoding="utf-8")
+    run([
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", str(concat_list),
+        "-c", "copy",
+        str(out_path),
+    ], cwd=str(work_dir))
+    return out_path
+
+
 def transcribe_words(audio_path: Path, model_name: str):
     from faster_whisper import WhisperModel
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
@@ -580,8 +632,13 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0, 60.0)
     step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s (target {target_duration:.0f}s)")
 
-    step("[3/5] pick gameplay segment")
-    clip = pick_clip(raw, target, work / "clip.mp4")
+    clip_segments = max(1, min(int(job.get("clip_segments", 1)), 8))
+    if clip_segments > 1:
+        step(f"[3/5] pick {clip_segments} gameplay scenes (~{target / clip_segments:.1f}s each, stitched)")
+        clip = pick_multi_clips(raw, target, clip_segments, work / "clip.mp4")
+    else:
+        step("[3/5] pick gameplay segment")
+        clip = pick_clip(raw, target, work / "clip.mp4")
 
     step("[4/5] transcribe + captions (CPU, kann ~30s dauern)")
     words = transcribe_words(vo, cfg.whisper_model)
