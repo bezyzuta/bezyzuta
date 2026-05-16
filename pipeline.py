@@ -1105,14 +1105,11 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         )
     cwd = ass_path.parent
 
-    # Bottom progress bar that fills from left to right over the video duration.
-    bar_chain = ""
-    if progress_bar and progress_duration > 0.5:
-        bar_h = max(8, int(cfg.target_h * 0.008))
-        bar_chain = (
-            f",drawbox=x=0:y=ih-{bar_h}:w='iw*t/{progress_duration:.2f}'"
-            f":h={bar_h}:color={progress_color}@0.9:t=fill"
-        )
+    use_bar = bool(progress_bar and progress_duration > 0.5)
+    bar_h = max(8, int(cfg.target_h * 0.008)) if use_bar else 0
+    # Label the main video chain output: if we add a bar, the main chain emits
+    # [vmain] and an extra overlay produces the real [v].
+    main_label = "vmain" if use_bar else "v"
 
     cmd = ["ffmpeg", "-y", "-i", str(gameplay_clip), "-i", str(voice_audio)]
 
@@ -1139,15 +1136,30 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                 f"[{cur}][img{i}]overlay=(W-w)/2:(H-h)/2-120:format=auto:eof_action=pass[{nxt}]"
             )
             cur = nxt
-        parts.append(f"[{cur}]subtitles={ass_path.name}{bar_chain}[v]")
-        parts.append(af)
-        filter_complex = ";".join(parts)
+        parts.append(f"[{cur}]subtitles={ass_path.name}[{main_label}]")
     else:
         vf = (
             f"crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,"
-            f"subtitles={ass_path.name}{bar_chain}"
+            f"subtitles={ass_path.name}"
         )
-        filter_complex = f"[0:v]{vf}[v];{af}"
+        parts = [f"[0:v]{vf}[{main_label}]"]
+
+    if use_bar:
+        # Generate a full-width colored strip and reveal it left-to-right via
+        # crop's per-frame eval (drawbox's width expression is config-time only
+        # in many ffmpeg builds, hence the workaround).
+        parts.append(
+            f"color=c={progress_color}@0.9:s={cfg.target_w}x{bar_h}:d={progress_duration:.2f}:r=30[barfull]"
+        )
+        parts.append(
+            f"[barfull]crop=w='max(2,iw*t/{progress_duration:.2f})':h=ih:x=0:y=0:eval=frame[bar]"
+        )
+        parts.append(
+            f"[vmain][bar]overlay=x=0:y=H-{bar_h}:eof_action=pass[v]"
+        )
+
+    parts.append(af)
+    filter_complex = ";".join(parts)
 
     cmd += [
         "-filter_complex", filter_complex,
