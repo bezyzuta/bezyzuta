@@ -654,7 +654,7 @@ def _register_cuda_dlls_windows() -> list[str]:
     except Exception:
         return []
     registered: list[str] = []
-    for pkg in ("nvidia.cublas", "nvidia.cudnn"):
+    for pkg in ("nvidia.cublas", "nvidia.cudnn", "nvidia.cuda_runtime", "nvidia.cuda_nvrtc"):
         try:
             spec = importlib.util.find_spec(pkg)
         except Exception:
@@ -707,9 +707,8 @@ def transcribe_words(audio_path: Path, model_name: str, device: str = "auto"):
     if sys.platform == "win32" and "cuda" in tried:
         if not registered:
             hint = (
-                "\n  Hinweis: nvidia-cublas-cu12 / nvidia-cudnn-cu12 sind nicht "
-                "installiert. Im venv ausfuehren:\n"
-                "    .venv\\Scripts\\python.exe -m pip install nvidia-cublas-cu12 \"nvidia-cudnn-cu12<10\""
+                "\n  Hinweis: NVIDIA CUDA Runtime Pakete fehlen. Im venv ausfuehren:\n"
+                "    .venv\\Scripts\\python.exe -m pip install nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 \"nvidia-cudnn-cu12<10\""
             )
         else:
             hint = (
