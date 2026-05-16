@@ -84,7 +84,7 @@ def generate(
     custom_script: str,
     target_duration: float,
     clip_segments: int,
-    smart_picking: bool,
+    scene_pick_mode: str,
     voice_id: str,
     enable_music: bool,
     music_dir: str,
@@ -136,7 +136,7 @@ def generate(
             "topic": topic,
             "target_duration": float(target_duration),
             "clip_segments": int(clip_segments),
-            "smart_picking": bool(smart_picking),
+            "scene_pick_mode": str(scene_pick_mode or "even"),
             "image_count": int(image_count),
             "image_duration": float(image_duration),
             "no_image": bool(skip_images),
@@ -297,10 +297,13 @@ def build_app() -> gr.Blocks:
                     label="Anzahl Szenen-Cuts",
                     info="1 = ein Stück, mehr = Highlight-Reel",
                 )
-            smart_picking = gr.Checkbox(
-                value=False,
-                label="🔊 Smart Scene-Picking (laute Stellen im Source-Video finden)",
-                info="Analysiert die Audio-Lautstärke und schneidet rund um die Peaks (~+10s Analyse pro Video)",
+            scene_pick_mode = gr.Radio(
+                choices=[("Standard — gleichmäßig verteilt", "even"),
+                         ("🔊 Laute Stellen — Audio-Peaks (~+10s)", "loud"),
+                         ("🤖 KI-Auswahl — Gemini Vision wählt spannendste Szenen (~+15s)", "ai")],
+                value="even",
+                label="Szenen-Auswahl",
+                info="KI-Modus extrahiert Thumbnails aus dem Source-Video und lässt Gemini die action-geladensten picken.",
             )
             voice_id = gr.Dropdown(
                 choices=VOICES,
@@ -508,7 +511,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, smart_picking, voice_id,
+                clip_segments, scene_pick_mode, voice_id,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,

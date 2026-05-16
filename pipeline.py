@@ -654,6 +654,157 @@ def pick_loud_multi_clips(source: Path, total_seconds: float, n_segments: int,
     return _extract_and_concat(source, segments, out_path)
 
 
+def _extract_thumbnail(source: Path, at_seconds: float, out_path: Path,
+                       width: int = 480) -> bool:
+    """Single ffmpeg seek+frame grab. Returns True on success."""
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", f"{at_seconds:.2f}", "-i", str(source),
+             "-vframes", "1", "-q:v", "5", "-vf", f"scale={width}:-1",
+             str(out_path)],
+            check=True, capture_output=True,
+        )
+        return out_path.is_file() and out_path.stat().st_size > 0
+    except Exception:
+        return False
+
+
+def _gemini_pick_thumbnails(thumb_paths: list, n_pick: int, cfg) -> list:
+    """Send thumbnails to Gemini and ask which N look most exciting.
+    Returns indices into thumb_paths sorted by interest. Raises on failure."""
+    import base64
+    if not cfg.gemini_api_key:
+        raise RuntimeError("Gemini API key not set")
+    prompt = (
+        f"Du bekommst {len(thumb_paths)} Standbilder aus einem Gaming-Video, "
+        f"durchnummeriert 0 bis {len(thumb_paths) - 1} in der Reihenfolge wie sie erscheinen.\n\n"
+        f"Waehle die {n_pick} Bilder, die am spannendsten / aktion-geladensten / visuell "
+        f"interessantesten aussehen (Kaempfe, Stuerze, Explosionen, dramatische Momente, "
+        f"grosse Bewegungen, intensive Farben). Vermeide langweilige Standbilder, leere "
+        f"Raeume, Menues, Ladebildschirme.\n\n"
+        f"Antworte NUR mit einem JSON-Array von genau {n_pick} Zahlen, sortiert vom "
+        f"spannendsten zum am wenigsten spannenden. KEINE Erklaerung, KEIN Markdown."
+    )
+    parts = [{"text": prompt}]
+    for p in thumb_paths:
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+    body = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 256,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
+    data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
+    candidate = data["candidates"][0]
+    parts_resp = candidate.get("content", {}).get("parts", []) or []
+    text = "\n".join(p.get("text", "") for p in parts_resp if not p.get("thought")).strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    s_idx, e_idx = text.find("["), text.rfind("]")
+    if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+        text = text[s_idx:e_idx + 1]
+    picks = json.loads(text)
+    if not isinstance(picks, list):
+        raise ValueError("expected JSON array")
+    out = []
+    for p in picks:
+        try:
+            ip = int(p)
+        except Exception:
+            continue
+        if 0 <= ip < len(thumb_paths) and ip not in out:
+            out.append(ip)
+    if not out:
+        raise ValueError("no valid indices returned")
+    return out
+
+
+def pick_ai_scenes(source: Path, total_seconds: float, n_segments: int,
+                   out_path: Path, cfg,
+                   work_dir=None, on_step=None) -> Path:
+    """Sample candidate windows, extract a thumbnail per window, ask Gemini
+    Vision to rank them, stitch the top N. Falls back to even/random pick if
+    Gemini fails or refuses."""
+    def log(msg: str) -> None:
+        if on_step:
+            try:
+                on_step(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+
+    n_segments = max(1, n_segments)
+    src_dur = _media_duration(source)
+    if src_dur <= 0:
+        log("      AI pick: cannot probe source duration, falling back to even pick")
+        if n_segments <= 1:
+            return pick_clip(source, total_seconds, out_path)
+        return pick_multi_clips(source, total_seconds, n_segments, out_path)
+
+    seg_dur = total_seconds / n_segments if n_segments > 1 else total_seconds
+    n_candidates = min(20, max(n_segments * 3, n_segments + 5))
+    buffer = 3.0
+    usable = max(seg_dur, src_dur - 2 * buffer)
+    if usable < n_segments * seg_dur * 1.2:
+        log("      AI pick: source too short for AI pick, falling back to even pick")
+        if n_segments <= 1:
+            return pick_clip(source, total_seconds, out_path)
+        return pick_multi_clips(source, total_seconds, n_segments, out_path)
+
+    if n_candidates == 1:
+        starts = [(src_dur - seg_dur) / 2]
+    else:
+        step_size = (usable - seg_dur) / (n_candidates - 1)
+        starts = [buffer + i * step_size for i in range(n_candidates)]
+
+    work = work_dir or out_path.parent
+    work.mkdir(parents=True, exist_ok=True)
+    thumbs: list = []
+    for i, s in enumerate(starts):
+        thumb_t = s + seg_dur / 2
+        thumb_path = work / f"ai_thumb_{i:02d}.jpg"
+        if _extract_thumbnail(source, thumb_t, thumb_path):
+            thumbs.append((s, thumb_path))
+
+    if len(thumbs) < n_segments:
+        log(f"      AI pick: only {len(thumbs)} thumbnails extracted, falling back")
+        if n_segments <= 1:
+            return pick_clip(source, total_seconds, out_path)
+        return pick_multi_clips(source, total_seconds, n_segments, out_path)
+
+    log(f"      AI pick: scoring {len(thumbs)} candidate scenes via Gemini Vision")
+    try:
+        picks = _gemini_pick_thumbnails([t[1] for t in thumbs], n_segments, cfg)
+    except Exception as e:
+        log(f"      AI pick: Gemini failed ({str(e)[:160]}); falling back")
+        if n_segments <= 1:
+            return pick_clip(source, total_seconds, out_path)
+        return pick_multi_clips(source, total_seconds, n_segments, out_path)
+
+    if len(picks) < n_segments:
+        existing = set(picks)
+        for i in range(len(thumbs)):
+            if i not in existing:
+                picks.append(i)
+                if len(picks) >= n_segments:
+                    break
+
+    chosen_starts = sorted([thumbs[i][0] for i in picks[:n_segments]])
+    log("      AI pick: chose " + ", ".join(f"{t:.1f}s" for t in chosen_starts))
+
+    if n_segments <= 1:
+        return _extract_and_concat(source, [(chosen_starts[0], total_seconds)], out_path)
+    segments = [(s, seg_dur) for s in chosen_starts]
+    return _extract_and_concat(source, segments, out_path)
+
+
 def _register_cuda_dlls_windows() -> list[str]:
     """faster-whisper on Windows can't find cuBLAS/cuDNN DLLs from the
     pip-installed nvidia-* wheels unless we explicitly add them to the DLL
@@ -1250,17 +1401,28 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s (target {target_duration:.0f}s)")
 
     clip_segments = max(1, min(int(job.get("clip_segments", 1)), 24))
-    smart_picking = bool(job.get("smart_picking", False))
+    mode = str(job.get("scene_pick_mode", "even")).lower()
+    # Back-compat with the old smart_picking checkbox
+    if mode == "even" and bool(job.get("smart_picking", False)):
+        mode = "loud"
     if clip_segments > 1:
-        if smart_picking:
-            step(f"[3/5] smart pick {clip_segments} loudest scenes (~{target / clip_segments:.1f}s each)")
+        if mode == "ai":
+            step(f"[3/5] AI pick {clip_segments} scenes via Gemini Vision (~{target / clip_segments:.1f}s each)")
+            clip = pick_ai_scenes(raw, target, clip_segments, work / "clip.mp4",
+                                  cfg, work_dir=work, on_step=step)
+        elif mode == "loud":
+            step(f"[3/5] loud pick {clip_segments} loudest scenes (~{target / clip_segments:.1f}s each)")
             clip = pick_loud_multi_clips(raw, target, clip_segments, work / "clip.mp4")
         else:
-            step(f"[3/5] pick {clip_segments} gameplay scenes (~{target / clip_segments:.1f}s each, stitched)")
+            step(f"[3/5] even pick {clip_segments} gameplay scenes (~{target / clip_segments:.1f}s each, stitched)")
             clip = pick_multi_clips(raw, target, clip_segments, work / "clip.mp4")
     else:
-        if smart_picking:
-            step("[3/5] smart pick: loudest window of gameplay")
+        if mode == "ai":
+            step("[3/5] AI pick: most exciting window via Gemini Vision")
+            clip = pick_ai_scenes(raw, target, 1, work / "clip.mp4",
+                                  cfg, work_dir=work, on_step=step)
+        elif mode == "loud":
+            step("[3/5] loud pick: loudest window of gameplay")
             clip = pick_loud_clip(raw, target, work / "clip.mp4", work_dir=work)
         else:
             step("[3/5] pick gameplay segment")
