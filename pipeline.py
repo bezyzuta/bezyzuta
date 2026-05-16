@@ -760,6 +760,11 @@ def _cloudflare_accept_vision_agreement(cfg) -> str:
         r = requests.post(url, headers=headers, json={"prompt": "agree"}, timeout=30)
     except Exception as e:
         return f"agreement request error: {e}"
+    # Cloudflare returns 403 with "Thank you for agreeing" on successful
+    # acceptance (quirky API). Treat that as success.
+    if "Thank you for agreeing" in r.text:
+        _CF_VISION_AGREED.add(key)
+        return ""
     if r.status_code >= 400:
         return f"agreement HTTP {r.status_code}: {r.text[:200]}"
     _CF_VISION_AGREED.add(key)
