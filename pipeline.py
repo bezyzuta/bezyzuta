@@ -669,6 +669,90 @@ def _extract_thumbnail(source: Path, at_seconds: float, out_path: Path,
         return False
 
 
+def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
+                              on_step=None) -> float:
+    """Ask Cloudflare Llama Vision where the main subject is horizontally.
+    Samples n_samples frames evenly across the source video and averages.
+    Returns 0.0-1.0 where 0 = far left, 0.5 = centered, 1.0 = far right.
+    Returns 0.5 (centered) on any failure."""
+    def log(msg: str) -> None:
+        if on_step:
+            try:
+                on_step(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+
+    if not cfg.cloudflare_account_id or not cfg.cloudflare_api_token:
+        log("      auto-reframe: cloudflare creds missing, using centered crop")
+        return 0.5
+    src_dur = _media_duration(source)
+    if src_dur <= 1.0:
+        return 0.5
+
+    work = source.parent
+    work.mkdir(parents=True, exist_ok=True)
+    sample_times = [src_dur * (i + 0.5) / n_samples for i in range(n_samples)]
+
+    model = "@cf/meta/llama-3.2-11b-vision-instruct"
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{cfg.cloudflare_account_id}/ai/run/{model}"
+    )
+    headers = {
+        "Authorization": f"Bearer {cfg.cloudflare_api_token}",
+        "Content-Type": "application/json",
+    }
+    prompt = (
+        "Look at this video frame. Where is the main subject (people, faces, "
+        "main action) located horizontally in the image? Respond with ONLY "
+        "one integer between 0 and 100: 0 = subject on FAR LEFT, 50 = "
+        "subject CENTERED, 100 = subject on FAR RIGHT. Just the number."
+    )
+    num_re = re.compile(r"\d+")
+    positions: list[float] = []
+    for i, t in enumerate(sample_times):
+        thumb = work / f"reframe_sample_{i}.jpg"
+        if not _extract_thumbnail(source, t, thumb, width=480):
+            continue
+        try:
+            body = {
+                "image": list(thumb.read_bytes()),
+                "prompt": prompt,
+                "max_tokens": 8,
+                "temperature": 0.1,
+            }
+            r = requests.post(url, headers=headers, json=body, timeout=60)
+            if r.status_code >= 400:
+                continue
+            data = r.json()
+            if not data.get("success"):
+                continue
+            result = data.get("result") or {}
+            text = (result.get("response") or result.get("description") or "").strip()
+            m = num_re.search(text)
+            if not m:
+                continue
+            val = float(m.group(0))
+            if 0 <= val <= 100:
+                positions.append(val)
+        except Exception:
+            continue
+
+    if not positions:
+        log("      auto-reframe: no usable responses, using centered crop")
+        return 0.5
+
+    # Outlier rejection: drop any answer >25pp away from the median
+    positions.sort()
+    median = positions[len(positions) // 2]
+    filtered = [p for p in positions if abs(p - median) <= 25] or positions
+    avg = sum(filtered) / len(filtered)
+    log(f"      auto-reframe: subject at ~{avg:.0f}% from left (samples: {positions})")
+    return max(0.0, min(1.0, avg / 100.0))
+
+
 def _cloudflare_pick_thumbnails(thumb_paths: list, n_pick: int, cfg) -> list:
     """Score each thumbnail via Cloudflare Llama 3.2 Vision (free tier) and
     return the top n_pick indices sorted by score. Sequential, ~1-2s/image.
@@ -1332,7 +1416,8 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   mute_source_audio: bool = False,
                   progress_bar: bool = False,
                   progress_color: str = "red",
-                  progress_duration: float = 0.0) -> Path:
+                  progress_duration: float = 0.0,
+                  crop_offset: float = 0.5) -> Path:
     image_paths = list(image_paths or [])
     if mute_source_audio:
         # ignore gameplay audio; output is just the voice/music track
@@ -1343,6 +1428,11 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             f"[bg][1:a]amix=inputs=2:duration=shortest:dropout_transition=0[a]"
         )
     cwd = ass_path.parent
+
+    # 9:16 crop window with optional horizontal offset.
+    # offset 0 = left edge, 0.5 = centered, 1 = right edge.
+    crop_off = max(0.0, min(1.0, float(crop_offset)))
+    crop_expr = f"crop=ih*9/16:ih:x=(iw-ih*9/16)*{crop_off:.3f}:y=0"
 
     use_bar = bool(progress_bar and progress_duration > 0.5)
     bar_h = max(8, int(cfg.target_h * 0.008)) if use_bar else 0
@@ -1360,7 +1450,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         schedule = _image_schedule(len(image_paths), duration or 25.0, image_duration)
 
         parts = [
-            f"[0:v]crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos[bg0]"
+            f"[0:v]{crop_expr},scale={cfg.target_w}:{cfg.target_h}:flags=lanczos[bg0]"
         ]
         cur = "bg0"
         for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
@@ -1378,7 +1468,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         parts.append(f"[{cur}]subtitles={ass_path.name}[{main_label}]")
     else:
         vf = (
-            f"crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,"
+            f"{crop_expr},scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,"
             f"subtitles={ass_path.name}"
         )
         parts = [f"[0:v]{vf}[{main_label}]"]
@@ -1686,6 +1776,11 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             )
             using_bgm = True
 
+    crop_offset = 0.5
+    if bool(job.get("auto_reframe", False)):
+        step("      auto-reframe: asking Cloudflare Vision where the subject is")
+        crop_offset = detect_subject_x_position(clip, cfg, on_step=step)
+
     step("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
     compose_short(
@@ -1697,6 +1792,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         progress_bar=bool(job.get("progress_bar", False)),
         progress_color=str(job.get("progress_color", "red")),
         progress_duration=vo_dur,
+        crop_offset=crop_offset,
     )
     step(f"      -> {out}")
     return out
