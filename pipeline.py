@@ -744,14 +744,21 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               outline_color: str = "#000000",
               outline_width: int = 5,
               hook_text: str = "",
-              hook_duration: float = 3.0) -> Path:
+              hook_duration: float = 3.0,
+              pop_captions: bool = False,
+              subscribe_overlay: bool = False,
+              subscribe_text: str = "ABONNIEREN",
+              total_duration: float = 0.0) -> Path:
     """Bold center-bottom karaoke captions; styling exposed for the GUI.
-    Optional hook_text shown big at the top for the first hook_duration seconds."""
+    Optional hook_text shown big at the top for the first hook_duration seconds.
+    pop_captions: every chunk pops in with a scale animation (TikTok-style).
+    subscribe_overlay: red SUBSCRIBE button in the last ~2.5s (needs total_duration)."""
     if font_size is None or font_size <= 0:
         font_size = max(56, int(video_h * 0.048))
     primary = _hex_to_ass_color(primary_color)
     outline = _hex_to_ass_color(outline_color)
     hook_size = int(font_size * 1.4)
+    sub_size = int(font_size * 1.2)
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -765,7 +772,10 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
         f"Style: Pop, {font_name}, {int(font_size)}, {primary}, &H000000FF, {outline}, &H64000000, "
         f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width)}, 2, 2, 80, 80, 360, 1\n"
         f"Style: Hook, {font_name}, {hook_size}, &H00FFFFFF, &H000000FF, &H00000000, &H64000000, "
-        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width) + 2}, 3, 8, 60, 60, 280, 1\n\n"
+        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width) + 2}, 3, 8, 60, 60, 280, 1\n"
+        # Red opaque box behind text (BorderStyle=3), white text. Sits above the captions.
+        f"Style: Sub, {font_name}, {sub_size}, &H00FFFFFF, &H000000FF, &H000000FF, &H000000FF, "
+        f"1, 0, 0, 0, 100, 100, 0, 0, 3, 12, 0, 2, 0, 0, 250, 1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -789,10 +799,24 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
             f"{{\\fad(120,200)}}{ht}"
         )
 
+    # TikTok-style pop animation: start scaled up, shrink to 100% over 150ms.
+    pop_tag = "\\fscx125\\fscy125\\t(0,150,\\fscx100\\fscy100)" if pop_captions else ""
     for ch in chunks:
         start, end = ch[0][0], ch[-1][1]
         text = " ".join(w[2] for w in ch).upper().replace("{", "(").replace("}", ")")
-        lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Pop,,0,0,0,,{{\\fad(80,80)}}{text}")
+        lines.append(
+            f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Pop,,0,0,0,,"
+            f"{{{pop_tag}\\fad(80,80)}}{text}"
+        )
+
+    if subscribe_overlay and total_duration > 1.0:
+        sub_start = max(0.0, total_duration - 2.5)
+        sub_end = total_duration
+        sub_txt = subscribe_text.strip().upper().replace("{", "(").replace("}", ")") or "ABONNIEREN"
+        lines.append(
+            f"Dialogue: 2,{_ass_time(sub_start)},{_ass_time(sub_end)},Sub,,0,0,0,,"
+            f"{{\\fad(180,0)\\fscx115\\fscy115\\t(0,250,\\fscx100\\fscy100)}}{sub_txt}"
+        )
 
     out_path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
     return out_path
@@ -1066,7 +1090,10 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   image_paths: list | None = None,
                   duration: float = 0.0,
                   image_duration: float = 1.5,
-                  mute_source_audio: bool = False) -> Path:
+                  mute_source_audio: bool = False,
+                  progress_bar: bool = False,
+                  progress_color: str = "red",
+                  progress_duration: float = 0.0) -> Path:
     image_paths = list(image_paths or [])
     if mute_source_audio:
         # ignore gameplay audio; output is just the voice/music track
@@ -1077,6 +1104,15 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             f"[bg][1:a]amix=inputs=2:duration=shortest:dropout_transition=0[a]"
         )
     cwd = ass_path.parent
+
+    # Bottom progress bar that fills from left to right over the video duration.
+    bar_chain = ""
+    if progress_bar and progress_duration > 0.5:
+        bar_h = max(8, int(cfg.target_h * 0.008))
+        bar_chain = (
+            f",drawbox=x=0:y=ih-{bar_h}:w='iw*t/{progress_duration:.2f}'"
+            f":h={bar_h}:color={progress_color}@0.9:t=fill"
+        )
 
     cmd = ["ffmpeg", "-y", "-i", str(gameplay_clip), "-i", str(voice_audio)]
 
@@ -1103,13 +1139,13 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                 f"[{cur}][img{i}]overlay=(W-w)/2:(H-h)/2-120:format=auto:eof_action=pass[{nxt}]"
             )
             cur = nxt
-        parts.append(f"[{cur}]subtitles={ass_path.name}[v]")
+        parts.append(f"[{cur}]subtitles={ass_path.name}{bar_chain}[v]")
         parts.append(af)
         filter_complex = ";".join(parts)
     else:
         vf = (
             f"crop=ih*9/16:ih,scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,"
-            f"subtitles={ass_path.name}"
+            f"subtitles={ass_path.name}{bar_chain}"
         )
         filter_complex = f"[0:v]{vf}[v];{af}"
 
@@ -1217,6 +1253,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         outline_width=int(job.get("caption_stroke_width", 5)),
         hook_text=str(job.get("hook_text", "")),
         hook_duration=float(job.get("hook_duration", 3.0)),
+        pop_captions=bool(job.get("pop_captions", False)),
+        subscribe_overlay=bool(job.get("subscribe_overlay", False)),
+        subscribe_text=str(job.get("subscribe_text", "ABONNIEREN")),
+        total_duration=vo_dur,
     )
 
     image_paths: list = []
@@ -1371,6 +1411,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         duration=target,
         image_duration=image_duration,
         mute_source_audio=using_bgm,
+        progress_bar=bool(job.get("progress_bar", False)),
+        progress_color=str(job.get("progress_color", "red")),
+        progress_duration=vo_dur,
     )
     step(f"      -> {out}")
     return out

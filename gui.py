@@ -104,6 +104,9 @@ def generate(
     caption_font_size: int,
     hook_text: str,
     hook_duration: float,
+    pop_captions: bool,
+    progress_bar: bool,
+    subscribe_overlay: bool,
     whisper_device: str,
     batch_count: int,
 ):
@@ -138,6 +141,9 @@ def generate(
             "caption_stroke_color": str(caption_stroke_color or "#000000"),
             "hook_text": str(hook_text or "").strip(),
             "hook_duration": float(hook_duration),
+            "pop_captions": bool(pop_captions),
+            "progress_bar": bool(progress_bar),
+            "subscribe_overlay": bool(subscribe_overlay),
             "whisper_device": str(whisper_device or "auto"),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
@@ -377,6 +383,24 @@ def build_app() -> gr.Blocks:
             )
             skip_images = gr.Checkbox(value=False, label="Bilder komplett überspringen")
 
+        # ───────────── Engagement-Effekte ─────────────
+        with gr.Accordion("✨ Engagement-Effekte", open=True):
+            pop_captions = gr.Checkbox(
+                value=False,
+                label="🔍 Auto-Zoom auf Untertitel (TikTok-Style)",
+                info="Jedes Caption-Chunk poppt von 125% auf 100% rein — wirkt dynamischer.",
+            )
+            progress_bar = gr.Checkbox(
+                value=False,
+                label="📊 Progress-Bar unten am Video",
+                info="Dünner roter Balken am unteren Bildrand der mitläuft — hält Zuschauer bis zum Ende.",
+            )
+            subscribe_overlay = gr.Checkbox(
+                value=False,
+                label="🔔 Subscribe-Button am Ende",
+                info='Rotes "ABONNIEREN" Banner in den letzten 2,5 Sekunden.',
+            )
+
         # ───────────── Untertitel ─────────────
         with gr.Accordion("🎨 Untertitel-Einstellungen", open=False):
             caption_font = gr.Dropdown(
@@ -456,6 +480,7 @@ def build_app() -> gr.Blocks:
                 skip_images,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 hook_text, hook_duration,
+                pop_captions, progress_bar, subscribe_overlay,
                 whisper_device,
                 batch_count,
             ],
