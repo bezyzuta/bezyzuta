@@ -70,6 +70,18 @@ def run(cmd: list, **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=True, **kw)
 
 
+def run_capture_stderr(cmd: list, **kw) -> subprocess.CompletedProcess:
+    """Like run(), but on failure raises RuntimeError with the tail of stderr
+    so the GUI surfaces the actual ffmpeg/process error message."""
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
+    except subprocess.CalledProcessError as e:
+        tail = "\n".join((e.stderr or "").strip().splitlines()[-30:])
+        raise RuntimeError(
+            f"{cmd[0]} failed (exit {e.returncode}). Last stderr lines:\n{tail}"
+        ) from e
+
+
 def download_gameplay(url: str, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     template = str(out_dir / "%(id)s.%(ext)s")
@@ -1169,7 +1181,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         "-shortest", "-movflags", "+faststart",
         str(out_path),
     ]
-    run(cmd, cwd=str(cwd))
+    run_capture_stderr(cmd, cwd=str(cwd))
     return out_path
 
 
