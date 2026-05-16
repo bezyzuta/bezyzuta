@@ -234,7 +234,7 @@ def build_app() -> gr.Blocks:
                 placeholder="Wenn ausgefüllt, wird das hier 1:1 als Sprechertext genommen — kein Gemini-Call.",
             )
             target_duration = gr.Slider(
-                15, 50, value=30, step=1,
+                15, 120, value=30, step=1,
                 label="Ziel-Länge des Shorts (Sekunden)",
             )
             clip_segments = gr.Slider(
