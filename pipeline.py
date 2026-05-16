@@ -454,7 +454,15 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
     return out_path
 
 
-def run_one(job: dict, cfg: Config) -> Path:
+def run_one(job: dict, cfg: Config, on_step=None) -> Path:
+    def step(msg: str) -> None:
+        if on_step:
+            try:
+                on_step(msg)
+            except Exception:
+                pass
+        print(msg)
+
     base_slug = job["slug"]
     source_url = (job.get("source_url") or "").strip()
 
@@ -468,14 +476,14 @@ def run_one(job: dict, cfg: Config) -> Path:
         pick = pick_unused_channel_video(channel_url, used_path, title_filter=title_filter)
         source_url = pick["url"]
         slug = f"{base_slug}-{pick['id']}"
-        print(f"      channel pick: {pick['title'][:60]} ({pick['id']})")
+        step(f"      channel pick: {pick['title'][:60]} ({pick['id']})")
     else:
         slug = base_slug
 
     work = cfg.output_dir / slug
     work.mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/5] download: {source_url}")
+    step(f"[1/5] download: {source_url}")
     raw = download_gameplay(source_url, work / "source")
 
     script = (job.get("script") or "").strip()
@@ -483,23 +491,23 @@ def run_one(job: dict, cfg: Config) -> Path:
         topic = (job.get("topic") or "").strip()
         if not topic:
             raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
-        print(f"      generating script via Gemini for topic: {topic!r}")
+        step(f"      generating script via Gemini for topic: {topic!r}")
         script = generate_script_via_gemini(topic, cfg)
         (work / "script.txt").write_text(script, encoding="utf-8")
         preview = script[:80].replace("\n", " ")
-        print(f"      script: {preview}...")
+        step(f"      script: {preview}...")
 
-    print("[2/5] voiceover")
+    step("[2/5] voiceover")
     vo = synthesize_voiceover(script, cfg, work / "voice.mp3")
 
     vo_dur = probe_duration(vo)
     target = min(max(vo_dur + 0.6, 22.0), 45.0)
-    print(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s")
+    step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s")
 
-    print("[3/5] pick gameplay segment")
+    step("[3/5] pick gameplay segment")
     clip = pick_clip(raw, target, work / "clip.mp4")
 
-    print("[4/5] transcribe + captions")
+    step("[4/5] transcribe + captions (CPU, kann ~30s dauern)")
     words = transcribe_words(vo, cfg.whisper_model)
     ass = write_ass(words, cfg.target_w, cfg.target_h, work / "captions.ass")
 
@@ -519,19 +527,19 @@ def run_one(job: dict, cfg: Config) -> Path:
             image_paths = [single]
         else:
             n_images = max(1, min(int(job.get("image_count", 3)), 5))
-            print(f"      generating {n_images} scene prompts via Gemini")
+            step(f"      generating {n_images} scene prompts via Gemini")
             prompts = generate_scene_prompts(script, n_images, cfg)
             for i, prompt in enumerate(prompts, 1):
-                print(f"      [{i}/{n_images}] image: {prompt[:80]}")
+                step(f"      [{i}/{n_images}] image: {prompt[:80]}")
                 try:
                     p = fetch_image_from_pollinations(
                         prompt, work / f"image_{i}.png", seed=random.randint(1, 1_000_000)
                     )
                     image_paths.append(p)
                 except Exception as e:
-                    print(f"      WARN: image {i} failed, skipping: {e}")
+                    step(f"      WARN: image {i} failed, skipping: {e}")
 
-    print("[5/5] compose final short")
+    step("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
     compose_short(
         clip, vo, ass, cfg, out,
@@ -539,7 +547,7 @@ def run_one(job: dict, cfg: Config) -> Path:
         duration=target,
         image_duration=image_duration,
     )
-    print(f"      -> {out}")
+    step(f"      -> {out}")
     return out
 
 
