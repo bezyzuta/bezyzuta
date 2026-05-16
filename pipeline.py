@@ -93,7 +93,7 @@ def list_channel_videos(channel_url: str, limit: int = 50) -> list:
     return out
 
 
-def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 50,
+def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 200,
                               title_filter: list | None = None) -> dict:
     used = set()
     if used_path.exists():
@@ -501,7 +501,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         used_path = cfg.output_dir / "used_videos.json"
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
         title_filter = job.get("title_filter") or None
-        pick = pick_unused_channel_video(channel_url, used_path, title_filter=title_filter)
+        scan_limit = int(job.get("channel_scan_limit", 200))
+        pick = pick_unused_channel_video(channel_url, used_path, limit=scan_limit, title_filter=title_filter)
         source_url = pick["url"]
         slug = f"{base_slug}-{pick['id']}"
         step(f"      channel pick: {pick['title'][:60]} ({pick['id']})")

@@ -40,6 +40,7 @@ def generate(
     source_url: str,
     channel_url: str,
     title_filter: str,
+    channel_scan_limit: int,
     topic: str,
     voice_id: str,
     image_count: int,
@@ -83,6 +84,7 @@ def generate(
             kws = [k.strip() for k in title_filter.split(",") if k.strip()]
             if kws:
                 job["title_filter"] = kws
+            job["channel_scan_limit"] = int(channel_scan_limit)
 
         q: queue.Queue = queue.Queue()
         result = {"out": None, "err": None}
@@ -149,8 +151,13 @@ def build_app() -> gr.Blocks:
                 visible=True,
             )
             title_filter = gr.Textbox(
-                value="roblox, doors, blox fruits, brookhaven, tower of hell, parkour",
+                value="roblox, doors, blox fruits, brookhaven, tower of hell, obby, blox, evade, adopt me, jailbreak, bedwars, piggy",
                 label="Titel-Filter (Stichwörter, kommagetrennt — mindestens eines muss matchen)",
+                visible=True,
+            )
+            channel_scan_limit = gr.Slider(
+                30, 500, value=200, step=10,
+                label="Channel-Tiefe (wie viele letzte Videos im Pool)",
                 visible=True,
             )
             source_url = gr.Textbox(
@@ -202,20 +209,22 @@ def build_app() -> gr.Blocks:
             return (
                 gr.update(visible=is_channel),
                 gr.update(visible=is_channel),
+                gr.update(visible=is_channel),
                 gr.update(visible=not is_channel),
             )
 
         source_mode.change(
             toggle_source,
             inputs=[source_mode],
-            outputs=[channel_url, title_filter, source_url],
+            outputs=[channel_url, title_filter, channel_scan_limit, source_url],
         )
 
         generate_btn.click(
             generate,
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
-                topic, voice_id, image_count, image_duration, skip_images, batch_count,
+                channel_scan_limit, topic, voice_id, image_count, image_duration,
+                skip_images, batch_count,
             ],
             outputs=[status_log, video_out],
         )
