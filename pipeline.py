@@ -1047,7 +1047,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0, 150.0)
     step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s (target {target_duration:.0f}s)")
 
-    clip_segments = max(1, min(int(job.get("clip_segments", 1)), 8))
+    clip_segments = max(1, min(int(job.get("clip_segments", 1)), 24))
     smart_picking = bool(job.get("smart_picking", False))
     if clip_segments > 1:
         if smart_picking:
