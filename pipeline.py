@@ -1152,7 +1152,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             f"color=c={progress_color}@0.9:s={cfg.target_w}x{bar_h}:d={progress_duration:.2f}:r=30[barfull]"
         )
         parts.append(
-            f"[barfull]crop=w='max(2,iw*t/{progress_duration:.2f})':h=ih:x=0:y=0:eval=frame[bar]"
+            f"[barfull]crop=w='max(2\\,iw*t/{progress_duration:.2f})':h=ih:x=0:y=0:eval=frame[bar]"
         )
         parts.append(
             f"[vmain][bar]overlay=x=0:y=H-{bar_h}:eof_action=pass[v]"
