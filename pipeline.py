@@ -728,16 +728,18 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     )
     num_re = re.compile(r"\d+")
     positions: list[float] = []  # 0-100 from vision LLM
-    direct_offsets: list[float] = []  # 0-1 from MediaPipe face detection
+    direct_offsets: list[float] = []  # 0-1 from face detection
+    face_label = ""
     first_err = ""
     for i, t in enumerate(sample_times):
         thumb = work / f"reframe_sample_{i}.jpg"
         if not _extract_thumbnail(source, t, thumb, width=640):
             continue
-        # MediaPipe first
-        mp_off = detect_face_crop_offset(thumb)
-        if mp_off is not None:
-            direct_offsets.append(mp_off)
+        # Face detection first
+        face_res = detect_face_crop_offset(thumb)
+        if face_res is not None:
+            direct_offsets.append(face_res[0])
+            face_label = face_res[1]
             continue
         # LLM fallback
         text, err = _vision_score_cf_first(thumb, prompt, cfg)
@@ -758,7 +760,7 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     if direct_offsets:
         direct_offsets.sort()
         median_off = direct_offsets[len(direct_offsets) // 2]
-        log(f"      auto-reframe: face detected at {median_off*100:.0f}% (median of {len(direct_offsets)} samples)")
+        log(f"      auto-reframe: {face_label} detected face at crop@{median_off*100:.0f}% (median of {len(direct_offsets)}/{n_samples} samples)")
         return median_off
 
     if not positions:
@@ -886,7 +888,7 @@ def _get_mediapipe_detector():
 
 
 def _detect_face_center_x(thumb_path: Path):
-    """Return (face_center_x_normalized, area_normalized) of the largest face
+    """Return (face_center_x_normalized, source_label) of the largest face
     in `thumb_path`, or None if no face. Tries InsightFace first, MediaPipe
     second."""
     try:
@@ -914,7 +916,7 @@ def _detect_face_center_x(thumb_path: Path):
             ))
             x1, _, x2, _ = best.bbox
             center_x_px = (float(x1) + float(x2)) / 2.0
-            return (center_x_px / w, 1.0)
+            return (center_x_px / w, "insightface")
 
     # MediaPipe fallback
     fd = _get_mediapipe_detector()
@@ -930,24 +932,24 @@ def _detect_face_center_x(thumb_path: Path):
                 max(0.0, d.location_data.relative_bounding_box.height)
             ))
             bb = best.location_data.relative_bounding_box
-            return (bb.xmin + bb.width / 2.0, 1.0)
+            return (bb.xmin + bb.width / 2.0, "mediapipe")
 
     return None
 
 
 def detect_face_crop_offset(thumb_path: Path, source_aspect: float = 16.0 / 9.0):
     """Compute the 0..1 crop offset that centers the largest detected face
-    in a 9:16 portrait crop. Returns None if no face is detected or the
-    source is already (near-)portrait."""
+    in a 9:16 portrait crop. Returns (offset, detector_label) or None when
+    no face is detected / source is already (near-)portrait."""
     result = _detect_face_center_x(thumb_path)
     if result is None:
         return None
-    face_center_x, _ = result
+    face_center_x, label = result
     r = 9.0 / (16.0 * source_aspect)
     if r >= 0.99:
-        return 0.5
+        return (0.5, label)
     offset = (face_center_x - r / 2.0) / (1.0 - r)
-    return max(0.0, min(1.0, offset))
+    return (max(0.0, min(1.0, offset)), label)
 
 
 def _subject_pct_to_crop_offset(subject_pct: float) -> float:
@@ -1106,22 +1108,23 @@ def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
 
 
 def _detect_subject_at_time(source: Path, at_time: float, cfg,
-                            sample_path: Path) -> float:
-    """Sample ONE frame at the given time, ask Vision LLM (Gemini first then
-    Cloudflare fallback) for 0-100, return float 0.0-1.0. Returns 0.5 (centered)
+                            sample_path: Path) -> tuple:
+    """Sample ONE frame at the given time, return (offset 0-1, source_label).
+    Tries face detection first, vision LLM second. Returns (0.5, 'centered')
     on any failure."""
     if not _extract_thumbnail(source, at_time, sample_path, width=640):
-        return 0.5
+        return (0.5, "centered")
 
-    # Try MediaPipe face detection first — local, free, exact pixel coords.
-    mp_offset = detect_face_crop_offset(sample_path)
-    if mp_offset is not None:
-        return mp_offset
+    # Try local face detection first — exact pixel coords, no API cost.
+    face_res = detect_face_crop_offset(sample_path)
+    if face_res is not None:
+        offset, label = face_res
+        return (offset, label)
 
-    # No face detected (or mediapipe missing) — fall back to vision LLM.
+    # No face detected (or detector missing) — fall back to vision LLM.
     have_any = bool(cfg.gemini_api_key) or bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
     if not have_any:
-        return 0.5
+        return (0.5, "centered")
     prompt = (
         "This is a frame from a wide landscape video. It will be cropped to a "
         "narrow vertical 9:16 portrait. Pick the horizontal position that "
@@ -1140,14 +1143,14 @@ def _detect_subject_at_time(source: Path, at_time: float, cfg,
     )
     text, err = _vision_score_cf_first(sample_path, prompt, cfg)
     if err:
-        return 0.5
+        return (0.5, "centered")
     m = re.search(r"\d+", text)
     if not m:
-        return 0.5
+        return (0.5, "centered")
     val = float(m.group(0))
     if 0 <= val <= 100:
-        return _subject_pct_to_crop_offset(val)
-    return 0.5
+        return (_subject_pct_to_crop_offset(val), "llm")
+    return (0.5, "centered")
 
 
 def detect_subjects_per_segment(clip: Path, n_segments: int, seg_dur: float,
@@ -1168,14 +1171,24 @@ def detect_subjects_per_segment(clip: Path, n_segments: int, seg_dur: float,
     work = clip.parent
     work.mkdir(parents=True, exist_ok=True)
     offsets: list = []
+    labels: list = []
     for i in range(n_segments):
         seg_start = i * seg_dur
         seg_mid = seg_start + seg_dur / 2
         sample = work / f"reframe_seg_{i:02d}.jpg"
-        off = _detect_subject_at_time(clip, seg_mid, cfg, sample)
+        off, label = _detect_subject_at_time(clip, seg_mid, cfg, sample)
         offsets.append((float(seg_start), float(off)))
-    summary = ", ".join(f"{t:.1f}s=crop@{int(o*100)}%" for t, o in offsets)
-    log(f"      auto-reframe per-scene: {summary}")
+        labels.append(label)
+    summary = ", ".join(
+        f"{t:.1f}s=crop@{int(o*100)}%({lab})"
+        for (t, o), lab in zip(offsets, labels)
+    )
+    # Aggregated counter so it's easy to see which detector handled how many.
+    counts: dict = {}
+    for lab in labels:
+        counts[lab] = counts.get(lab, 0) + 1
+    counts_str = ", ".join(f"{k}={v}" for k, v in counts.items())
+    log(f"      auto-reframe per-scene ({counts_str}): {summary}")
     return offsets
 
 
