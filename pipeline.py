@@ -759,13 +759,22 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
         log("      auto-reframe: no usable responses, using centered crop")
         return 0.5
 
-    # Outlier rejection: drop any answer >25pp away from the median
-    positions.sort()
-    median = positions[len(positions) // 2]
-    filtered = [p for p in positions if abs(p - median) <= 25] or positions
-    avg = sum(filtered) / len(filtered)
-    log(f"      auto-reframe: subject at ~{avg:.0f}% from left (samples: {positions})")
-    return max(0.0, min(1.0, avg / 100.0))
+    # Bucket each sample into 0/25/50/75/100, pick the bucket with most votes.
+    # Then: if 50 has the most votes BUT any non-50 bucket got votes too, the
+    # frame likely shows multiple subjects spread out (the model defaulted to
+    # "centered" out of indecision). Force a side pick in that case.
+    buckets = {0: 0, 25: 0, 50: 0, 75: 0, 100: 0}
+    bucket_keys = list(buckets.keys())
+    for p in positions:
+        nearest = min(bucket_keys, key=lambda b: abs(b - p))
+        buckets[nearest] += 1
+    best = max(bucket_keys, key=lambda b: buckets[b])
+    if best == 50:
+        non_50 = {k: v for k, v in buckets.items() if k != 50 and v > 0}
+        if non_50:
+            best = max(non_50, key=non_50.get)
+    log(f"      auto-reframe: subject at ~{best}% from left (samples: {positions}, buckets: {buckets})")
+    return max(0.0, min(1.0, best / 100.0))
 
 
 _CF_VISION_AGREED: set = set()
