@@ -1731,7 +1731,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         mode = "loud"
     if clip_segments > 1:
         if mode == "ai":
-            step(f"[3/5] AI pick {clip_segments} scenes via Gemini Vision (~{target / clip_segments:.1f}s each)")
+            step(f"[3/5] AI pick {clip_segments} scenes via Vision LLM (~{target / clip_segments:.1f}s each)")
             clip = pick_ai_scenes(raw, target, clip_segments, work / "clip.mp4",
                                   cfg, work_dir=work, on_step=step)
         elif mode == "loud":
@@ -1742,7 +1742,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             clip = pick_multi_clips(raw, target, clip_segments, work / "clip.mp4")
     else:
         if mode == "ai":
-            step("[3/5] AI pick: most exciting window via Gemini Vision")
+            step("[3/5] AI pick: most exciting window via Vision LLM")
             clip = pick_ai_scenes(raw, target, 1, work / "clip.mp4",
                                   cfg, work_dir=work, on_step=step)
         elif mode == "loud":
