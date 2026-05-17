@@ -41,22 +41,13 @@ class Config:
     cloudflare_account_id: str
     cloudflare_api_token: str
     cloudflare_image_model: str
-    ollama_url: str
-    ollama_model_text: str
-    local_tts_enabled: bool
-    local_tts_ref_audio: str
-    local_tts_language: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
         data = _loads_lenient(path.read_text(encoding="utf-8"))
         api_key = data.get("elevenlabs_api_key") or os.environ.get("ELEVENLABS_API_KEY", "")
-        local_tts_on = bool(data.get("local_tts_enabled", False))
-        if not api_key and not local_tts_on:
-            raise SystemExit(
-                "elevenlabs_api_key missing in config and ELEVENLABS_API_KEY not set. "
-                "Set one or enable local_tts_enabled=true to skip ElevenLabs."
-            )
+        if not api_key:
+            raise SystemExit("elevenlabs_api_key missing in config and ELEVENLABS_API_KEY not set")
         w, h = data.get("target_resolution", [1080, 1920])
         return cls(
             output_dir=Path(data["output_dir"]).expanduser(),
@@ -72,11 +63,6 @@ class Config:
             cloudflare_account_id=data.get("cloudflare_account_id") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
             cloudflare_api_token=data.get("cloudflare_api_token") or os.environ.get("CLOUDFLARE_API_TOKEN", ""),
             cloudflare_image_model=data.get("cloudflare_image_model", "@cf/black-forest-labs/flux-1-schnell"),
-            ollama_url=str(data.get("ollama_url", "http://localhost:11434")).rstrip("/"),
-            ollama_model_text=str(data.get("ollama_model_text", "llama3.1:8b")),
-            local_tts_enabled=bool(data.get("local_tts_enabled", False)),
-            local_tts_ref_audio=str(data.get("local_tts_ref_audio", "")),
-            local_tts_language=str(data.get("local_tts_language", "de")),
         )
 
 
@@ -228,111 +214,24 @@ _SCRIPT_TEMPLATES = [
 ]
 
 
-_OLLAMA_STATUS_CACHE: dict = {}  # url -> (timestamp, is_available)
-
-
-def _ollama_available(cfg: "Config") -> bool:
-    """Quick reachability check for Ollama, cached for 30s per URL."""
-    if not cfg.ollama_url:
-        return False
-    cached = _OLLAMA_STATUS_CACHE.get(cfg.ollama_url)
-    if cached and time.time() - cached[0] < 30:
-        return cached[1]
-    try:
-        r = requests.get(f"{cfg.ollama_url}/api/tags", timeout=2)
-        ok = r.status_code < 400
-    except Exception:
-        ok = False
-    _OLLAMA_STATUS_CACHE[cfg.ollama_url] = (time.time(), ok)
-    return ok
-
-
-def _ollama_generate(prompt: str, cfg: "Config", max_tokens: int = 2048,
-                     temperature: float = 0.8, system: str = "",
-                     num_ctx: int = 8192) -> str:
-    """Call Ollama's /api/chat and return the assistant text. Raises on failure."""
-    if not cfg.ollama_url:
-        raise RuntimeError("ollama_url not configured")
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-    body = {
-        "model": cfg.ollama_model_text,
-        "messages": messages,
-        "stream": False,
-        "options": {
-            "temperature": float(temperature),
-            "num_predict": int(max_tokens),
-            "num_ctx": int(num_ctx),
-        },
-    }
-    try:
-        r = requests.post(f"{cfg.ollama_url}/api/chat", json=body, timeout=180)
-    except requests.RequestException as e:
-        raise RuntimeError(f"Ollama unreachable at {cfg.ollama_url}: {e}") from e
-    if r.status_code >= 400:
-        raise RuntimeError(f"Ollama {r.status_code}: {r.text[:240]}")
-    try:
-        data = r.json()
-    except Exception as e:
-        raise RuntimeError(f"Ollama non-JSON response: {r.text[:240]}") from e
-    msg = (data.get("message") or {}).get("content", "")
-    if not msg:
-        raise RuntimeError(f"Ollama returned empty message: {str(data)[:240]}")
-    return str(msg).strip()
-
-
 def fallback_template_script(topic: str) -> str:
     return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein krasser Roblox Moment")
 
 
 def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
                     on_step=None) -> str:
-    """Top-level script generator. Tries local Ollama first (free, fast, no
-    rate limits), falls back to Gemini, then raises so the caller can fall
-    back to the template."""
+    """Top-level script generator. Just Gemini for now; falls through to the
+    template if Gemini isn't configured or rate-limits the caller."""
     def log(msg):
         if on_step:
             try: on_step(msg)
             except Exception: pass
         else:
             print(msg)
-    target_low = max(10, int(target_seconds - 3))
-    target_high = int(target_seconds + 3)
-    words_low = int(target_seconds * 2.0)
-    words_high = int(target_seconds * 2.6)
-    prompt_text = SCRIPT_PROMPT.format(
-        topic=topic, target_low=target_low, target_high=target_high,
-        words_low=words_low, words_high=words_high,
-    )
-    if cfg.ollama_url and _ollama_available(cfg):
-        log(f"      script via Ollama ({cfg.ollama_model_text}) — local, free")
-        try:
-            # Strong system prompt to enforce length: Llama 3.1 8B otherwise
-            # tends to return ~30 words instead of the 60-78 we asked for.
-            system_msg = (
-                f"Du schreibst Voiceover-Skripte für YouTube Shorts. "
-                f"WICHTIG: Halte dich GENAU an die geforderte Wortzahl "
-                f"({words_low}-{words_high} Wörter). Gib NUR den reinen "
-                f"Sprechertext aus, ohne Vor- oder Nachwort, ohne Markdown."
-            )
-            text = _ollama_generate(
-                prompt_text, cfg, max_tokens=2048, temperature=0.9,
-                system=system_msg, num_ctx=8192,
-            )
-            min_chars = max(80, int(words_low * 4.5))  # ~4.5 chars/word German
-            word_count = len(text.split())
-            log(f"      script length: {len(text)} chars / {word_count} words (target {words_low}-{words_high})")
-            if text and len(text) >= min_chars:
-                return text
-            log(f"      WARN: Ollama output too short ({len(text)} chars < {min_chars}); trying Gemini")
-        except Exception as e:
-            log(f"      WARN: Ollama script gen failed ({str(e)[:160]}); trying Gemini")
     if cfg.gemini_api_key:
         log(f"      script via Gemini ({cfg.gemini_model})")
         return generate_script_via_gemini(topic, cfg, target_seconds)
-    raise RuntimeError("no script backend reachable (Ollama down, no Gemini key)")
+    raise RuntimeError("no script backend configured (gemini_api_key missing)")
 
 
 def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0) -> str:
@@ -387,91 +286,7 @@ def make_silent_track(duration: float, out_path: Path) -> Path:
     return out_path
 
 
-_XTTS_MODEL = None
-
-
-def _get_xtts_model():
-    """Lazy-init Coqui XTTS-v2. First call downloads ~2GB to ~/.local/share/tts."""
-    global _XTTS_MODEL
-    if _XTTS_MODEL is not None:
-        return _XTTS_MODEL
-    try:
-        from TTS.api import TTS  # coqui-tts package provides "TTS" import
-    except ImportError as e:
-        msg = str(e)
-        # PyTorch missing (Coqui's own __init__ message)
-        if "PyTorch" in msg and ("not found" in msg.lower() or "torchaudio" in msg.lower()):
-            raise RuntimeError(
-                "Coqui TTS is installed but PyTorch is missing. Run:\n"
-                "  .venv\\Scripts\\python.exe -m pip install torch torchaudio "
-                "--index-url https://download.pytorch.org/whl/cu124"
-            ) from e
-        # transformers version mismatch — common with newer envs.
-        # isin_mps_friendly was added in transformers 4.41 and removed in 5.0,
-        # so a working pin for current coqui-tts is the 4.57-4.99 range.
-        if "transformers" in msg.lower() or "isin_mps_friendly" in msg:
-            raise RuntimeError(
-                "Coqui TTS is incompatible with the installed transformers version. Run:\n"
-                "  .venv\\Scripts\\python.exe -m pip install \"transformers>=4.57,<5.0\""
-            ) from e
-        if "TTS" in msg and "tts" not in msg.lower().split("'")[1:2]:
-            raise RuntimeError(
-                "coqui-tts not installed. Run:\n"
-                "  .venv\\Scripts\\python.exe -m pip install coqui-tts torch torchaudio "
-                "--index-url https://download.pytorch.org/whl/cu124"
-            ) from e
-        raise RuntimeError(f"coqui-tts import failed: {msg}") from e
-    except Exception as e:
-        raise RuntimeError(f"coqui-tts import failed: {e}") from e
-    try:
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        device = "cpu"
-    # accept_license avoids the interactive y/n prompt on first model download.
-    os.environ.setdefault("COQUI_TOS_AGREED", "1")
-    model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
-    _XTTS_MODEL = model
-    return _XTTS_MODEL
-
-
-def synthesize_voiceover_local(text: str, cfg: Config, out_path: Path) -> Path:
-    """Local TTS via Coqui XTTS-v2 voice cloning. Needs a reference WAV/MP3
-    in cfg.local_tts_ref_audio (6-15s clean audio of the voice to clone)."""
-    if not cfg.local_tts_ref_audio:
-        raise RuntimeError(
-            "local_tts_ref_audio not set — point it to a 6-15s clean WAV/MP3 "
-            "of the voice you want to clone"
-        )
-    ref = Path(cfg.local_tts_ref_audio).expanduser()
-    if not ref.is_file():
-        raise RuntimeError(f"local_tts_ref_audio not found: {ref}")
-    model = _get_xtts_model()
-    # XTTS-v2 outputs WAV. Write to a temp .wav next to out_path then transcode
-    # to whatever extension the caller asked for (usually .mp3).
-    tmp_wav = out_path.with_suffix(".xtts.wav")
-    try:
-        model.tts_to_file(
-            text=text,
-            speaker_wav=str(ref),
-            language=cfg.local_tts_language or "de",
-            file_path=str(tmp_wav),
-            split_sentences=True,
-        )
-        run([
-            "ffmpeg", "-y", "-i", str(tmp_wav),
-            "-c:a", "libmp3lame", "-q:a", "4", str(out_path),
-        ])
-    finally:
-        if tmp_wav.exists():
-            try: tmp_wav.unlink()
-            except Exception: pass
-    return out_path
-
-
-def synthesize_voiceover_elevenlabs(text: str, cfg: Config, out_path: Path) -> Path:
-    if not cfg.elevenlabs_api_key:
-        raise RuntimeError("elevenlabs_api_key missing in config")
+def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{cfg.elevenlabs_voice_id}"
     headers = {
         "xi-api-key": cfg.elevenlabs_api_key,
@@ -488,13 +303,6 @@ def synthesize_voiceover_elevenlabs(text: str, cfg: Config, out_path: Path) -> P
         raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:300]}")
     out_path.write_bytes(r.content)
     return out_path
-
-
-def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
-    """Dispatch to local XTTS voice cloning or to ElevenLabs based on config."""
-    if cfg.local_tts_enabled:
-        return synthesize_voiceover_local(text, cfg, out_path)
-    return synthesize_voiceover_elevenlabs(text, cfg, out_path)
 
 
 def trim_leading_silence(in_path: Path, out_path: Path,
@@ -1883,23 +1691,11 @@ def generate_scene_prompts_cloudflare(script: str, n: int, cfg: Config) -> list[
 
 def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
     base = derive_image_prompt(script[:200])
-    # 1. Ollama (local, free, fast) — preferred
-    if cfg.ollama_url and _ollama_available(cfg):
-        try:
-            print(f"      trying Ollama ({cfg.ollama_model_text}) for {n} scene prompts")
-            prompts = _scene_prompts_ollama(script, n, cfg, base)
-            while len(prompts) < n:
-                prompts.append(base)
-            return prompts[:n]
-        except Exception as e:
-            print(f"      WARN: Ollama scene gen failed ({str(e)[:160]})")
-    # 2. Gemini (online, usually best output)
     if cfg.gemini_api_key:
         try:
             return _scene_prompts_gemini(script, n, cfg, base)
         except _SceneGenError as e:
             print(f"      WARN: Gemini scene gen failed ({e})")
-    # 3. Cloudflare Llama (last online fallback)
     if cfg.cloudflare_account_id and cfg.cloudflare_api_token:
         try:
             print(f"      trying Cloudflare Llama for {n} scene prompts")
@@ -1910,29 +1706,6 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
         except Exception as e:
             print(f"      WARN: Cloudflare scene gen failed ({e}); falling back to single prompt")
     return [base] * n
-
-
-def _scene_prompts_ollama(script: str, n: int, cfg: Config, base: str) -> list[str]:
-    """Generate scene prompts via local Ollama. Raises on failure."""
-    text = _ollama_generate(
-        SCENE_PROMPT.format(n=n, script=script),
-        cfg, max_tokens=1024, temperature=0.85,
-        system="You output ONLY a JSON array of strings. No prose, no markdown, no code fences.",
-    )
-    if text.startswith("```"):
-        text = text.split("```", 2)[1]
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-    s, e = text.find("["), text.rfind("]")
-    if s != -1 and e != -1 and e > s:
-        text = text[s:e + 1]
-    prompts = json.loads(text)
-    if not isinstance(prompts, list):
-        raise ValueError("expected JSON array")
-    prompts = [str(p).strip() for p in prompts if str(p).strip()]
-    if not prompts:
-        raise ValueError("empty prompt list")
-    return prompts[:n]
 
 
 class _SceneGenError(RuntimeError):

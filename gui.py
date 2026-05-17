@@ -88,9 +88,6 @@ def generate(
     auto_reframe: bool,
     enable_voice: bool,
     voice_id: str,
-    local_tts_enabled: bool,
-    local_tts_ref_audio: str,
-    local_tts_language: str,
     enable_music: bool,
     music_dir: str,
     music_track: str,
@@ -124,10 +121,6 @@ def generate(
     try:
         cfg = Config.load(Path(config_path))
         cfg.elevenlabs_voice_id = voice_id
-        cfg.local_tts_enabled = bool(local_tts_enabled)
-        if local_tts_ref_audio and str(local_tts_ref_audio).strip():
-            cfg.local_tts_ref_audio = str(local_tts_ref_audio).strip()
-        cfg.local_tts_language = str(local_tts_language or "de")
     except Exception as e:
         yield f"Config-Fehler: {e}", None
         return
@@ -334,36 +327,6 @@ def build_app() -> gr.Blocks:
                 value=VOICES[0][1],
                 label="ElevenLabs Stimme",
             )
-            with gr.Accordion("🦜 Lokales Voice Cloning (statt ElevenLabs)", open=False):
-                local_tts_enabled = gr.Checkbox(
-                    value=False,
-                    label="Lokales XTTS-v2 verwenden",
-                    info="Klont die Stimme aus einer Referenz-Audio-Datei. "
-                         "Erste Nutzung lädt ~2GB Modell. ElevenLabs wird komplett übersprungen.",
-                )
-                local_tts_ref_audio = gr.Audio(
-                    label="Referenz-Audio (6-15s saubere Aufnahme, EINE Stimme)",
-                    sources=["upload", "microphone"],
-                    type="filepath",
-                )
-                gr.Markdown(
-                    "💡 **Tipp:** Mikrofon-Icon nehmen und 10s neutral sprechen, oder eine "
-                    "MP3/WAV hochladen. Klar, keine Musik im Hintergrund, kein Crosstalk."
-                )
-                local_tts_language = gr.Dropdown(
-                    choices=[
-                        ("Deutsch", "de"), ("Englisch", "en"), ("Spanisch", "es"),
-                        ("Französisch", "fr"), ("Italienisch", "it"),
-                        ("Portugiesisch", "pt"), ("Polnisch", "pl"),
-                        ("Türkisch", "tr"), ("Niederländisch", "nl"),
-                        ("Tschechisch", "cs"), ("Arabisch", "ar"),
-                        ("Chinesisch", "zh-cn"), ("Japanisch", "ja"),
-                        ("Ungarisch", "hu"), ("Koreanisch", "ko"),
-                        ("Hindi", "hi"),
-                    ],
-                    value="de",
-                    label="Sprache",
-                )
 
         # ───────────── Audio (BGM + SFX) ─────────────
         with gr.Accordion("🎵 Audio (Musik + SFX)", open=False):
@@ -566,7 +529,6 @@ def build_app() -> gr.Blocks:
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, scene_pick_mode, auto_reframe, enable_voice, voice_id,
-                local_tts_enabled, local_tts_ref_audio, local_tts_language,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
