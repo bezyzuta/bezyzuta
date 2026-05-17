@@ -2173,6 +2173,25 @@ def transcribe_full_video(video_path: Path, model_name: str,
     raise RuntimeError(f"full transcription failed on all backends: {last_err}")
 
 
+def _snap_to_segment_boundary(time_target: float, segments: list,
+                              kind: str, tolerance: float) -> float:
+    """Snap a time to the nearest Whisper segment boundary within `tolerance`
+    seconds. kind = 'start' (snap to a segment's start) or 'end' (snap to a
+    segment's end). Returns time_target unchanged if no boundary fits."""
+    if not segments or tolerance <= 0:
+        return time_target
+    if kind == "start":
+        cand = [(abs(s[0] - time_target), s[0]) for s in segments
+                if abs(s[0] - time_target) <= tolerance]
+    else:
+        cand = [(abs(s[1] - time_target), s[1]) for s in segments
+                if abs(s[1] - time_target) <= tolerance]
+    if not cand:
+        return time_target
+    cand.sort()
+    return cand[0][1]
+
+
 def find_best_moments(segments: list, n_clips: int, target_duration: float,
                       cfg: "Config", on_step=None) -> list:
     """Send the transcript to Gemini and ask for the N best viral moments.
@@ -2274,24 +2293,36 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
     if not cleaned:
         raise RuntimeError("Gemini returned no usable moments")
 
-    # Enforce target_duration: Gemini sometimes returns a 8-13s "peak" moment
-    # even when asked for 30s. Expand symmetrically around the center so each
-    # clip is at least target_duration seconds long.
+    # Snap each Gemini moment to natural sentence boundaries (Whisper segment
+    # ends). This is how Opus.pro avoids cutting mid-sentence: the clip
+    # finishes at a real speech pause, even if that means 25s or 35s instead
+    # of the requested 30s.
     src_end = max(s[1] for s in segments) if segments else 0.0
-    min_dur = max(8.0, float(target_duration) - 2.0)
+    target_min = max(15.0, float(target_duration) - 5.0)
+    target_max = float(target_duration) + 10.0
     for m in cleaned:
-        cur = m["end"] - m["start"]
-        if cur < min_dur:
-            center = (m["start"] + m["end"]) / 2.0
-            half = float(target_duration) / 2.0
-            new_start = max(0.0, center - half)
-            new_end = new_start + float(target_duration)
-            if src_end > 0 and new_end > src_end:
-                # Slide the window back so it ends at src_end
-                new_end = src_end
-                new_start = max(0.0, new_end - float(target_duration))
-            m["start"] = new_start
-            m["end"] = new_end
+        # Start: snap to nearest segment start within ±5s of Gemini's pick.
+        snapped_start = _snap_to_segment_boundary(m["start"], segments, "start", 5.0)
+        # End: aim for snapped_start + target_duration, snap to nearest segment
+        # end within ±8s for a clean sentence finish.
+        ideal_end = snapped_start + float(target_duration)
+        snapped_end = _snap_to_segment_boundary(ideal_end, segments, "end", 8.0)
+        # Enforce a minimum length so we don't end up with 5s pieces.
+        if snapped_end - snapped_start < target_min:
+            snapped_end = snapped_start + target_min
+            # Try to extend to a sentence boundary even past tolerance.
+            snapped_end = _snap_to_segment_boundary(snapped_end, segments, "end", 6.0)
+        # Cap at target_max so we don't massively overshoot.
+        if snapped_end - snapped_start > target_max:
+            snapped_end = snapped_start + float(target_duration)
+            snapped_end = _snap_to_segment_boundary(snapped_end, segments, "end", 4.0)
+        # Clamp to source end.
+        if src_end > 0 and snapped_end > src_end:
+            snapped_end = src_end
+            if snapped_end - snapped_start < target_min:
+                snapped_start = max(0.0, snapped_end - float(target_duration))
+        m["start"] = snapped_start
+        m["end"] = snapped_end
     return cleaned[:n_clips]
 
 
