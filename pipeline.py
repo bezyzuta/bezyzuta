@@ -382,20 +382,27 @@ def _get_xtts_model():
     try:
         from TTS.api import TTS  # coqui-tts package provides "TTS" import
     except ImportError as e:
-        # Tell the user exactly what's missing (coqui-tts OR torch — they're
-        # separate installs).
         msg = str(e)
-        if "PyTorch" in msg or "torchaudio" in msg.lower() or "torch" in msg.lower():
+        # PyTorch missing (Coqui's own __init__ message)
+        if "PyTorch" in msg and ("not found" in msg.lower() or "torchaudio" in msg.lower()):
             raise RuntimeError(
                 "Coqui TTS is installed but PyTorch is missing. Run:\n"
                 "  .venv\\Scripts\\python.exe -m pip install torch torchaudio "
                 "--index-url https://download.pytorch.org/whl/cu124"
             ) from e
-        raise RuntimeError(
-            "coqui-tts not installed. Run: "
-            ".venv\\Scripts\\python.exe -m pip install coqui-tts torch torchaudio "
-            "--index-url https://download.pytorch.org/whl/cu124"
-        ) from e
+        # transformers version mismatch — common with newer envs
+        if "transformers" in msg.lower() or "isin_mps_friendly" in msg:
+            raise RuntimeError(
+                "Coqui TTS is incompatible with the installed transformers version. Run:\n"
+                "  .venv\\Scripts\\python.exe -m pip install \"transformers>=4.41,<4.49\""
+            ) from e
+        if "TTS" in msg and "tts" not in msg.lower().split("'")[1:2]:
+            raise RuntimeError(
+                "coqui-tts not installed. Run:\n"
+                "  .venv\\Scripts\\python.exe -m pip install coqui-tts torch torchaudio "
+                "--index-url https://download.pytorch.org/whl/cu124"
+            ) from e
+        raise RuntimeError(f"coqui-tts import failed: {msg}") from e
     except Exception as e:
         raise RuntimeError(f"coqui-tts import failed: {e}") from e
     try:
