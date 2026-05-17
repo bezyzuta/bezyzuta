@@ -2,13 +2,15 @@ requests>=2.31
 yt-dlp>=2024.5.27
 faster-whisper>=1.0.3
 gradio>=4.40
-# Local face detection for auto-reframe (offline, no API).
-# InsightFace = industry-standard accuracy (RetinaFace/SCRFD); MediaPipe is
-# the fallback if InsightFace import or model download fails.
-# First InsightFace run downloads ~280MB of weights to ~/.insightface/.
-insightface>=0.7
-onnxruntime>=1.18
+# Local face detection for auto-reframe (offline, no API, ~10MB, Apache 2.0).
+# Plenty accurate for clear front-facing faces in podcasts / interviews.
 mediapipe>=0.10
+# Optional, NOT pulled by default: InsightFace gives better profile / partial-
+# face accuracy but needs Microsoft Visual C++ Build Tools on Windows to
+# compile a Cython extension. If you've installed it manually the pipeline
+# will use it automatically. Install with:
+#   .venv\Scripts\python.exe -m pip install insightface onnxruntime
+# (after installing VC++ Build Tools from https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 # CUDA runtime libs for faster-whisper GPU mode (no-op on AMD/Intel/CPU-only)
 nvidia-cublas-cu12; platform_system != "Darwin"
 nvidia-cuda-runtime-cu12; platform_system != "Darwin"
