@@ -843,6 +843,70 @@ def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
     return ("", "retry loop exhausted")
 
 
+def _detect_subject_at_time(source: Path, at_time: float, cfg,
+                            sample_path: Path) -> float:
+    """Sample ONE frame at the given time, ask Cloudflare Vision for 0-100,
+    return float 0.0-1.0. Returns 0.5 (centered) on any failure."""
+    if not cfg.cloudflare_account_id or not cfg.cloudflare_api_token:
+        return 0.5
+    if not _extract_thumbnail(source, at_time, sample_path, width=480):
+        return 0.5
+    prompt = (
+        "This is a frame from a wide landscape video. It will be cropped to a "
+        "narrow vertical 9:16 portrait format, showing only a slice from the "
+        "horizontal position you choose. Pick the position that shows the "
+        "MOST PEOPLE / LARGEST FACE.\n\n"
+        "Reply with ONE integer:\n"
+        "  10 = a person is on the far left side of the frame\n"
+        "  30 = a person is on the left side\n"
+        "  50 = ONE person is centered (no other people visible)\n"
+        "  70 = a person is on the right side\n"
+        "  90 = a person is on the far right side\n\n"
+        "IMPORTANT: If there are TWO OR MORE people spread across the frame "
+        "(e.g. podcast, interview, two speakers), DO NOT answer 50. Pick the "
+        "side where the most prominent / loudest-looking face is. Reply with "
+        "just the number."
+    )
+    text, err = _cloudflare_vision_score(sample_path, prompt, cfg)
+    if err:
+        return 0.5
+    m = re.search(r"\d+", text)
+    if not m:
+        return 0.5
+    val = float(m.group(0))
+    if 0 <= val <= 100:
+        return val / 100.0
+    return 0.5
+
+
+def detect_subjects_per_segment(clip: Path, n_segments: int, seg_dur: float,
+                                cfg, on_step=None) -> list:
+    """Per-segment subject detection. Returns [(segment_start_time, offset), ...].
+    For each segment, samples one frame in the middle and asks Cloudflare
+    Vision where the subject is. Falls back to 0.5 (centered) per segment."""
+    def log(msg: str) -> None:
+        if on_step:
+            try:
+                on_step(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+
+    work = clip.parent
+    work.mkdir(parents=True, exist_ok=True)
+    offsets: list = []
+    for i in range(n_segments):
+        seg_start = i * seg_dur
+        seg_mid = seg_start + seg_dur / 2
+        sample = work / f"reframe_seg_{i:02d}.jpg"
+        off = _detect_subject_at_time(clip, seg_mid, cfg, sample)
+        offsets.append((float(seg_start), float(off)))
+    summary = ", ".join(f"{t:.1f}s={int(o*100)}%" for t, o in offsets)
+    log(f"      auto-reframe per-scene: {summary}")
+    return offsets
+
+
 def _cloudflare_pick_thumbnails(thumb_paths: list, n_pick: int, cfg,
                                 on_step=None) -> list:
     """Score each thumbnail via Cloudflare Llama 3.2 Vision (free tier) and
@@ -1503,10 +1567,32 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         )
     cwd = ass_path.parent
 
-    # 9:16 crop window with optional horizontal offset.
-    # offset 0 = left edge, 0.5 = centered, 1 = right edge.
-    crop_off = max(0.0, min(1.0, float(crop_offset)))
-    crop_expr = f"crop=ih*9/16:ih:x=(iw-ih*9/16)*{crop_off:.3f}:y=0"
+    # 9:16 crop window with optional horizontal offset(s).
+    # crop_offset can be a single float 0..1 or a list of (segment_start_seconds, offset)
+    # tuples for per-scene reframe. offset 0 = left edge, 0.5 = centered, 1 = right edge.
+    if isinstance(crop_offset, (list, tuple)) and crop_offset and isinstance(crop_offset[0], (list, tuple)):
+        offsets = [(float(t), max(0.0, min(1.0, float(o)))) for t, o in crop_offset]
+        offsets.sort(key=lambda x: x[0])
+    else:
+        try:
+            single = max(0.0, min(1.0, float(crop_offset)))
+        except (TypeError, ValueError):
+            single = 0.5
+        offsets = [(0.0, single)]
+
+    if len(offsets) <= 1:
+        crop_x = f"(iw-ih*9/16)*{offsets[0][1]:.3f}"
+    else:
+        # Build nested if(lt(t, T_next), this_offset, ...) inside out.
+        crop_x = f"(iw-ih*9/16)*{offsets[-1][1]:.3f}"
+        for i in range(len(offsets) - 2, -1, -1):
+            next_t = offsets[i + 1][0]
+            this_off = offsets[i][1]
+            crop_x = (
+                f"if(lt(t\\,{next_t:.2f})\\,"
+                f"(iw-ih*9/16)*{this_off:.3f}\\,{crop_x})"
+            )
+    crop_expr = f"crop=ih*9/16:ih:x='{crop_x}':y=0"
 
     use_bar = bool(progress_bar and progress_duration > 0.5)
     bar_h = max(8, int(cfg.target_h * 0.008)) if use_bar else 0
@@ -1852,8 +1938,15 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
     crop_offset = 0.5
     if bool(job.get("auto_reframe", False)):
-        step("      auto-reframe: asking Cloudflare Vision where the subject is")
-        crop_offset = detect_subject_x_position(clip, cfg, on_step=step)
+        if clip_segments > 1:
+            seg_dur = target / clip_segments
+            step(f"      auto-reframe: per-scene detection ({clip_segments} segments)")
+            crop_offset = detect_subjects_per_segment(
+                clip, clip_segments, seg_dur, cfg, on_step=step
+            )
+        else:
+            step("      auto-reframe: asking Cloudflare Vision where the subject is")
+            crop_offset = detect_subject_x_position(clip, cfg, on_step=step)
 
     step("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
