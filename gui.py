@@ -86,6 +86,7 @@ def generate(
     clip_segments: int,
     scene_pick_mode: str,
     auto_reframe: bool,
+    enable_voice: bool,
     voice_id: str,
     enable_music: bool,
     music_dir: str,
@@ -139,6 +140,7 @@ def generate(
             "clip_segments": int(clip_segments),
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "auto_reframe": bool(auto_reframe),
+            "enable_voice": bool(enable_voice),
             "image_count": int(image_count),
             "image_duration": float(image_duration),
             "no_image": bool(skip_images),
@@ -277,6 +279,12 @@ def build_app() -> gr.Blocks:
 
         # ───────────── Skript & Stimme ─────────────
         with gr.Accordion("🎤 Skript & Stimme", open=True):
+            enable_voice = gr.Checkbox(
+                value=True,
+                label="🎙️ Sprecher aktiv",
+                info=("Aus = kein Voiceover, keine ElevenLabs-API-Call, keine Untertitel. "
+                      "Video läuft nur mit Musik/SFX/Bildern. Skript-Thema und Stimme darunter werden ignoriert."),
+            )
             topic = gr.Textbox(
                 value="Krasser Moment, totaler Wahnsinn",
                 label="Skript-Thema",
@@ -520,7 +528,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, scene_pick_mode, auto_reframe, voice_id,
+                clip_segments, scene_pick_mode, auto_reframe, enable_voice, voice_id,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,

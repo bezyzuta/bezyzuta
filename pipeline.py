@@ -255,6 +255,21 @@ def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 
     return text
 
 
+def make_silent_track(duration: float, out_path: Path) -> Path:
+    """Generate a silent mp3 of the given duration. Used when the user runs
+    a short without a voiceover so downstream music/SFX mixing still has a
+    base track to overlay onto."""
+    run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-t", f"{max(0.5, duration):.2f}",
+        "-c:a", "libmp3lame", "-q:a", "4",
+        str(out_path),
+    ])
+    return out_path
+
+
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{cfg.elevenlabs_voice_id}"
     headers = {
@@ -1753,29 +1768,36 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
     target_duration = float(job.get("target_duration", 30.0))
 
-    script = (job.get("script") or "").strip()
-    if script:
-        step(f"      using user-provided script ({len(script)} chars)")
+    enable_voice = bool(job.get("enable_voice", True))
+
+    if enable_voice:
+        script = (job.get("script") or "").strip()
+        if script:
+            step(f"      using user-provided script ({len(script)} chars)")
+        else:
+            topic = (job.get("topic") or "").strip()
+            if not topic:
+                raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
+            step(f"      generating script via Gemini for topic: {topic!r} (target {target_duration:.0f}s)")
+            try:
+                script = generate_script_via_gemini(topic, cfg, target_seconds=target_duration)
+            except RuntimeError as e:
+                step(f"      WARN: Gemini failed: {e}")
+                step(f"      using template fallback script (pipeline continues)")
+                script = fallback_template_script(topic)
+        (work / "script.txt").write_text(script, encoding="utf-8")
+        preview = script[:80].replace("\n", " ")
+        step(f"      script: {preview}...")
+
+        step("[2/5] voiceover")
+        vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
+        vo = trim_leading_silence(vo_raw, work / "voice.mp3")
+        vo_dur = probe_duration(vo)
     else:
-        topic = (job.get("topic") or "").strip()
-        if not topic:
-            raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
-        step(f"      generating script via Gemini for topic: {topic!r} (target {target_duration:.0f}s)")
-        try:
-            script = generate_script_via_gemini(topic, cfg, target_seconds=target_duration)
-        except RuntimeError as e:
-            step(f"      WARN: Gemini failed: {e}")
-            step(f"      using template fallback script (pipeline continues)")
-            script = fallback_template_script(topic)
-    (work / "script.txt").write_text(script, encoding="utf-8")
-    preview = script[:80].replace("\n", " ")
-    step(f"      script: {preview}...")
+        step("[2/5] voice disabled — generating silent base track")
+        vo_dur = float(target_duration)
+        vo = make_silent_track(vo_dur, work / "voice.mp3")
 
-    step("[2/5] voiceover")
-    vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
-    vo = trim_leading_silence(vo_raw, work / "voice.mp3")
-
-    vo_dur = probe_duration(vo)
     # bias clip duration toward target_duration but never cut the voiceover
     target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0, 150.0)
     step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s (target {target_duration:.0f}s)")
@@ -1808,10 +1830,14 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             step("[3/5] pick gameplay segment")
             clip = pick_clip(raw, target, work / "clip.mp4")
 
-    whisper_device = str(job.get("whisper_device", "auto"))
-    step(f"[4/5] transcribe + captions (device={whisper_device})")
-    words, used_dev = transcribe_words(vo, cfg.whisper_model, device=whisper_device)
-    step(f"      whisper ran on {used_dev}")
+    if enable_voice:
+        whisper_device = str(job.get("whisper_device", "auto"))
+        step(f"[4/5] transcribe + captions (device={whisper_device})")
+        words, used_dev = transcribe_words(vo, cfg.whisper_model, device=whisper_device)
+        step(f"      whisper ran on {used_dev}")
+    else:
+        step("[4/5] no voice — skipping transcription, no captions to render")
+        words = []
     ass = write_ass(
         words, cfg.target_w, cfg.target_h, work / "captions.ass",
         font_name=str(job.get("caption_font", "Impact")),
