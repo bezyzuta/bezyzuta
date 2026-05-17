@@ -341,12 +341,14 @@ def build_app() -> gr.Blocks:
                     info="Klont die Stimme aus einer Referenz-Audio-Datei. "
                          "Erste Nutzung lädt ~2GB Modell. ElevenLabs wird komplett übersprungen.",
                 )
-                local_tts_ref_audio = gr.Textbox(
-                    value="",
-                    label="Pfad zu Referenz-Audio (.wav oder .mp3, 6-15 Sekunden)",
-                    placeholder=r"z.B. C:\Users\bezy\Desktop\meine-stimme.wav",
-                    info="Eine saubere Aufnahme einer einzelnen Stimme. "
-                         "Tipp: Handy-Memo nehmen, ~10s neutral sprechen, als WAV exportieren.",
+                local_tts_ref_audio = gr.Audio(
+                    label="Referenz-Audio (6-15s saubere Aufnahme, EINE Stimme)",
+                    sources=["upload", "microphone"],
+                    type="filepath",
+                )
+                gr.Markdown(
+                    "💡 **Tipp:** Mikrofon-Icon nehmen und 10s neutral sprechen, oder eine "
+                    "MP3/WAV hochladen. Klar, keine Musik im Hintergrund, kein Crosstalk."
                 )
                 local_tts_language = gr.Dropdown(
                     choices=[
