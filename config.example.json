@@ -10,6 +10,9 @@
   "cloudflare_image_model": "@cf/black-forest-labs/flux-1-schnell",
   "ollama_url": "http://localhost:11434",
   "ollama_model_text": "llama3.1:8b",
+  "local_tts_enabled": false,
+  "local_tts_ref_audio": "",
+  "local_tts_language": "de",
   "whisper_model": "small",
   "target_resolution": [1080, 1920],
   "ducking_db": -18

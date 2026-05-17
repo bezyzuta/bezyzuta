@@ -43,13 +43,20 @@ class Config:
     cloudflare_image_model: str
     ollama_url: str
     ollama_model_text: str
+    local_tts_enabled: bool
+    local_tts_ref_audio: str
+    local_tts_language: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
         data = _loads_lenient(path.read_text(encoding="utf-8"))
         api_key = data.get("elevenlabs_api_key") or os.environ.get("ELEVENLABS_API_KEY", "")
-        if not api_key:
-            raise SystemExit("elevenlabs_api_key missing in config and ELEVENLABS_API_KEY not set")
+        local_tts_on = bool(data.get("local_tts_enabled", False))
+        if not api_key and not local_tts_on:
+            raise SystemExit(
+                "elevenlabs_api_key missing in config and ELEVENLABS_API_KEY not set. "
+                "Set one or enable local_tts_enabled=true to skip ElevenLabs."
+            )
         w, h = data.get("target_resolution", [1080, 1920])
         return cls(
             output_dir=Path(data["output_dir"]).expanduser(),
@@ -67,6 +74,9 @@ class Config:
             cloudflare_image_model=data.get("cloudflare_image_model", "@cf/black-forest-labs/flux-1-schnell"),
             ollama_url=str(data.get("ollama_url", "http://localhost:11434")).rstrip("/"),
             ollama_model_text=str(data.get("ollama_model_text", "llama3.1:8b")),
+            local_tts_enabled=bool(data.get("local_tts_enabled", False)),
+            local_tts_ref_audio=str(data.get("local_tts_ref_audio", "")),
+            local_tts_language=str(data.get("local_tts_language", "de")),
         )
 
 
@@ -361,7 +371,69 @@ def make_silent_track(duration: float, out_path: Path) -> Path:
     return out_path
 
 
-def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
+_XTTS_MODEL = None
+
+
+def _get_xtts_model():
+    """Lazy-init Coqui XTTS-v2. First call downloads ~2GB to ~/.local/share/tts."""
+    global _XTTS_MODEL
+    if _XTTS_MODEL is not None:
+        return _XTTS_MODEL
+    try:
+        from TTS.api import TTS  # coqui-tts package provides "TTS" import
+    except Exception as e:
+        raise RuntimeError(
+            "coqui-tts not installed. Run: .venv\\Scripts\\python.exe -m pip install coqui-tts"
+        ) from e
+    try:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        device = "cpu"
+    # accept_license avoids the interactive y/n prompt on first model download.
+    os.environ.setdefault("COQUI_TOS_AGREED", "1")
+    model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+    _XTTS_MODEL = model
+    return _XTTS_MODEL
+
+
+def synthesize_voiceover_local(text: str, cfg: Config, out_path: Path) -> Path:
+    """Local TTS via Coqui XTTS-v2 voice cloning. Needs a reference WAV/MP3
+    in cfg.local_tts_ref_audio (6-15s clean audio of the voice to clone)."""
+    if not cfg.local_tts_ref_audio:
+        raise RuntimeError(
+            "local_tts_ref_audio not set — point it to a 6-15s clean WAV/MP3 "
+            "of the voice you want to clone"
+        )
+    ref = Path(cfg.local_tts_ref_audio).expanduser()
+    if not ref.is_file():
+        raise RuntimeError(f"local_tts_ref_audio not found: {ref}")
+    model = _get_xtts_model()
+    # XTTS-v2 outputs WAV. Write to a temp .wav next to out_path then transcode
+    # to whatever extension the caller asked for (usually .mp3).
+    tmp_wav = out_path.with_suffix(".xtts.wav")
+    try:
+        model.tts_to_file(
+            text=text,
+            speaker_wav=str(ref),
+            language=cfg.local_tts_language or "de",
+            file_path=str(tmp_wav),
+            split_sentences=True,
+        )
+        run([
+            "ffmpeg", "-y", "-i", str(tmp_wav),
+            "-c:a", "libmp3lame", "-q:a", "4", str(out_path),
+        ])
+    finally:
+        if tmp_wav.exists():
+            try: tmp_wav.unlink()
+            except Exception: pass
+    return out_path
+
+
+def synthesize_voiceover_elevenlabs(text: str, cfg: Config, out_path: Path) -> Path:
+    if not cfg.elevenlabs_api_key:
+        raise RuntimeError("elevenlabs_api_key missing in config")
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{cfg.elevenlabs_voice_id}"
     headers = {
         "xi-api-key": cfg.elevenlabs_api_key,
@@ -378,6 +450,13 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
         raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:300]}")
     out_path.write_bytes(r.content)
     return out_path
+
+
+def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
+    """Dispatch to local XTTS voice cloning or to ElevenLabs based on config."""
+    if cfg.local_tts_enabled:
+        return synthesize_voiceover_local(text, cfg, out_path)
+    return synthesize_voiceover_elevenlabs(text, cfg, out_path)
 
 
 def trim_leading_silence(in_path: Path, out_path: Path,
