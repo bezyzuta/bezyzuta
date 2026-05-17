@@ -739,7 +739,7 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
         thumb = work / f"reframe_sample_{i}.jpg"
         if not _extract_thumbnail(source, t, thumb, width=480):
             continue
-        text, err = _vision_score(thumb, prompt, cfg)
+        text, err = _vision_score_cf_first(thumb, prompt, cfg)
         if err:
             if not first_err:
                 first_err = err
@@ -862,6 +862,24 @@ def _vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
     return ("", gemini_err or "no vision backend configured")
 
 
+def _vision_score_cf_first(thumb_path: Path, prompt: str, cfg) -> tuple:
+    """Cloudflare Llama Vision first, Gemini fallback. Used for tasks where
+    Cloudflare's spatial reasoning has been more reliable in practice
+    (auto-reframe / subject position detection)."""
+    cf_err = ""
+    if cfg.cloudflare_account_id and cfg.cloudflare_api_token:
+        text, err = _cloudflare_vision_score(thumb_path, prompt, cfg)
+        if not err and text:
+            return (text, "")
+        cf_err = err or "empty response"
+    if cfg.gemini_api_key:
+        text, err = _gemini_vision_score(thumb_path, prompt, cfg)
+        if not err and text:
+            return (text, "")
+        return ("", f"cloudflare={cf_err[:80]}; gemini={err[:80]}")
+    return ("", cf_err or "no vision backend configured")
+
+
 def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
     """Send one image to Cloudflare Llama 3.2 Vision and return (text, err).
     Uses the OpenAI-style messages format with base64 data URL (most reliable
@@ -953,7 +971,7 @@ def _detect_subject_at_time(source: Path, at_time: float, cfg,
         "subject in the dead center or no people visible.\n\n"
         "Reply with just the number, nothing else."
     )
-    text, err = _vision_score(sample_path, prompt, cfg)
+    text, err = _vision_score_cf_first(sample_path, prompt, cfg)
     if err:
         return 0.5
     m = re.search(r"\d+", text)
