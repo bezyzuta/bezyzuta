@@ -381,10 +381,23 @@ def _get_xtts_model():
         return _XTTS_MODEL
     try:
         from TTS.api import TTS  # coqui-tts package provides "TTS" import
-    except Exception as e:
+    except ImportError as e:
+        # Tell the user exactly what's missing (coqui-tts OR torch — they're
+        # separate installs).
+        msg = str(e)
+        if "PyTorch" in msg or "torchaudio" in msg.lower() or "torch" in msg.lower():
+            raise RuntimeError(
+                "Coqui TTS is installed but PyTorch is missing. Run:\n"
+                "  .venv\\Scripts\\python.exe -m pip install torch torchaudio "
+                "--index-url https://download.pytorch.org/whl/cu124"
+            ) from e
         raise RuntimeError(
-            "coqui-tts not installed. Run: .venv\\Scripts\\python.exe -m pip install coqui-tts"
+            "coqui-tts not installed. Run: "
+            ".venv\\Scripts\\python.exe -m pip install coqui-tts torch torchaudio "
+            "--index-url https://download.pytorch.org/whl/cu124"
         ) from e
+    except Exception as e:
+        raise RuntimeError(f"coqui-tts import failed: {e}") from e
     try:
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
