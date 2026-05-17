@@ -718,7 +718,7 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
         thumb = work / f"reframe_sample_{i}.jpg"
         if not _extract_thumbnail(source, t, thumb, width=480):
             continue
-        text, err = _cloudflare_vision_score(thumb, prompt, cfg)
+        text, err = _vision_score(thumb, prompt, cfg)
         if err:
             if not first_err:
                 first_err = err
@@ -780,6 +780,56 @@ def _cloudflare_accept_vision_agreement(cfg) -> str:
         return f"agreement HTTP {r.status_code}: {r.text[:200]}"
     _CF_VISION_AGREED.add(key)
     return ""
+
+
+def _gemini_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
+    """Send one image to Gemini and return (text, err)."""
+    import base64
+    if not cfg.gemini_api_key:
+        return ("", "Gemini API key not set")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
+    b64 = base64.b64encode(thumb_path.read_bytes()).decode("ascii")
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+            ]
+        }],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 16,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    try:
+        data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
+    except RuntimeError as e:
+        return ("", str(e))
+    try:
+        candidate = data["candidates"][0]
+        parts_resp = candidate.get("content", {}).get("parts", []) or []
+        text = "\n".join(p.get("text", "") for p in parts_resp if not p.get("thought")).strip()
+        return (text, "")
+    except Exception as e:
+        return ("", f"parse error: {e}")
+
+
+def _vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
+    """Try Gemini first (cheap, multi-image capable, high free-tier limit),
+    fall back to Cloudflare Llama Vision (free tier neurons). Returns (text, err)."""
+    gemini_err = ""
+    if cfg.gemini_api_key:
+        text, err = _gemini_vision_score(thumb_path, prompt, cfg)
+        if not err and text:
+            return (text, "")
+        gemini_err = err or "empty response"
+    if cfg.cloudflare_account_id and cfg.cloudflare_api_token:
+        text, err = _cloudflare_vision_score(thumb_path, prompt, cfg)
+        if not err and text:
+            return (text, "")
+        return ("", f"gemini={gemini_err[:80]}; cloudflare={err[:80]}")
+    return ("", gemini_err or "no vision backend configured")
 
 
 def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
@@ -867,7 +917,7 @@ def _detect_subject_at_time(source: Path, at_time: float, cfg,
         "side where the most prominent / loudest-looking face is. Reply with "
         "just the number."
     )
-    text, err = _cloudflare_vision_score(sample_path, prompt, cfg)
+    text, err = _vision_score(sample_path, prompt, cfg)
     if err:
         return 0.5
     m = re.search(r"\d+", text)
@@ -1065,24 +1115,30 @@ def pick_ai_scenes(source: Path, total_seconds: float, n_segments: int,
         return pick_multi_clips(source, total_seconds, n_segments, out_path)
 
     thumb_files = [t[1] for t in thumbs]
+    gemini_ready = bool(cfg.gemini_api_key)
     cf_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
     picks: list = []
-    if cf_ready:
-        log(f"      AI pick: scoring {len(thumbs)} scenes via Cloudflare Llama Vision (free)")
-        try:
-            picks = _cloudflare_pick_thumbnails(thumb_files, n_segments, cfg, on_step=log)
-        except Exception as e:
-            log(f"      AI pick: Cloudflare failed: {str(e)[:240]}")
-            picks = []
-    if not picks:
-        log(f"      AI pick: trying Gemini Vision for {len(thumbs)} scenes")
+    if gemini_ready:
+        log(f"      AI pick: scoring {len(thumbs)} scenes via Gemini Vision (one batched call)")
         try:
             picks = _gemini_pick_thumbnails(thumb_files, n_segments, cfg)
         except Exception as e:
-            log(f"      AI pick: Gemini failed ({str(e)[:160]}); falling back to even pick")
+            log(f"      AI pick: Gemini failed: {str(e)[:240]}")
+            picks = []
+    if not picks and cf_ready:
+        log(f"      AI pick: trying Cloudflare Llama Vision for {len(thumbs)} scenes")
+        try:
+            picks = _cloudflare_pick_thumbnails(thumb_files, n_segments, cfg, on_step=log)
+        except Exception as e:
+            log(f"      AI pick: Cloudflare failed ({str(e)[:160]}); falling back to even pick")
             if n_segments <= 1:
                 return pick_clip(source, total_seconds, out_path)
             return pick_multi_clips(source, total_seconds, n_segments, out_path)
+    if not picks:
+        log("      AI pick: no vision backend usable, falling back to even pick")
+        if n_segments <= 1:
+            return pick_clip(source, total_seconds, out_path)
+        return pick_multi_clips(source, total_seconds, n_segments, out_path)
 
     if len(picks) < n_segments:
         existing = set(picks)
