@@ -695,10 +695,21 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     work.mkdir(parents=True, exist_ok=True)
     sample_times = [src_dur * (i + 0.5) / n_samples for i in range(n_samples)]
     prompt = (
-        "Look at this video frame. Where is the main subject (people, faces, "
-        "main action) located horizontally in the image? Respond with ONLY "
-        "one integer between 0 and 100: 0 = subject on FAR LEFT, 50 = "
-        "subject CENTERED, 100 = subject on FAR RIGHT. Just the number."
+        "This is a frame from a wide landscape video. It will be cropped to a "
+        "narrow vertical 9:16 portrait format, showing only a slice from the "
+        "horizontal position you choose. Pick the position that shows the "
+        "MOST PEOPLE / LARGEST FACE.\n\n"
+        "Reply with ONE integer:\n"
+        "  10 = a person is on the far left side of the frame\n"
+        "  30 = a person is on the left side\n"
+        "  50 = ONE person is centered (no other people visible)\n"
+        "  70 = a person is on the right side\n"
+        "  90 = a person is on the far right side\n\n"
+        "IMPORTANT: If there are TWO OR MORE people spread across the frame "
+        "(e.g. podcast, interview, two speakers), DO NOT answer 50 — that "
+        "would crop the empty space between them. Pick the side with the "
+        "MOST PROMINENT face. If no people are visible at all, answer 50.\n\n"
+        "Reply with just the number, nothing else."
     )
     num_re = re.compile(r"\d+")
     positions: list[float] = []
