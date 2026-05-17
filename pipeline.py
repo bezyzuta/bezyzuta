@@ -753,7 +753,7 @@ def _extract_thumbnail(source: Path, at_seconds: float, out_path: Path,
         return False
 
 
-def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
+def detect_subject_x_position(source: Path, cfg, n_samples: int = 10,
                               on_step=None) -> float:
     """Ask Cloudflare Llama Vision where the main subject is horizontally.
     Samples n_samples frames evenly across the source video and averages.
@@ -2201,8 +2201,12 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         f"findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
         f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n\n"
         f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
-        f"Finde EXAKT {n_clips} Momente. Jeder Moment muss {target_low}-{target_high} "
-        f"Sekunden lang sein (start_seconds bis end_seconds als Zahlen in Sekunden).\n\n"
+        f"Finde EXAKT {n_clips} Momente. JEDER Moment MUSS mindestens "
+        f"{target_low} und höchstens {target_high} Sekunden lang sein. "
+        f"WICHTIG: end_seconds - start_seconds MUSS zwischen {target_low} und "
+        f"{target_high} liegen. Wenn der eigentliche viraler Spruch nur 3s "
+        f"dauert, dehne den Moment AUS — nimm den Kontext vorher und/oder "
+        f"nachher mit dazu, damit insgesamt mindestens {target_low}s rauskommen.\n\n"
         f"Such nach: schockierenden Aussagen, Cliffhangern, lustigen Pointen, "
         f"Streit, Storys mit Hook, kontroversen Meinungen, 'wait what' Momenten, "
         f"emotionalen Spitzen.\n\n"
@@ -2269,6 +2273,25 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         })
     if not cleaned:
         raise RuntimeError("Gemini returned no usable moments")
+
+    # Enforce target_duration: Gemini sometimes returns a 8-13s "peak" moment
+    # even when asked for 30s. Expand symmetrically around the center so each
+    # clip is at least target_duration seconds long.
+    src_end = max(s[1] for s in segments) if segments else 0.0
+    min_dur = max(8.0, float(target_duration) - 2.0)
+    for m in cleaned:
+        cur = m["end"] - m["start"]
+        if cur < min_dur:
+            center = (m["start"] + m["end"]) / 2.0
+            half = float(target_duration) / 2.0
+            new_start = max(0.0, center - half)
+            new_end = new_start + float(target_duration)
+            if src_end > 0 and new_end > src_end:
+                # Slide the window back so it ends at src_end
+                new_end = src_end
+                new_start = max(0.0, new_end - float(target_duration))
+            m["start"] = new_start
+            m["end"] = new_end
     return cleaned[:n_clips]
 
 
