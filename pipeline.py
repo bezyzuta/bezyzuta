@@ -730,7 +730,9 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     positions: list[float] = []  # 0-100 from vision LLM
     direct_offsets: list[float] = []  # 0-1 from face detection
     face_label = ""
+    no_face_count = 0
     first_err = ""
+    have_face_detector = _face_detector_available()
     for i, t in enumerate(sample_times):
         thumb = work / f"reframe_sample_{i}.jpg"
         if not _extract_thumbnail(source, t, thumb, width=640):
@@ -741,7 +743,11 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
             direct_offsets.append(face_res[0])
             face_label = face_res[1]
             continue
-        # LLM fallback
+        if have_face_detector:
+            # Face detector ran and found nothing — trust it, don't ask the LLM.
+            no_face_count += 1
+            continue
+        # No local face detector at all — LLM fallback
         text, err = _vision_score_cf_first(thumb, prompt, cfg)
         if err:
             if not first_err:
@@ -756,12 +762,19 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
         if 0 <= val <= 100:
             positions.append(val)
 
-    # If MediaPipe found faces, use those directly (exact pixel coords).
+    # If the face detector found at least one face, use those (exact pixels).
     if direct_offsets:
         direct_offsets.sort()
         median_off = direct_offsets[len(direct_offsets) // 2]
         log(f"      auto-reframe: {face_label} detected face at crop@{median_off*100:.0f}% (median of {len(direct_offsets)}/{n_samples} samples)")
         return median_off
+
+    # Face detector ran on all samples and found NO face anywhere —
+    # this is the "video has no people" case. Stay centered, don't ask
+    # the LLM to guess (it will, and it will be wrong).
+    if have_face_detector and no_face_count > 0:
+        log(f"      auto-reframe: no faces detected in {no_face_count}/{n_samples} samples, staying centered")
+        return 0.5
 
     if not positions:
         if first_err:
@@ -1107,21 +1120,39 @@ def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
     return ("", "retry loop exhausted")
 
 
+def _face_detector_available() -> bool:
+    """True if a local face detector (InsightFace or MediaPipe) is loaded.
+    When one is available, "no face" is an authoritative answer — we should
+    stay centered instead of falling back to the vision LLM which has no way
+    to say 'no people here' and just guesses a side."""
+    return bool(_get_insightface() or _get_mediapipe_detector())
+
+
 def _detect_subject_at_time(source: Path, at_time: float, cfg,
                             sample_path: Path) -> tuple:
     """Sample ONE frame at the given time, return (offset 0-1, source_label).
-    Tries face detection first, vision LLM second. Returns (0.5, 'centered')
-    on any failure."""
+
+    Order of trust:
+      1. Face detector (InsightFace / MediaPipe). If a face is found, use it.
+      2. If a face detector is loaded but found NO face -> stay centered.
+         The detector is the authority; the LLM would just hallucinate a
+         side for empty frames.
+      3. Only if no face detector is installed at all do we ask the vision
+         LLM as a last-resort guess.
+    """
     if not _extract_thumbnail(source, at_time, sample_path, width=640):
         return (0.5, "centered")
 
-    # Try local face detection first — exact pixel coords, no API cost.
     face_res = detect_face_crop_offset(sample_path)
     if face_res is not None:
         offset, label = face_res
         return (offset, label)
 
-    # No face detected (or detector missing) — fall back to vision LLM.
+    if _face_detector_available():
+        # Face detector ran and found nothing → trust it.
+        return (0.5, "no-face")
+
+    # No face detector installed → fall back to vision LLM.
     have_any = bool(cfg.gemini_api_key) or bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
     if not have_any:
         return (0.5, "centered")
