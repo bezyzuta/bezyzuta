@@ -727,12 +727,19 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
         "Reply with just one of: 10, 30, 50, 70, 90. Nothing else."
     )
     num_re = re.compile(r"\d+")
-    positions: list[float] = []
+    positions: list[float] = []  # 0-100 from vision LLM
+    direct_offsets: list[float] = []  # 0-1 from MediaPipe face detection
     first_err = ""
     for i, t in enumerate(sample_times):
         thumb = work / f"reframe_sample_{i}.jpg"
-        if not _extract_thumbnail(source, t, thumb, width=480):
+        if not _extract_thumbnail(source, t, thumb, width=640):
             continue
+        # MediaPipe first
+        mp_off = detect_face_crop_offset(thumb)
+        if mp_off is not None:
+            direct_offsets.append(mp_off)
+            continue
+        # LLM fallback
         text, err = _vision_score_cf_first(thumb, prompt, cfg)
         if err:
             if not first_err:
@@ -746,6 +753,13 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
         val = float(m.group(0))
         if 0 <= val <= 100:
             positions.append(val)
+
+    # If MediaPipe found faces, use those directly (exact pixel coords).
+    if direct_offsets:
+        direct_offsets.sort()
+        median_off = direct_offsets[len(direct_offsets) // 2]
+        log(f"      auto-reframe: face detected at {median_off*100:.0f}% (median of {len(direct_offsets)} samples)")
+        return median_off
 
     if not positions:
         if first_err:
@@ -804,6 +818,68 @@ def _cloudflare_accept_vision_agreement(cfg) -> str:
         return f"agreement HTTP {r.status_code}: {r.text[:200]}"
     _CF_VISION_AGREED.add(key)
     return ""
+
+
+_MP_FACE_DETECTOR = None  # lazy-initialized singleton
+
+
+def _get_face_detector():
+    """Lazy-load MediaPipe's face detector. Returns None if mediapipe is
+    not installed."""
+    global _MP_FACE_DETECTOR
+    if _MP_FACE_DETECTOR is not None:
+        return _MP_FACE_DETECTOR
+    try:
+        import mediapipe as mp
+    except Exception:
+        _MP_FACE_DETECTOR = False  # mark as unavailable so we don't retry
+        return None
+    # model_selection=1 = full-range model (better for faces farther from camera);
+    # min_detection_confidence kept low so we don't miss profile / partial faces.
+    _MP_FACE_DETECTOR = mp.solutions.face_detection.FaceDetection(
+        model_selection=1, min_detection_confidence=0.4
+    )
+    return _MP_FACE_DETECTOR
+
+
+def detect_face_crop_offset(thumb_path: Path, source_aspect: float = 16.0 / 9.0):
+    """Use MediaPipe to find faces in `thumb_path` and return the crop offset
+    (0..1) that centers the largest face in a 9:16 portrait crop. Returns
+    None when no face is detected, when mediapipe is missing, or when the
+    source is too narrow to slide."""
+    fd = _get_face_detector()
+    if not fd:
+        return None
+    try:
+        import cv2
+    except Exception:
+        return None
+    img = cv2.imread(str(thumb_path))
+    if img is None:
+        return None
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    try:
+        results = fd.process(rgb)
+    except Exception:
+        return None
+    detections = getattr(results, "detections", None) or []
+    if not detections:
+        return None
+    # Largest face by normalized area
+    def area(d):
+        bb = d.location_data.relative_bounding_box
+        return max(0.0, bb.width) * max(0.0, bb.height)
+    best = max(detections, key=area)
+    bb = best.location_data.relative_bounding_box
+    face_center_x = bb.xmin + bb.width / 2.0  # 0..1 in source frame
+
+    # crop_width / source_width for a 9:16 crop of source with given aspect
+    r = 9.0 / (16.0 * source_aspect)
+    if r >= 0.99:
+        # Source already (near) portrait — no horizontal slide makes sense
+        return 0.5
+    offset = (face_center_x - r / 2.0) / (1.0 - r)
+    return max(0.0, min(1.0, offset))
 
 
 def _subject_pct_to_crop_offset(subject_pct: float) -> float:
@@ -966,10 +1042,17 @@ def _detect_subject_at_time(source: Path, at_time: float, cfg,
     """Sample ONE frame at the given time, ask Vision LLM (Gemini first then
     Cloudflare fallback) for 0-100, return float 0.0-1.0. Returns 0.5 (centered)
     on any failure."""
+    if not _extract_thumbnail(source, at_time, sample_path, width=640):
+        return 0.5
+
+    # Try MediaPipe face detection first — local, free, exact pixel coords.
+    mp_offset = detect_face_crop_offset(sample_path)
+    if mp_offset is not None:
+        return mp_offset
+
+    # No face detected (or mediapipe missing) — fall back to vision LLM.
     have_any = bool(cfg.gemini_api_key) or bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
     if not have_any:
-        return 0.5
-    if not _extract_thumbnail(source, at_time, sample_path, width=480):
         return 0.5
     prompt = (
         "This is a frame from a wide landscape video. It will be cropped to a "
@@ -1002,8 +1085,9 @@ def _detect_subject_at_time(source: Path, at_time: float, cfg,
 def detect_subjects_per_segment(clip: Path, n_segments: int, seg_dur: float,
                                 cfg, on_step=None) -> list:
     """Per-segment subject detection. Returns [(segment_start_time, offset), ...].
-    For each segment, samples one frame in the middle and asks Cloudflare
-    Vision where the subject is. Falls back to 0.5 (centered) per segment."""
+    For each segment, samples one frame in the middle and asks the detector
+    (MediaPipe face detection first, vision LLM fallback). Falls back to 0.5
+    (centered) per segment if nothing usable comes back."""
     def log(msg: str) -> None:
         if on_step:
             try:
