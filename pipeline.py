@@ -2177,18 +2177,46 @@ def _snap_to_segment_boundary(time_target: float, segments: list,
                               kind: str, tolerance: float) -> float:
     """Snap a time to the nearest Whisper segment boundary within `tolerance`
     seconds. kind = 'start' (snap to a segment's start) or 'end' (snap to a
-    segment's end). Returns time_target unchanged if no boundary fits."""
+    segment's end). For 'end', strongly prefer segment ends whose transcribed
+    text closes with .!? — those are real sentence endings, not just speech
+    pauses Whisper guessed at. Returns time_target unchanged if nothing fits."""
     if not segments or tolerance <= 0:
         return time_target
+    sentence_enders = (".", "!", "?", "…")
     if kind == "start":
-        cand = [(abs(s[0] - time_target), s[0]) for s in segments
+        cand = [(abs(s[0] - time_target), s[0], s) for s in segments
                 if abs(s[0] - time_target) <= tolerance]
     else:
-        cand = [(abs(s[1] - time_target), s[1]) for s in segments
+        cand = [(abs(s[1] - time_target), s[1], s) for s in segments
                 if abs(s[1] - time_target) <= tolerance]
     if not cand:
         return time_target
-    cand.sort()
+    if kind == "end":
+        with_punct = [c for c in cand
+                      if str(c[2][2]).rstrip().endswith(sentence_enders)]
+        if with_punct:
+            cand = with_punct
+    elif kind == "start":
+        # Prefer segments that follow a sentence-ending segment, i.e. the
+        # previous segment closed with .!?
+        ends_at = {round(s[1], 2): str(s[2]).rstrip() for s in segments}
+        with_clean_lead = []
+        for c in cand:
+            seg_start = c[1]
+            prev_end = round(seg_start, 2)
+            # Find the previous segment ending nearest to seg_start.
+            best_prev = None
+            best_gap = 1e9
+            for s in segments:
+                gap = seg_start - s[1]
+                if 0 <= gap < best_gap:
+                    best_gap = gap
+                    best_prev = s
+            if best_prev is not None and str(best_prev[2]).rstrip().endswith(sentence_enders):
+                with_clean_lead.append(c)
+        if with_clean_lead:
+            cand = with_clean_lead
+    cand.sort(key=lambda x: x[0])
     return cand[0][1]
 
 
@@ -2294,28 +2322,33 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         raise RuntimeError("Gemini returned no usable moments")
 
     # Snap each Gemini moment to natural sentence boundaries (Whisper segment
-    # ends). This is how Opus.pro avoids cutting mid-sentence: the clip
-    # finishes at a real speech pause, even if that means 25s or 35s instead
-    # of the requested 30s.
+    # ends, preferring real .!? endings). This is how Opus.pro avoids cutting
+    # mid-sentence — the clip finishes at a real speech pause, even if that
+    # means 26s or 38s instead of the requested 30s.
     src_end = max(s[1] for s in segments) if segments else 0.0
     target_min = max(15.0, float(target_duration) - 5.0)
     target_max = float(target_duration) + 10.0
+    snapped = []
     for m in cleaned:
-        # Start: snap to nearest segment start within ±5s of Gemini's pick.
-        snapped_start = _snap_to_segment_boundary(m["start"], segments, "start", 5.0)
-        # End: aim for snapped_start + target_duration, snap to nearest segment
-        # end within ±8s for a clean sentence finish.
+        orig_start, orig_end = m["start"], m["end"]
+        # Start: snap to nearest segment start that follows a sentence end,
+        # within ±5s of Gemini's pick.
+        snapped_start = _snap_to_segment_boundary(orig_start, segments, "start", 5.0)
+        # End: aim for snapped_start + target_duration, snap to nearest
+        # sentence-end within a wider window so we can stretch/trim into a
+        # clean stop.
         ideal_end = snapped_start + float(target_duration)
         snapped_end = _snap_to_segment_boundary(ideal_end, segments, "end", 8.0)
-        # Enforce a minimum length so we don't end up with 5s pieces.
+        # Enforce minimum length so we don't produce 5s pieces.
         if snapped_end - snapped_start < target_min:
-            snapped_end = snapped_start + target_min
-            # Try to extend to a sentence boundary even past tolerance.
-            snapped_end = _snap_to_segment_boundary(snapped_end, segments, "end", 6.0)
-        # Cap at target_max so we don't massively overshoot.
+            snapped_end = _snap_to_segment_boundary(
+                snapped_start + target_min, segments, "end", 6.0
+            )
+        # Cap maximum so we don't massively overshoot.
         if snapped_end - snapped_start > target_max:
-            snapped_end = snapped_start + float(target_duration)
-            snapped_end = _snap_to_segment_boundary(snapped_end, segments, "end", 4.0)
+            snapped_end = _snap_to_segment_boundary(
+                snapped_start + float(target_duration), segments, "end", 4.0
+            )
         # Clamp to source end.
         if src_end > 0 and snapped_end > src_end:
             snapped_end = src_end
@@ -2323,7 +2356,47 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
                 snapped_start = max(0.0, snapped_end - float(target_duration))
         m["start"] = snapped_start
         m["end"] = snapped_end
-    return cleaned[:n_clips]
+        if on_step:
+            try:
+                on_step(
+                    f"      snapped {orig_start:6.1f}-{orig_end:6.1f}s -> "
+                    f"{snapped_start:6.1f}-{snapped_end:6.1f}s "
+                    f"({snapped_end - snapped_start:5.1f}s) | {m['title'][:40]}"
+                )
+            except Exception:
+                pass
+        snapped.append(m)
+
+    # Drop near-duplicates that ended up snapping to the same range (Gemini
+    # sometimes returns two slightly different picks that collapse to one
+    # clip after snapping). Keep the first occurrence by score order.
+    snapped.sort(key=lambda x: -int(x.get("score", 0) or 0))
+    deduped = []
+    for m in snapped:
+        is_dup = False
+        for prev in deduped:
+            overlap = max(0.0, min(m["end"], prev["end"]) - max(m["start"], prev["start"]))
+            m_dur = max(0.1, m["end"] - m["start"])
+            p_dur = max(0.1, prev["end"] - prev["start"])
+            if overlap / min(m_dur, p_dur) > 0.5:
+                is_dup = True
+                if on_step:
+                    try:
+                        on_step(
+                            f"      dropping duplicate {m['start']:.1f}-{m['end']:.1f}s "
+                            f"(overlaps {prev['start']:.1f}-{prev['end']:.1f}s)"
+                        )
+                    except Exception:
+                        pass
+                break
+        if not is_dup:
+            deduped.append(m)
+
+    # Restore chronological order so multi-clip plays in source order.
+    deduped.sort(key=lambda x: x["start"])
+    if not deduped:
+        raise RuntimeError("all moments collapsed after dedupe")
+    return deduped[:n_clips]
 
 
 def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
