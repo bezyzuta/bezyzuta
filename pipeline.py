@@ -41,6 +41,8 @@ class Config:
     cloudflare_account_id: str
     cloudflare_api_token: str
     cloudflare_image_model: str
+    ollama_url: str
+    ollama_model_text: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -63,6 +65,8 @@ class Config:
             cloudflare_account_id=data.get("cloudflare_account_id") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
             cloudflare_api_token=data.get("cloudflare_api_token") or os.environ.get("CLOUDFLARE_API_TOKEN", ""),
             cloudflare_image_model=data.get("cloudflare_image_model", "@cf/black-forest-labs/flux-1-schnell"),
+            ollama_url=str(data.get("ollama_url", "http://localhost:11434")).rstrip("/"),
+            ollama_model_text=str(data.get("ollama_model_text", "llama3.1:8b")),
         )
 
 
@@ -214,8 +218,95 @@ _SCRIPT_TEMPLATES = [
 ]
 
 
+_OLLAMA_STATUS_CACHE: dict = {}  # url -> (timestamp, is_available)
+
+
+def _ollama_available(cfg: "Config") -> bool:
+    """Quick reachability check for Ollama, cached for 30s per URL."""
+    if not cfg.ollama_url:
+        return False
+    cached = _OLLAMA_STATUS_CACHE.get(cfg.ollama_url)
+    if cached and time.time() - cached[0] < 30:
+        return cached[1]
+    try:
+        r = requests.get(f"{cfg.ollama_url}/api/tags", timeout=2)
+        ok = r.status_code < 400
+    except Exception:
+        ok = False
+    _OLLAMA_STATUS_CACHE[cfg.ollama_url] = (time.time(), ok)
+    return ok
+
+
+def _ollama_generate(prompt: str, cfg: "Config", max_tokens: int = 2048,
+                     temperature: float = 0.8, system: str = "") -> str:
+    """Call Ollama's /api/chat and return the assistant text. Raises on failure."""
+    if not cfg.ollama_url:
+        raise RuntimeError("ollama_url not configured")
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    body = {
+        "model": cfg.ollama_model_text,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": float(temperature),
+            "num_predict": int(max_tokens),
+        },
+    }
+    try:
+        r = requests.post(f"{cfg.ollama_url}/api/chat", json=body, timeout=180)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Ollama unreachable at {cfg.ollama_url}: {e}") from e
+    if r.status_code >= 400:
+        raise RuntimeError(f"Ollama {r.status_code}: {r.text[:240]}")
+    try:
+        data = r.json()
+    except Exception as e:
+        raise RuntimeError(f"Ollama non-JSON response: {r.text[:240]}") from e
+    msg = (data.get("message") or {}).get("content", "")
+    if not msg:
+        raise RuntimeError(f"Ollama returned empty message: {str(data)[:240]}")
+    return str(msg).strip()
+
+
 def fallback_template_script(topic: str) -> str:
     return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein krasser Roblox Moment")
+
+
+def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
+                    on_step=None) -> str:
+    """Top-level script generator. Tries local Ollama first (free, fast, no
+    rate limits), falls back to Gemini, then raises so the caller can fall
+    back to the template."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+    target_low = max(10, int(target_seconds - 3))
+    target_high = int(target_seconds + 3)
+    words_low = int(target_seconds * 2.0)
+    words_high = int(target_seconds * 2.6)
+    prompt_text = SCRIPT_PROMPT.format(
+        topic=topic, target_low=target_low, target_high=target_high,
+        words_low=words_low, words_high=words_high,
+    )
+    if cfg.ollama_url and _ollama_available(cfg):
+        log(f"      script via Ollama ({cfg.ollama_model_text}) — local, free")
+        try:
+            text = _ollama_generate(prompt_text, cfg, max_tokens=2048, temperature=0.9)
+            if text and len(text) >= 80:
+                return text
+            log(f"      WARN: Ollama output too short ({len(text)} chars), trying Gemini")
+        except Exception as e:
+            log(f"      WARN: Ollama script gen failed ({str(e)[:160]}); trying Gemini")
+    if cfg.gemini_api_key:
+        log(f"      script via Gemini ({cfg.gemini_model})")
+        return generate_script_via_gemini(topic, cfg, target_seconds)
+    raise RuntimeError("no script backend reachable (Ollama down, no Gemini key)")
 
 
 def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0) -> str:
@@ -1675,11 +1766,23 @@ def generate_scene_prompts_cloudflare(script: str, n: int, cfg: Config) -> list[
 
 def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
     base = derive_image_prompt(script[:200])
+    # 1. Ollama (local, free, fast) — preferred
+    if cfg.ollama_url and _ollama_available(cfg):
+        try:
+            print(f"      trying Ollama ({cfg.ollama_model_text}) for {n} scene prompts")
+            prompts = _scene_prompts_ollama(script, n, cfg, base)
+            while len(prompts) < n:
+                prompts.append(base)
+            return prompts[:n]
+        except Exception as e:
+            print(f"      WARN: Ollama scene gen failed ({str(e)[:160]})")
+    # 2. Gemini (online, usually best output)
     if cfg.gemini_api_key:
         try:
             return _scene_prompts_gemini(script, n, cfg, base)
         except _SceneGenError as e:
             print(f"      WARN: Gemini scene gen failed ({e})")
+    # 3. Cloudflare Llama (last online fallback)
     if cfg.cloudflare_account_id and cfg.cloudflare_api_token:
         try:
             print(f"      trying Cloudflare Llama for {n} scene prompts")
@@ -1690,6 +1793,29 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
         except Exception as e:
             print(f"      WARN: Cloudflare scene gen failed ({e}); falling back to single prompt")
     return [base] * n
+
+
+def _scene_prompts_ollama(script: str, n: int, cfg: Config, base: str) -> list[str]:
+    """Generate scene prompts via local Ollama. Raises on failure."""
+    text = _ollama_generate(
+        SCENE_PROMPT.format(n=n, script=script),
+        cfg, max_tokens=1024, temperature=0.85,
+        system="You output ONLY a JSON array of strings. No prose, no markdown, no code fences.",
+    )
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    s, e = text.find("["), text.rfind("]")
+    if s != -1 and e != -1 and e > s:
+        text = text[s:e + 1]
+    prompts = json.loads(text)
+    if not isinstance(prompts, list):
+        raise ValueError("expected JSON array")
+    prompts = [str(p).strip() for p in prompts if str(p).strip()]
+    if not prompts:
+        raise ValueError("empty prompt list")
+    return prompts[:n]
 
 
 class _SceneGenError(RuntimeError):
@@ -2029,11 +2155,11 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             topic = (job.get("topic") or "").strip()
             if not topic:
                 raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
-            step(f"      generating script via Gemini for topic: {topic!r} (target {target_duration:.0f}s)")
+            step(f"      generating script for topic: {topic!r} (target {target_duration:.0f}s)")
             try:
-                script = generate_script_via_gemini(topic, cfg, target_seconds=target_duration)
+                script = generate_script(topic, cfg, target_seconds=target_duration, on_step=step)
             except RuntimeError as e:
-                step(f"      WARN: Gemini failed: {e}")
+                step(f"      WARN: script gen failed: {e}")
                 step(f"      using template fallback script (pipeline continues)")
                 script = fallback_template_script(topic)
         (work / "script.txt").write_text(script, encoding="utf-8")

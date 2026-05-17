@@ -8,6 +8,8 @@
   "cloudflare_account_id": "leave_empty_or_paste_account_id_from_dash.cloudflare.com",
   "cloudflare_api_token": "leave_empty_or_paste_workers_ai_token",
   "cloudflare_image_model": "@cf/black-forest-labs/flux-1-schnell",
+  "ollama_url": "http://localhost:11434",
+  "ollama_model_text": "llama3.1:8b",
   "whisper_model": "small",
   "target_resolution": [1080, 1920],
   "ducking_db": -18
