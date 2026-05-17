@@ -711,19 +711,25 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
     sample_times = [src_dur * (i + 0.5) / n_samples for i in range(n_samples)]
     prompt = (
         "This is a frame from a wide landscape video. It will be cropped to a "
-        "narrow vertical 9:16 portrait format, showing only a slice from the "
-        "horizontal position you choose. Pick the position that shows the "
-        "MOST PEOPLE / LARGEST FACE.\n\n"
-        "Reply with ONE integer:\n"
-        "  10 = a person is on the far left side of the frame\n"
-        "  30 = a person is on the left side\n"
-        "  50 = ONE person is centered (no other people visible)\n"
-        "  70 = a person is on the right side\n"
-        "  90 = a person is on the far right side\n\n"
-        "IMPORTANT: If there are TWO OR MORE people spread across the frame "
-        "(e.g. podcast, interview, two speakers), DO NOT answer 50 — that "
-        "would crop the empty space between them. Pick the side with the "
-        "MOST PROMINENT face. If no people are visible at all, answer 50.\n\n"
+        "narrow vertical 9:16 portrait, sliding to the horizontal position you "
+        "choose. Pick the offset so the PERSON'S CENTER ends up centered in "
+        "the final crop. If multiple people are visible, pick the most "
+        "prominent face.\n\n"
+        "Reply with ONE integer 0-100 representing the person's horizontal "
+        "center as a percentage of the frame width:\n"
+        "  0   = person is at the LEFT EDGE (head touches or close to left border)\n"
+        "  25  = person is in the LEFT THIRD\n"
+        "  50  = ONE person is in the dead center (no other people visible)\n"
+        "  75  = person is in the RIGHT THIRD\n"
+        "  100 = person is at the RIGHT EDGE (head touches or close to right border)\n\n"
+        "Use the EXTREME values (0, 5, 10 for left-edge; 90, 95, 100 for "
+        "right-edge) when the person is clearly far on a side — half-bodies "
+        "on the side of the frame are common and need extreme offsets, not 10 "
+        "or 90.\n\n"
+        "If TWO OR MORE people are spread across the frame (podcast, "
+        "interview), NEVER answer 50 — pick the more prominent side. 50 is "
+        "ONLY for a single subject in the dead center or when no people are "
+        "visible.\n\n"
         "Reply with just the number, nothing else."
     )
     num_re = re.compile(r"\d+")
@@ -910,27 +916,33 @@ def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
 
 def _detect_subject_at_time(source: Path, at_time: float, cfg,
                             sample_path: Path) -> float:
-    """Sample ONE frame at the given time, ask Cloudflare Vision for 0-100,
-    return float 0.0-1.0. Returns 0.5 (centered) on any failure."""
-    if not cfg.cloudflare_account_id or not cfg.cloudflare_api_token:
+    """Sample ONE frame at the given time, ask Vision LLM (Gemini first then
+    Cloudflare fallback) for 0-100, return float 0.0-1.0. Returns 0.5 (centered)
+    on any failure."""
+    have_any = bool(cfg.gemini_api_key) or bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
+    if not have_any:
         return 0.5
     if not _extract_thumbnail(source, at_time, sample_path, width=480):
         return 0.5
     prompt = (
         "This is a frame from a wide landscape video. It will be cropped to a "
-        "narrow vertical 9:16 portrait format, showing only a slice from the "
-        "horizontal position you choose. Pick the position that shows the "
-        "MOST PEOPLE / LARGEST FACE.\n\n"
-        "Reply with ONE integer:\n"
-        "  10 = a person is on the far left side of the frame\n"
-        "  30 = a person is on the left side\n"
-        "  50 = ONE person is centered (no other people visible)\n"
-        "  70 = a person is on the right side\n"
-        "  90 = a person is on the far right side\n\n"
-        "IMPORTANT: If there are TWO OR MORE people spread across the frame "
-        "(e.g. podcast, interview, two speakers), DO NOT answer 50. Pick the "
-        "side where the most prominent / loudest-looking face is. Reply with "
-        "just the number."
+        "narrow vertical 9:16 portrait, sliding to the horizontal position you "
+        "choose. Pick the offset so the PERSON'S CENTER ends up centered in "
+        "the final crop. If multiple people are visible, pick the most "
+        "prominent face.\n\n"
+        "Reply with ONE integer 0-100 representing the person's horizontal "
+        "center as a percentage of the frame width:\n"
+        "  0   = person at the LEFT EDGE (head touches or close to left border)\n"
+        "  25  = person in the LEFT THIRD\n"
+        "  50  = ONE person in the dead center (no other people visible)\n"
+        "  75  = person in the RIGHT THIRD\n"
+        "  100 = person at the RIGHT EDGE (head touches or close to right border)\n\n"
+        "Use EXTREME values (0-10 or 90-100) when the person is clearly far "
+        "on a side — half-bodies on the edge of the frame need extreme offsets, "
+        "not 10/90. If TWO OR MORE people are spread across the frame, NEVER "
+        "answer 50; pick the more prominent side. 50 is ONLY for a single "
+        "subject in the dead center or no people visible.\n\n"
+        "Reply with just the number, nothing else."
     )
     text, err = _vision_score(sample_path, prompt, cfg)
     if err:
