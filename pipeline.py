@@ -2061,7 +2061,11 @@ def _slugify_local(text: str) -> str:
 def transcribe_full_video(video_path: Path, model_name: str,
                           device: str = "auto", on_step=None) -> list:
     """Full-video transcription returning [(start, end, text), ...] segments.
-    Used by multi-clip mode to feed the whole spoken content into Gemini."""
+    Used by multi-clip mode to feed the whole spoken content into Gemini.
+
+    Pre-extracts to 16 kHz mono PCM via ffmpeg before handing off to whisper:
+    much smaller than the video (~10x), avoids codec edge cases that can
+    silently crash the Python process on long files."""
     def log(msg):
         if on_step:
             try: on_step(msg)
@@ -2070,6 +2074,19 @@ def transcribe_full_video(video_path: Path, model_name: str,
             print(msg)
     _register_cuda_dlls_windows()
     from faster_whisper import WhisperModel
+
+    audio_path = video_path.with_suffix(".whisper.wav")
+    if not audio_path.exists() or audio_path.stat().st_size < 1024:
+        log(f"      extracting audio -> {audio_path.name} (16kHz mono)")
+        try:
+            run_capture_stderr([
+                "ffmpeg", "-y", "-i", str(video_path),
+                "-vn", "-ac", "1", "-ar", "16000",
+                "-c:a", "pcm_s16le", str(audio_path),
+            ])
+        except Exception as e:
+            raise RuntimeError(f"audio extraction failed: {e}") from e
+
     candidates = (
         [("cuda", "float16"), ("cpu", "int8")] if device == "auto"
         else [("cuda", "float16")] if device == "cuda"
@@ -2078,21 +2095,27 @@ def transcribe_full_video(video_path: Path, model_name: str,
     last_err = None
     for dev, ct in candidates:
         try:
+            log(f"      loading whisper-{model_name} on {dev}")
             model = WhisperModel(model_name, device=dev, compute_type=ct)
-            log(f"      whisper full transcribe on {dev}")
-            segments_iter, _info = model.transcribe(
-                str(video_path), word_timestamps=False, vad_filter=True,
+            log(f"      transcribing {audio_path.name} ...")
+            segments_iter, info = model.transcribe(
+                str(audio_path),
+                word_timestamps=False,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
             )
             out: list = []
             for seg in segments_iter:
                 txt = str(seg.text).strip()
                 if txt:
                     out.append((float(seg.start), float(seg.end), txt))
+            log(f"      whisper {dev}: {len(out)} segments, duration {info.duration:.1f}s")
             return out
         except Exception as e:
             last_err = e
+            log(f"      whisper {dev} failed: {str(e)[:200]}")
             continue
-    raise RuntimeError(f"full transcription failed: {last_err}")
+    raise RuntimeError(f"full transcription failed on all backends: {last_err}")
 
 
 def find_best_moments(segments: list, n_clips: int, target_duration: float,
