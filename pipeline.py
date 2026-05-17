@@ -768,7 +768,7 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 5,
         if non_50:
             best = max(non_50, key=non_50.get)
     log(f"      auto-reframe: subject at ~{best}% from left (samples: {positions}, buckets: {buckets})")
-    return max(0.0, min(1.0, best / 100.0))
+    return _subject_pct_to_crop_offset(best)
 
 
 _CF_VISION_AGREED: set = set()
@@ -806,7 +806,24 @@ def _cloudflare_accept_vision_agreement(cfg) -> str:
     return ""
 
 
-def _gemini_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
+def _subject_pct_to_crop_offset(subject_pct: float) -> float:
+    """Map the model's 0-100 'subject horizontal center' answer to a 0-1 crop
+    offset that CENTERS the subject in the 9:16 window.
+
+    The model answers where the SUBJECT is in the source frame (10 = far left,
+    50 = centered, 90 = far right). The crop offset is the position of the
+    crop window's LEFT edge along the slide range (0 = leftmost, 1 = rightmost).
+    For a 16:9 source cropped to 9:16, the crop window is roughly a third of
+    the source width. So:
+
+      subject at 10% of source -> crop left edge should be near 0 -> offset 0
+      subject at 30% of source -> offset ~0.20
+      subject at 50% of source -> offset 0.50
+      subject at 70% of source -> offset ~0.80
+      subject at 90% of source -> offset 1.0
+
+    Linear stretch (subject - 10) / 80 captures this well across the 5 buckets."""
+    return max(0.0, min(1.0, (float(subject_pct) - 10.0) / 80.0))
     """Send one image to Gemini and return (text, err)."""
     import base64
     if not cfg.gemini_api_key:
@@ -969,7 +986,7 @@ def _detect_subject_at_time(source: Path, at_time: float, cfg,
         return 0.5
     val = float(m.group(0))
     if 0 <= val <= 100:
-        return val / 100.0
+        return _subject_pct_to_crop_offset(val)
     return 0.5
 
 
@@ -996,7 +1013,7 @@ def detect_subjects_per_segment(clip: Path, n_segments: int, seg_dur: float,
         sample = work / f"reframe_seg_{i:02d}.jpg"
         off = _detect_subject_at_time(clip, seg_mid, cfg, sample)
         offsets.append((float(seg_start), float(off)))
-    summary = ", ".join(f"{t:.1f}s={int(o*100)}%" for t, o in offsets)
+    summary = ", ".join(f"{t:.1f}s=crop@{int(o*100)}%" for t, o in offsets)
     log(f"      auto-reframe per-scene: {summary}")
     return offsets
 
