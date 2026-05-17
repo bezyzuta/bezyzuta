@@ -807,23 +807,32 @@ def _cloudflare_accept_vision_agreement(cfg) -> str:
 
 
 def _subject_pct_to_crop_offset(subject_pct: float) -> float:
-    """Map the model's 0-100 'subject horizontal center' answer to a 0-1 crop
-    offset that CENTERS the subject in the 9:16 window.
+    """Map the model's 5-bucket answer (10/30/50/70/90) to an aggressive crop
+    offset that biases side picks toward the edges. The model tends to call
+    "30" for any speaker sitting in the left half (could be x=200 or x=550),
+    and 0.25 offset only centers x≈630 — too far right for a host at x=350.
+    Use a curve that pushes 30 -> 0.15 and 70 -> 0.85 so the speaker actually
+    lands near the middle of the 9:16 window in podcast layouts:
 
-    The model answers where the SUBJECT is in the source frame (10 = far left,
-    50 = centered, 90 = far right). The crop offset is the position of the
-    crop window's LEFT edge along the slide range (0 = leftmost, 1 = rightmost).
-    For a 16:9 source cropped to 9:16, the crop window is roughly a third of
-    the source width. So:
+      10 -> 0.00  (left edge)
+      30 -> 0.15  (biased left)
+      50 -> 0.50  (centered)
+      70 -> 0.85  (biased right)
+      90 -> 1.00  (right edge)
 
-      subject at 10% of source -> crop left edge should be near 0 -> offset 0
-      subject at 30% of source -> offset ~0.20
-      subject at 50% of source -> offset 0.50
-      subject at 70% of source -> offset ~0.80
-      subject at 90% of source -> offset 1.0
-
-    Linear stretch (subject - 10) / 80 captures this well across the 5 buckets."""
-    return max(0.0, min(1.0, (float(subject_pct) - 10.0) / 80.0))
+    Piecewise linear between bucket points."""
+    pct = max(0.0, min(100.0, float(subject_pct)))
+    pts = [(0.0, 0.0), (10.0, 0.0), (30.0, 0.15), (50.0, 0.50),
+           (70.0, 0.85), (90.0, 1.0), (100.0, 1.0)]
+    for i in range(len(pts) - 1):
+        x1, y1 = pts[i]
+        x2, y2 = pts[i + 1]
+        if x1 <= pct <= x2:
+            if x2 == x1:
+                return y1
+            t = (pct - x1) / (x2 - x1)
+            return y1 + t * (y2 - y1)
+    return 0.5
     """Send one image to Gemini and return (text, err)."""
     import base64
     if not cfg.gemini_api_key:
