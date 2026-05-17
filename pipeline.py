@@ -565,6 +565,59 @@ def _extract_and_concat(source: Path, segments: list[tuple[float, float]],
     return out_path
 
 
+def _parse_time(s: str) -> float:
+    """Parse a single timestamp into float seconds. Accepts:
+      'MM:SS', 'MM:SS.fff', 'HH:MM:SS', 'HH:MM:SS.fff', or raw seconds ('78')."""
+    s = s.strip().replace(",", ".")
+    if not s:
+        raise ValueError("empty timestamp")
+    parts = s.split(":")
+    try:
+        if len(parts) == 1:
+            return float(parts[0])
+        if len(parts) == 2:
+            return float(parts[0]) * 60.0 + float(parts[1])
+        if len(parts) == 3:
+            return float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
+    except ValueError as e:
+        raise ValueError(f"unrecognized time {s!r}: {e}") from e
+    raise ValueError(f"too many ':' in time {s!r}")
+
+
+def parse_time_ranges(text: str) -> list:
+    """Parse multi-line text of time ranges. One range per line, format:
+      'START-END' where START/END are 'MM:SS', 'HH:MM:SS', or raw seconds.
+    Returns [(start_sec, duration_sec), ...]. Empty lines and # comments
+    are skipped. Multiple separator chars accepted (-, –, —, ' to ', ' bis ')."""
+    out = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        sep_used = None
+        for sep in [" - ", " – ", " — ", " bis ", " to ", "–", "—", "-"]:
+            if sep in line:
+                sep_used = sep
+                break
+        if sep_used is None:
+            raise ValueError(f"no range separator in line: {raw_line!r}")
+        start_s, _, end_s = line.partition(sep_used)
+        start = _parse_time(start_s)
+        end = _parse_time(end_s)
+        if end <= start:
+            raise ValueError(f"end <= start in range {raw_line!r}")
+        out.append((start, end - start))
+    if not out:
+        raise ValueError("no valid time ranges parsed")
+    return out
+
+
+def pick_manual_clips(source: Path, ranges: list,
+                      out_path: Path) -> Path:
+    """Extract user-specified (start, duration) ranges and stitch them in order."""
+    return _extract_and_concat(source, ranges, out_path)
+
+
 def analyze_loudness(source: Path, work_dir: Path,
                      window_seconds: float = 1.0) -> list[tuple[float, float]]:
     """Return [(time, rms_db), ...] for each window of audio in the source."""
@@ -2077,7 +2130,24 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     # Back-compat with the old smart_picking checkbox
     if mode == "even" and bool(job.get("smart_picking", False)):
         mode = "loud"
-    if clip_segments > 1:
+    if mode == "manual":
+        manual_text = str(job.get("manual_ranges", "")).strip()
+        if not manual_text:
+            raise RuntimeError(
+                "Szenen-Auswahl 'Manuell' gewählt aber keine Zeit-Bereiche angegeben."
+            )
+        try:
+            ranges = parse_time_ranges(manual_text)
+        except ValueError as e:
+            raise RuntimeError(f"Fehler beim Parsen der manuellen Zeit-Bereiche: {e}") from e
+        # Manual mode overrides the slider-derived target/segments: we honor
+        # exactly what the user asked for.
+        clip_segments = len(ranges)
+        target = sum(d for _, d in ranges)
+        pretty = ", ".join(f"{s:.1f}s-{s+d:.1f}s" for s, d in ranges)
+        step(f"[3/5] manual pick {clip_segments} scenes ({target:.1f}s total): {pretty}")
+        clip = pick_manual_clips(raw, ranges, work / "clip.mp4")
+    elif clip_segments > 1:
         if mode == "ai":
             step(f"[3/5] AI pick {clip_segments} scenes via Vision LLM (~{target / clip_segments:.1f}s each)")
             clip = pick_ai_scenes(raw, target, clip_segments, work / "clip.mp4",

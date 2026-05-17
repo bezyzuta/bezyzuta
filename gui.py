@@ -85,6 +85,7 @@ def generate(
     target_duration: float,
     clip_segments: int,
     scene_pick_mode: str,
+    manual_ranges: str,
     auto_reframe: bool,
     enable_voice: bool,
     voice_id: str,
@@ -139,6 +140,7 @@ def generate(
             "target_duration": float(target_duration),
             "clip_segments": int(clip_segments),
             "scene_pick_mode": str(scene_pick_mode or "even"),
+            "manual_ranges": str(manual_ranges or ""),
             "auto_reframe": bool(auto_reframe),
             "enable_voice": bool(enable_voice),
             "image_count": int(image_count),
@@ -310,10 +312,28 @@ def build_app() -> gr.Blocks:
             scene_pick_mode = gr.Radio(
                 choices=[("Standard — gleichmäßig verteilt", "even"),
                          ("🔊 Laute Stellen — Audio-Peaks (~+10s)", "loud"),
-                         ("🤖 KI-Auswahl — Gemini Vision wählt spannendste Szenen (~+15s)", "ai")],
+                         ("🤖 KI-Auswahl — Gemini Vision wählt spannendste Szenen (~+15s)", "ai"),
+                         ("✂️ Manuell — Zeiten selber angeben", "manual")],
                 value="even",
                 label="Szenen-Auswahl",
-                info="KI-Modus extrahiert Thumbnails aus dem Source-Video und lässt Gemini die action-geladensten picken.",
+                info="KI-Modus extrahiert Thumbnails und lässt Gemini die action-geladensten picken. "
+                     "Manuell: du gibst exakte Zeit-Bereiche vor.",
+            )
+            manual_ranges = gr.Textbox(
+                value="",
+                label="Manuelle Zeit-Bereiche (eine Zeile pro Szene)",
+                lines=6,
+                placeholder=(
+                    "Format: START-END pro Zeile (MM:SS oder HH:MM:SS oder Sekunden)\n\n"
+                    "1:18-1:25\n"
+                    "2:35-2:45\n"
+                    "5:10-5:22\n"
+                    "12:30-12:45"
+                ),
+                info='Beispiele: "1:18-1:25" (M:SS), "0:01:30-0:01:45" (H:MM:SS), "78-85" (Sekunden). '
+                     'Die ausgewählten Bereiche werden in der Reihenfolge zusammen­geschnitten. '
+                     'Ziel-Länge und Anzahl Szenen-Cuts werden ignoriert wenn dieser Modus aktiv ist.',
+                visible=False,
             )
             auto_reframe = gr.Checkbox(
                 value=False,
@@ -515,6 +535,15 @@ def build_app() -> gr.Blocks:
             outputs=[channel_group, url_group],
         )
 
+        def toggle_manual_ranges(mode: str):
+            return gr.update(visible=(mode == "manual"))
+
+        scene_pick_mode.change(
+            toggle_manual_ranges,
+            inputs=[scene_pick_mode],
+            outputs=[manual_ranges],
+        )
+
         def _refresh_tracks(folder: str):
             return gr.update(choices=list_music_tracks(folder), value=RANDOM_PICK)
 
@@ -528,7 +557,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, scene_pick_mode, auto_reframe, enable_voice, voice_id,
+                clip_segments, scene_pick_mode, manual_ranges, auto_reframe, enable_voice, voice_id,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
