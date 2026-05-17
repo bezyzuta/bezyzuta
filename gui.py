@@ -21,7 +21,7 @@ def find_free_port(start: int = 7860, end: int = 7880) -> int:
                 continue
     return start
 
-from pipeline import Config, run_one
+from pipeline import Config, run_one, run_multiclip
 
 
 _MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
@@ -116,6 +116,8 @@ def generate(
     subscribe_sting_file: str,
     subscribe_sting_volume: int,
     whisper_device: str,
+    multiclip_enabled: bool,
+    multiclip_count: int,
     batch_count: int,
 ):
     log = ""
@@ -158,6 +160,8 @@ def generate(
             "subscribe_sting_file": str(subscribe_sting_file or "").strip(),
             "subscribe_sting_volume": float(subscribe_sting_volume),
             "whisper_device": str(whisper_device or "auto"),
+            "multiclip_enabled": bool(multiclip_enabled),
+            "multiclip_count": int(multiclip_count),
             "enable_music": bool(enable_music),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
@@ -204,8 +208,13 @@ def generate(
 
         def worker(job=job, q=q, result=result):
             try:
-                out = run_one(job, cfg, on_step=lambda m: q.put(m))
-                result["out"] = out
+                if bool(job.get("multiclip_enabled")):
+                    outs = run_multiclip(job, cfg, on_step=lambda m: q.put(m))
+                    result["out"] = outs[-1] if outs else None
+                    result["outs"] = outs
+                else:
+                    out = run_one(job, cfg, on_step=lambda m: q.put(m))
+                    result["out"] = out
             except Exception as e:
                 tb = traceback.format_exc()
                 result["err"] = f"{type(e).__name__}: {e}\n{tb}"
@@ -234,8 +243,13 @@ def generate(
             log += f"\nFEHLER: {result['err']}\n"
             yield log, last_video
             continue
-        last_video = str(result["out"])
-        log += f"\n✓ Fertig: {result['out']}\n"
+        last_video = str(result["out"]) if result.get("out") else last_video
+        if result.get("outs"):
+            log += f"\n✓ Multi-Clip fertig: {len(result['outs'])} Shorts erstellt:\n"
+            for p in result["outs"]:
+                log += f"    {p}\n"
+        else:
+            log += f"\n✓ Fertig: {result['out']}\n"
         yield log, last_video
 
     log += "\n========== Alle Shorts fertig ==========\n"
@@ -507,7 +521,23 @@ def build_app() -> gr.Blocks:
             )
 
         # ───────────── Batch ─────────────
-        with gr.Accordion("🔁 Batch", open=False):
+        # ───────────── Multi-Clip ─────────────
+        with gr.Accordion("🎬 Multi-Clip-Modus (1 Source → N Shorts)", open=False):
+            multiclip_enabled = gr.Checkbox(
+                value=False,
+                label="Multi-Clip aktiv",
+                info=("Whisper transkribiert das ganze Source-Video, Gemini findet "
+                      "automatisch die viralsten Momente, jeder wird als eigener Short "
+                      "gerendert. Plus Titel/Hashtags/Virality-Score je Clip als .txt. "
+                      "Nur mit Direkt-URL als Source. Überschreibt die normale Batch."),
+            )
+            multiclip_count = gr.Slider(
+                2, 15, value=5, step=1,
+                label="Anzahl Clips aus dem Source-Video",
+                info="Gemini pickt diese Anzahl der besten Momente.",
+            )
+
+        with gr.Accordion("🔁 Batch (gleiches Setup, mehrere Random-Picks)", open=False):
             batch_count = gr.Slider(1, 10, value=1, step=1, label="Anzahl Shorts hintereinander")
 
         generate_btn = gr.Button("🎬 Short generieren", variant="primary", size="lg")
@@ -569,6 +599,7 @@ def build_app() -> gr.Blocks:
                 pop_captions, progress_bar, subscribe_overlay,
                 subscribe_sting_file, subscribe_sting_volume,
                 whisper_device,
+                multiclip_enabled, multiclip_count,
                 batch_count,
             ],
             outputs=[status_log, video_out],

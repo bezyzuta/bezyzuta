@@ -2053,6 +2053,221 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
     return out_path
 
 
+def _slugify_local(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower())[:40].strip("-")
+    return s or "clip"
+
+
+def transcribe_full_video(video_path: Path, model_name: str,
+                          device: str = "auto", on_step=None) -> list:
+    """Full-video transcription returning [(start, end, text), ...] segments.
+    Used by multi-clip mode to feed the whole spoken content into Gemini."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+    _register_cuda_dlls_windows()
+    from faster_whisper import WhisperModel
+    candidates = (
+        [("cuda", "float16"), ("cpu", "int8")] if device == "auto"
+        else [("cuda", "float16")] if device == "cuda"
+        else [("cpu", "int8")]
+    )
+    last_err = None
+    for dev, ct in candidates:
+        try:
+            model = WhisperModel(model_name, device=dev, compute_type=ct)
+            log(f"      whisper full transcribe on {dev}")
+            segments_iter, _info = model.transcribe(
+                str(video_path), word_timestamps=False, vad_filter=True,
+            )
+            out: list = []
+            for seg in segments_iter:
+                txt = str(seg.text).strip()
+                if txt:
+                    out.append((float(seg.start), float(seg.end), txt))
+            return out
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"full transcription failed: {last_err}")
+
+
+def find_best_moments(segments: list, n_clips: int, target_duration: float,
+                      cfg: "Config", on_step=None) -> list:
+    """Send the transcript to Gemini and ask for the N best viral moments.
+    Returns a list of dicts: {start, end, hook, title, hashtags, score, reason}.
+    Raises on failure (caller handles fallback)."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+    if not segments:
+        raise RuntimeError("no transcript segments to analyse")
+    if not cfg.gemini_api_key:
+        raise RuntimeError("multi-clip best-moments needs gemini_api_key")
+    lines = []
+    for s, e, t in segments:
+        ts = f"{int(s // 60):02d}:{s % 60:05.2f}"
+        te = f"{int(e // 60):02d}:{e % 60:05.2f}"
+        lines.append(f"{ts}-{te}  {t}")
+    transcript = "\n".join(lines)
+    target_low = max(15, int(target_duration - 10))
+    target_high = int(target_duration + 10)
+    prompt = (
+        f"Du analysierst ein deutsches Voll-Transkript (Podcast/Talk/Stream) und "
+        f"findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
+        f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n\n"
+        f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
+        f"Finde EXAKT {n_clips} Momente. Jeder Moment muss {target_low}-{target_high} "
+        f"Sekunden lang sein (start_seconds bis end_seconds als Zahlen in Sekunden).\n\n"
+        f"Such nach: schockierenden Aussagen, Cliffhangern, lustigen Pointen, "
+        f"Streit, Storys mit Hook, kontroversen Meinungen, 'wait what' Momenten, "
+        f"emotionalen Spitzen.\n\n"
+        f"Für JEDEN Moment liefere:\n"
+        f"- start_seconds: float, Beginn in Sekunden vom Source-Anfang\n"
+        f"- end_seconds: float, Ende in Sekunden\n"
+        f"- hook: maximal 60 Zeichen, fett-knackiger Aufmacher für oben im Bild "
+        f"(z.B. 'POV: Niemand hat damit gerechnet')\n"
+        f"- title: YouTube Short Titel, maximal 70 Zeichen, mit Emoji am Ende\n"
+        f"- hashtags: Array von 3-5 deutschen Hashtags OHNE # davor (z.B. ['podcast','viral','wahnsinn'])\n"
+        f"- score: Virality 1-100 (deine ehrliche Einschätzung)\n"
+        f"- reason: 1 Satz warum dieser Moment funktioniert\n\n"
+        f"Antworte NUR mit einem gültigen JSON-Array von genau {n_clips} Objekten. "
+        f"KEINE Markdown-Codeblocks, KEINE Kommentare, NUR das JSON-Array."
+    )
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 8192,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
+    data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
+    try:
+        candidate = data["candidates"][0]
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Gemini returned no candidates: {data}") from e
+    parts = candidate.get("content", {}).get("parts", []) or []
+    text = "\n".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    s_idx, e_idx = text.find("["), text.rfind("]")
+    if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+        text = text[s_idx:e_idx + 1]
+    try:
+        moments = json.loads(text)
+    except Exception as e:
+        raise RuntimeError(f"could not parse Gemini moments JSON: {e}; raw={text[:400]}") from e
+    if not isinstance(moments, list):
+        raise RuntimeError(f"expected JSON array, got {type(moments).__name__}")
+    cleaned = []
+    for m in moments:
+        if not isinstance(m, dict):
+            continue
+        try:
+            start = float(m.get("start_seconds") or m.get("start") or 0)
+            end = float(m.get("end_seconds") or m.get("end") or 0)
+        except (TypeError, ValueError):
+            continue
+        if end <= start or end - start < 5:
+            continue
+        cleaned.append({
+            "start": start,
+            "end": end,
+            "hook": str(m.get("hook", "")).strip()[:80],
+            "title": str(m.get("title", "")).strip()[:120],
+            "hashtags": [str(h).lstrip("#").strip() for h in (m.get("hashtags") or []) if h],
+            "score": int(m.get("score", 0) or 0),
+            "reason": str(m.get("reason", "")).strip()[:240],
+        })
+    if not cleaned:
+        raise RuntimeError("Gemini returned no usable moments")
+    return cleaned[:n_clips]
+
+
+def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
+    """Download source once, transcribe whole video, ask Gemini for the N best
+    moments, then render each as its own short via run_one. Returns list of
+    output paths. Writes a sibling .txt with title/hashtags/score per clip."""
+    def step(msg: str):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        print(msg)
+
+    base_slug = job.get("slug") or "multiclip"
+    source_url = (job.get("source_url") or "").strip()
+    if not source_url:
+        raise RuntimeError("multi-clip mode needs source_url (channel scrape not yet supported)")
+
+    n_clips = max(2, min(int(job.get("multiclip_count", 5)), 15))
+    target_dur = float(job.get("target_duration", 30.0))
+
+    work_root = cfg.output_dir / f"{base_slug}__multiclip_work"
+    work_root.mkdir(parents=True, exist_ok=True)
+    step(f"[MULTI 1/4] download source: {source_url}")
+    raw = download_gameplay(source_url, work_root)
+
+    step("[MULTI 2/4] full-video transcription (Whisper)")
+    whisper_device = str(job.get("whisper_device", "auto"))
+    segments = transcribe_full_video(raw, cfg.whisper_model, device=whisper_device, on_step=step)
+    src_dur = segments[-1][1] if segments else 0.0
+    step(f"      transcript: {len(segments)} segments, source ≈ {src_dur:.0f}s")
+
+    step(f"[MULTI 3/4] ask Gemini for the top {n_clips} viral moments")
+    moments = find_best_moments(segments, n_clips, target_dur, cfg, on_step=step)
+    step(f"      Gemini returned {len(moments)} moments:")
+    for i, m in enumerate(moments, 1):
+        step(f"        {i:2d}. {m['start']:6.1f}s-{m['end']:6.1f}s  score={m['score']:3d}  {m['title'][:60]}")
+
+    step(f"[MULTI 4/4] render {len(moments)} shorts")
+    outputs: list = []
+    for i, m in enumerate(moments, 1):
+        clip_slug = f"{base_slug}_{i:02d}_{_slugify_local(m['hook'] or m['title'])[:30]}"
+        step(f"  ── Clip {i}/{len(moments)}: {clip_slug}")
+        sub_job = dict(job)
+        sub_job["slug"] = clip_slug
+        sub_job["source_url"] = source_url
+        sub_job["source_file"] = str(raw)
+        sub_job["scene_pick_mode"] = "manual"
+        sub_job["manual_ranges"] = f"{m['start']:.2f}-{m['end']:.2f}"
+        if m.get("hook"):
+            sub_job["hook_text"] = m["hook"]
+        sub_job["multiclip_enabled"] = False  # prevent recursion
+        try:
+            out_mp4 = run_one(sub_job, cfg, on_step=step)
+        except Exception as e:
+            step(f"  ── Clip {i} FAILED: {e}")
+            continue
+        # Sidecar metadata
+        meta = (
+            f"TITLE: {m['title']}\n"
+            f"HOOK: {m['hook']}\n"
+            f"HASHTAGS: {' '.join('#' + h for h in m['hashtags'])}\n"
+            f"VIRALITY SCORE: {m['score']}/100\n"
+            f"REASON: {m['reason']}\n"
+            f"SOURCE RANGE: {m['start']:.1f}s - {m['end']:.1f}s\n"
+            f"SOURCE URL: {source_url}\n"
+        )
+        try:
+            out_mp4.with_suffix(".txt").write_text(meta, encoding="utf-8")
+        except Exception:
+            pass
+        outputs.append(out_mp4)
+
+    step(f"[MULTI DONE] {len(outputs)}/{len(moments)} clips rendered")
+    return outputs
+
+
 def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     def step(msg: str) -> None:
         if on_step:
@@ -2083,8 +2298,13 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     work = cfg.output_dir / slug
     work.mkdir(parents=True, exist_ok=True)
 
-    step(f"[1/5] download: {source_url}")
-    raw = download_gameplay(source_url, work / "source")
+    pre_downloaded = job.get("source_file")
+    if pre_downloaded and Path(pre_downloaded).is_file():
+        raw = Path(pre_downloaded)
+        step(f"[1/5] reusing pre-downloaded source: {raw.name}")
+    else:
+        step(f"[1/5] download: {source_url}")
+        raw = download_gameplay(source_url, work / "source")
 
     target_duration = float(job.get("target_duration", 30.0))
 
