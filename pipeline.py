@@ -390,11 +390,13 @@ def _get_xtts_model():
                 "  .venv\\Scripts\\python.exe -m pip install torch torchaudio "
                 "--index-url https://download.pytorch.org/whl/cu124"
             ) from e
-        # transformers version mismatch — common with newer envs
+        # transformers version mismatch — common with newer envs.
+        # isin_mps_friendly was added in transformers 4.41 and removed in 5.0,
+        # so a working pin for current coqui-tts is the 4.57-4.99 range.
         if "transformers" in msg.lower() or "isin_mps_friendly" in msg:
             raise RuntimeError(
                 "Coqui TTS is incompatible with the installed transformers version. Run:\n"
-                "  .venv\\Scripts\\python.exe -m pip install \"transformers>=4.41,<4.49\""
+                "  .venv\\Scripts\\python.exe -m pip install \"transformers>=4.57,<5.0\""
             ) from e
         if "TTS" in msg and "tts" not in msg.lower().split("'")[1:2]:
             raise RuntimeError(
