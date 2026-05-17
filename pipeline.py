@@ -821,35 +821,74 @@ def _cloudflare_accept_vision_agreement(cfg) -> str:
 
 
 _MP_FACE_DETECTOR = None  # lazy-initialized singleton
+_IF_FACE_APP = None  # InsightFace FaceAnalysis singleton, False = unavailable
+_FACE_LOG_PRINTED = False  # log which detector we ended up with, once
 
 
-def _get_face_detector():
-    """Lazy-load MediaPipe's face detector. Returns None if mediapipe is
-    not installed."""
-    global _MP_FACE_DETECTOR
+def _get_insightface():
+    """Lazy-init InsightFace's FaceAnalysis (detection only, RetinaFace).
+    Returns None if insightface / onnxruntime / model download fail."""
+    global _IF_FACE_APP, _FACE_LOG_PRINTED
+    if _IF_FACE_APP is False:
+        return None
+    if _IF_FACE_APP is not None:
+        return _IF_FACE_APP
+    try:
+        from insightface.app import FaceAnalysis
+    except Exception:
+        _IF_FACE_APP = False
+        return None
+    # CUDAExecutionProvider works on Windows with the nvidia-cudnn wheel we
+    # already pulled for faster-whisper; CPU is the safe fallback.
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    try:
+        app = FaceAnalysis(
+            name="buffalo_l",
+            allowed_modules=["detection"],  # skip recognition/landmark models
+            providers=providers,
+        )
+        # ctx_id=0 picks the first GPU, falls back to CPU if CUDA provider fails.
+        app.prepare(ctx_id=0, det_size=(640, 640))
+    except Exception:
+        try:
+            app = FaceAnalysis(name="buffalo_l", allowed_modules=["detection"],
+                               providers=["CPUExecutionProvider"])
+            app.prepare(ctx_id=-1, det_size=(640, 640))
+        except Exception:
+            _IF_FACE_APP = False
+            return None
+    _IF_FACE_APP = app
+    if not _FACE_LOG_PRINTED:
+        print("      face detection: using InsightFace (buffalo_l)")
+        _FACE_LOG_PRINTED = True
+    return _IF_FACE_APP
+
+
+def _get_mediapipe_detector():
+    """Lazy-load MediaPipe's face detector as fallback."""
+    global _MP_FACE_DETECTOR, _FACE_LOG_PRINTED
+    if _MP_FACE_DETECTOR is False:
+        return None
     if _MP_FACE_DETECTOR is not None:
         return _MP_FACE_DETECTOR
     try:
         import mediapipe as mp
     except Exception:
-        _MP_FACE_DETECTOR = False  # mark as unavailable so we don't retry
+        _MP_FACE_DETECTOR = False
         return None
-    # model_selection=1 = full-range model (better for faces farther from camera);
-    # min_detection_confidence kept low so we don't miss profile / partial faces.
     _MP_FACE_DETECTOR = mp.solutions.face_detection.FaceDetection(
         model_selection=1, min_detection_confidence=0.4
     )
+    if not _FACE_LOG_PRINTED:
+        print("      face detection: using MediaPipe (InsightFace unavailable)")
+        _FACE_LOG_PRINTED = True
     return _MP_FACE_DETECTOR
 
 
-def detect_face_crop_offset(thumb_path: Path, source_aspect: float = 16.0 / 9.0):
-    """Use MediaPipe to find faces in `thumb_path` and return the crop offset
-    (0..1) that centers the largest face in a 9:16 portrait crop. Returns
-    None when no face is detected, when mediapipe is missing, or when the
-    source is too narrow to slide."""
-    fd = _get_face_detector()
-    if not fd:
-        return None
+def _detect_face_center_x(thumb_path: Path):
+    """Return (face_center_x_normalized, area_normalized) of the largest face
+    in `thumb_path`, or None if no face. Tries InsightFace first, MediaPipe
+    second."""
     try:
         import cv2
     except Exception:
@@ -857,26 +896,55 @@ def detect_face_crop_offset(thumb_path: Path, source_aspect: float = 16.0 / 9.0)
     img = cv2.imread(str(thumb_path))
     if img is None:
         return None
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    try:
-        results = fd.process(rgb)
-    except Exception:
+    h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
         return None
-    detections = getattr(results, "detections", None) or []
-    if not detections:
-        return None
-    # Largest face by normalized area
-    def area(d):
-        bb = d.location_data.relative_bounding_box
-        return max(0.0, bb.width) * max(0.0, bb.height)
-    best = max(detections, key=area)
-    bb = best.location_data.relative_bounding_box
-    face_center_x = bb.xmin + bb.width / 2.0  # 0..1 in source frame
 
-    # crop_width / source_width for a 9:16 crop of source with given aspect
+    # InsightFace path
+    app = _get_insightface()
+    if app:
+        try:
+            faces = app.get(img)
+        except Exception:
+            faces = []
+        if faces:
+            best = max(faces, key=lambda f: (
+                max(0.0, float(f.bbox[2] - f.bbox[0])) *
+                max(0.0, float(f.bbox[3] - f.bbox[1]))
+            ))
+            x1, _, x2, _ = best.bbox
+            center_x_px = (float(x1) + float(x2)) / 2.0
+            return (center_x_px / w, 1.0)
+
+    # MediaPipe fallback
+    fd = _get_mediapipe_detector()
+    if fd:
+        try:
+            results = fd.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        except Exception:
+            results = None
+        detections = getattr(results, "detections", None) or []
+        if detections:
+            best = max(detections, key=lambda d: (
+                max(0.0, d.location_data.relative_bounding_box.width) *
+                max(0.0, d.location_data.relative_bounding_box.height)
+            ))
+            bb = best.location_data.relative_bounding_box
+            return (bb.xmin + bb.width / 2.0, 1.0)
+
+    return None
+
+
+def detect_face_crop_offset(thumb_path: Path, source_aspect: float = 16.0 / 9.0):
+    """Compute the 0..1 crop offset that centers the largest detected face
+    in a 9:16 portrait crop. Returns None if no face is detected or the
+    source is already (near-)portrait."""
+    result = _detect_face_center_x(thumb_path)
+    if result is None:
+        return None
+    face_center_x, _ = result
     r = 9.0 / (16.0 * source_aspect)
     if r >= 0.99:
-        # Source already (near) portrait — no horizontal slide makes sense
         return 0.5
     offset = (face_center_x - r / 2.0) / (1.0 - r)
     return max(0.0, min(1.0, offset))

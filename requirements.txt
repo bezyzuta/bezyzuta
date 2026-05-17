@@ -2,8 +2,12 @@ requests>=2.31
 yt-dlp>=2024.5.27
 faster-whisper>=1.0.3
 gradio>=4.40
-# Local face detection for auto-reframe (offline, no API, ~10MB).
-# Apache 2.0 licensed. opencv-python is a transitive dep of mediapipe.
+# Local face detection for auto-reframe (offline, no API).
+# InsightFace = industry-standard accuracy (RetinaFace/SCRFD); MediaPipe is
+# the fallback if InsightFace import or model download fails.
+# First InsightFace run downloads ~280MB of weights to ~/.insightface/.
+insightface>=0.7
+onnxruntime>=1.18
 mediapipe>=0.10
 # CUDA runtime libs for faster-whisper GPU mode (no-op on AMD/Intel/CPU-only)
 nvidia-cublas-cu12; platform_system != "Darwin"
