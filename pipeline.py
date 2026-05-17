@@ -248,7 +248,8 @@ def _ollama_available(cfg: "Config") -> bool:
 
 
 def _ollama_generate(prompt: str, cfg: "Config", max_tokens: int = 2048,
-                     temperature: float = 0.8, system: str = "") -> str:
+                     temperature: float = 0.8, system: str = "",
+                     num_ctx: int = 8192) -> str:
     """Call Ollama's /api/chat and return the assistant text. Raises on failure."""
     if not cfg.ollama_url:
         raise RuntimeError("ollama_url not configured")
@@ -263,6 +264,7 @@ def _ollama_generate(prompt: str, cfg: "Config", max_tokens: int = 2048,
         "options": {
             "temperature": float(temperature),
             "num_predict": int(max_tokens),
+            "num_ctx": int(num_ctx),
         },
     }
     try:
@@ -307,10 +309,24 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
     if cfg.ollama_url and _ollama_available(cfg):
         log(f"      script via Ollama ({cfg.ollama_model_text}) — local, free")
         try:
-            text = _ollama_generate(prompt_text, cfg, max_tokens=2048, temperature=0.9)
-            if text and len(text) >= 80:
+            # Strong system prompt to enforce length: Llama 3.1 8B otherwise
+            # tends to return ~30 words instead of the 60-78 we asked for.
+            system_msg = (
+                f"Du schreibst Voiceover-Skripte für YouTube Shorts. "
+                f"WICHTIG: Halte dich GENAU an die geforderte Wortzahl "
+                f"({words_low}-{words_high} Wörter). Gib NUR den reinen "
+                f"Sprechertext aus, ohne Vor- oder Nachwort, ohne Markdown."
+            )
+            text = _ollama_generate(
+                prompt_text, cfg, max_tokens=2048, temperature=0.9,
+                system=system_msg, num_ctx=8192,
+            )
+            min_chars = max(80, int(words_low * 4.5))  # ~4.5 chars/word German
+            word_count = len(text.split())
+            log(f"      script length: {len(text)} chars / {word_count} words (target {words_low}-{words_high})")
+            if text and len(text) >= min_chars:
                 return text
-            log(f"      WARN: Ollama output too short ({len(text)} chars), trying Gemini")
+            log(f"      WARN: Ollama output too short ({len(text)} chars < {min_chars}); trying Gemini")
         except Exception as e:
             log(f"      WARN: Ollama script gen failed ({str(e)[:160]}); trying Gemini")
     if cfg.gemini_api_key:
