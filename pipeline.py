@@ -2061,20 +2061,20 @@ def _slugify_local(text: str) -> str:
 def transcribe_full_video(video_path: Path, model_name: str,
                           device: str = "auto", on_step=None) -> list:
     """Full-video transcription returning [(start, end, text), ...] segments.
-    Used by multi-clip mode to feed the whole spoken content into Gemini.
 
-    Pre-extracts to 16 kHz mono PCM via ffmpeg before handing off to whisper:
-    much smaller than the video (~10x), avoids codec edge cases that can
-    silently crash the Python process on long files."""
+    Runs whisper in a SUBPROCESS so that ctranslate2 / cuDNN cleanup faults
+    on long files (which silently kill python.exe on Windows + cudnn 9) can't
+    take the GUI down with them. The subprocess writes the parsed segment
+    list to a JSON file BEFORE the model goes out of scope, so even if the
+    child crashes during teardown the parent already has the results."""
     def log(msg):
         if on_step:
             try: on_step(msg)
             except Exception: pass
         else:
             print(msg)
-    _register_cuda_dlls_windows()
-    from faster_whisper import WhisperModel
 
+    # Pre-extract audio so whisper doesn't have to demux a long video stream.
     audio_path = video_path.with_suffix(".whisper.wav")
     if not audio_path.exists() or audio_path.stat().st_size < 1024:
         log(f"      extracting audio -> {audio_path.name} (16kHz mono)")
@@ -2087,34 +2087,89 @@ def transcribe_full_video(video_path: Path, model_name: str,
         except Exception as e:
             raise RuntimeError(f"audio extraction failed: {e}") from e
 
-    candidates = (
-        [("cuda", "float16"), ("cpu", "int8")] if device == "auto"
-        else [("cuda", "float16")] if device == "cuda"
-        else [("cpu", "int8")]
+    out_json = audio_path.with_suffix(".segments.json")
+    if out_json.exists():
+        try: out_json.unlink()
+        except Exception: pass
+
+    # Order of device attempts
+    devices = (
+        ["cuda", "cpu"] if device == "auto"
+        else ["cuda"] if device == "cuda"
+        else ["cpu"]
     )
+
+    # Child script. Writes JSON ASAP after iteration, before model goes out
+    # of scope. We register the same Windows CUDA-DLL workaround here too.
+    child_code = (
+        "import json, os, sys, importlib.util\n"
+        "if sys.platform == 'win32':\n"
+        "    for pkg in ('nvidia.cublas','nvidia.cudnn','nvidia.cuda_runtime','nvidia.cuda_nvrtc'):\n"
+        "        try:\n"
+        "            spec = importlib.util.find_spec(pkg)\n"
+        "        except Exception:\n"
+        "            spec = None\n"
+        "        if spec and spec.submodule_search_locations:\n"
+        "            for loc in spec.submodule_search_locations:\n"
+        "                b = os.path.join(loc, 'bin')\n"
+        "                if os.path.isdir(b):\n"
+        "                    try: os.add_dll_directory(b)\n"
+        "                    except Exception: pass\n"
+        "                    os.environ['PATH'] = b + os.pathsep + os.environ.get('PATH','')\n"
+        "from faster_whisper import WhisperModel\n"
+        "audio = sys.argv[1]\n"
+        "model_name = sys.argv[2]\n"
+        "device = sys.argv[3]\n"
+        "out_json = sys.argv[4]\n"
+        "ct = 'float16' if device == 'cuda' else 'int8'\n"
+        "model = WhisperModel(model_name, device=device, compute_type=ct)\n"
+        "segments_iter, info = model.transcribe(\n"
+        "    audio, word_timestamps=False, vad_filter=True,\n"
+        "    vad_parameters={'min_silence_duration_ms': 500},\n"
+        ")\n"
+        "out = []\n"
+        "for s in segments_iter:\n"
+        "    t = str(s.text).strip()\n"
+        "    if t:\n"
+        "        out.append([float(s.start), float(s.end), t])\n"
+        "with open(out_json, 'w', encoding='utf-8') as f:\n"
+        "    json.dump({'duration': float(info.duration), 'segments': out}, f)\n"
+        "print(f'OK {len(out)} segments {info.duration:.1f}s', flush=True)\n"
+    )
+
     last_err = None
-    for dev, ct in candidates:
+    for dev in devices:
+        log(f"      transcribe via subprocess (device={dev}, model={model_name})")
         try:
-            log(f"      loading whisper-{model_name} on {dev}")
-            model = WhisperModel(model_name, device=dev, compute_type=ct)
-            log(f"      transcribing {audio_path.name} ...")
-            segments_iter, info = model.transcribe(
-                str(audio_path),
-                word_timestamps=False,
-                vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 500},
+            proc = subprocess.run(
+                [sys.executable, "-c", child_code, str(audio_path), model_name, dev, str(out_json)],
+                capture_output=True, text=True, timeout=1800,
             )
-            out: list = []
-            for seg in segments_iter:
-                txt = str(seg.text).strip()
-                if txt:
-                    out.append((float(seg.start), float(seg.end), txt))
-            log(f"      whisper {dev}: {len(out)} segments, duration {info.duration:.1f}s")
-            return out
-        except Exception as e:
-            last_err = e
-            log(f"      whisper {dev} failed: {str(e)[:200]}")
+        except subprocess.TimeoutExpired as e:
+            last_err = f"timeout after 30min on {dev}"
+            log(f"      {last_err}")
             continue
+
+        # Even if the child crashed during teardown, the JSON may already
+        # have been written. Trust the JSON if it exists.
+        if out_json.exists() and out_json.stat().st_size > 2:
+            try:
+                payload = json.loads(out_json.read_text(encoding="utf-8"))
+            except Exception as e:
+                payload = None
+            if payload:
+                segs = payload.get("segments") or []
+                dur = float(payload.get("duration") or 0.0)
+                out = [(float(a), float(b), str(c)) for (a, b, c) in segs]
+                log(f"      whisper {dev}: {len(out)} segments, duration {dur:.1f}s "
+                    f"(subprocess exit={proc.returncode})")
+                return out
+
+        # No JSON written -> capture stderr for the user
+        err_tail = (proc.stderr or "").strip().splitlines()[-10:]
+        last_err = f"subprocess exit {proc.returncode} on {dev}: " + " | ".join(err_tail)
+        log(f"      whisper {dev} failed: {last_err[:240]}")
+
     raise RuntimeError(f"full transcription failed on all backends: {last_err}")
 
 
