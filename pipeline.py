@@ -1818,6 +1818,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         step("[2/5] voice disabled — generating silent base track")
         vo_dur = float(target_duration)
         vo = make_silent_track(vo_dur, work / "voice.mp3")
+        # Still need a non-empty seed for image prompt generation; fall back to
+        # the topic field if there's no script.
+        script = (job.get("topic") or "").strip() or "cinematic scene"
 
     # bias clip duration toward target_duration but never cut the voiceover
     target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0, 150.0)
