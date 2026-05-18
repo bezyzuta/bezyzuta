@@ -2239,56 +2239,83 @@ def transcribe_full_video(video_path: Path, model_name: str,
 def _snap_to_segment_boundary(time_target: float, segments: list,
                               kind: str, tolerance: float,
                               debug: list = None) -> float:
-    """Snap a time to the nearest Whisper segment boundary within `tolerance`
-    seconds. kind = 'start' (snap to a segment's start) or 'end' (snap to a
-    segment's end). For 'end', strongly prefer segment ends whose transcribed
-    text closes with .!? — those are real sentence endings, not just speech
-    pauses Whisper guessed at. Returns time_target unchanged if nothing fits.
-    `debug`, if provided, is appended a short description for logging."""
+    """Snap a time to the nearest Whisper segment boundary within `tolerance`.
+    Scoring per candidate combines:
+      - punctuation (.!?…) at end / before start
+      - gap to next/previous segment (real speech pause)
+      - distance from target (closer is better, weak tiebreaker)
+    A real sentence end almost always has both punctuation AND a >0.4s gap.
+    Whisper hallucinates periods inside abbreviations ('vs.', 'z.B.'), so
+    we won't trust punctuation alone; the gap is the stronger signal."""
     if not segments or tolerance <= 0:
         if debug is not None:
             debug.append(f"no segments / tol={tolerance}")
         return time_target
     sentence_enders = (".", "!", "?", "…")
+    # Build (sorted-by-time) start/end arrays once for gap computation
+    seg_starts = sorted(s[0] for s in segments)
+    seg_ends = sorted(s[1] for s in segments)
+
+    def gap_after(t: float) -> float:
+        """Silence between t and the next segment start."""
+        for s in seg_starts:
+            if s > t + 0.01:
+                return s - t
+        return 99.0  # end of video
+
+    def gap_before(t: float) -> float:
+        """Silence between previous segment end and t."""
+        prev = -1.0
+        for e in seg_ends:
+            if e < t - 0.01:
+                prev = e
+            else:
+                break
+        return (t - prev) if prev >= 0 else 99.0
+
     if kind == "start":
-        cand = [(abs(s[0] - time_target), s[0], s) for s in segments
-                if abs(s[0] - time_target) <= tolerance]
+        cand = [s for s in segments if abs(s[0] - time_target) <= tolerance]
     else:
-        cand = [(abs(s[1] - time_target), s[1], s) for s in segments
-                if abs(s[1] - time_target) <= tolerance]
+        cand = [s for s in segments if abs(s[1] - time_target) <= tolerance]
     if not cand:
         if debug is not None:
             debug.append(f"no candidates within ±{tolerance}s of {time_target:.1f}")
         return time_target
-    n_total = len(cand)
-    n_punct = 0
-    if kind == "end":
-        with_punct = [c for c in cand
-                      if str(c[2][2]).rstrip().endswith(sentence_enders)]
-        n_punct = len(with_punct)
-        if with_punct:
-            cand = with_punct
-    elif kind == "start":
-        with_clean_lead = []
-        for c in cand:
-            seg_start = c[1]
-            best_prev = None
-            best_gap = 1e9
-            for s in segments:
-                gap = seg_start - s[1]
-                if 0 <= gap < best_gap:
-                    best_gap = gap
-                    best_prev = s
-            if best_prev is not None and str(best_prev[2]).rstrip().endswith(sentence_enders):
-                with_clean_lead.append(c)
-        n_punct = len(with_clean_lead)
-        if with_clean_lead:
-            cand = with_clean_lead
-    cand.sort(key=lambda x: x[0])
-    result = cand[0][1]
+
+    scored = []
+    for s in cand:
+        text = str(s[2]).rstrip()
+        if kind == "end":
+            t = s[1]
+            has_punct = text.endswith(sentence_enders)
+            gap = gap_after(t)
+        else:
+            t = s[0]
+            # For "start", punctuation belongs to the PREVIOUS segment.
+            prev_e = max((x[1] for x in segments if x[1] <= t + 0.01), default=-1.0)
+            prev_text = ""
+            for x in segments:
+                if abs(x[1] - prev_e) < 0.01:
+                    prev_text = str(x[2]).rstrip()
+                    break
+            has_punct = prev_text.endswith(sentence_enders)
+            gap = gap_before(t)
+        # Heuristic score: gap is the strongest signal (real pause), punctuation
+        # is a bonus on top. Distance from target is a soft tiebreaker.
+        gap_score = min(gap, 2.0) * 1.5  # 0..3
+        punct_score = 0.8 if has_punct else 0.0
+        dist_penalty = abs(t - time_target) * 0.15  # 0..1.8 across ±12s window
+        score = gap_score + punct_score - dist_penalty
+        scored.append((score, t, has_punct, gap))
+    scored.sort(key=lambda x: -x[0])
+    best = scored[0]
     if debug is not None:
-        debug.append(f"{n_total} cands ±{tolerance}s, {n_punct} punctuated, picked {result:.1f}")
-    return result
+        n_punct = sum(1 for x in scored if x[2])
+        debug.append(
+            f"{len(cand)} cands ±{tolerance}s, {n_punct} punctuated, "
+            f"picked {best[1]:.1f} (gap={best[3]:.2f}s, punct={'Y' if best[2] else 'N'})"
+        )
+    return best[1]
 
 
 def find_best_moments(segments: list, n_clips: int, target_duration: float,
@@ -2485,10 +2512,15 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     moments, then render each as its own short via run_one. Returns list of
     output paths. Writes a sibling .txt with title/hashtags/score per clip."""
     def step(msg: str):
+        # NOTE: only delegate to on_step (which prints + sends to GUI). Don't
+        # print here — run_one's step() will print the message itself when we
+        # call it as on_step for sub-clips, otherwise we'd duplicate every
+        # line in the console.
         if on_step:
             try: on_step(msg)
             except Exception: pass
-        print(msg)
+        else:
+            print(msg)
 
     base_slug = job.get("slug") or "multiclip"
     source_url = (job.get("source_url") or "").strip()
@@ -2515,6 +2547,10 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     for i, m in enumerate(moments, 1):
         step(f"        {i:2d}. {m['start']:6.1f}s-{m['end']:6.1f}s  score={m['score']:3d}  {m['title'][:60]}")
 
+    if not bool(job.get("auto_reframe", False)):
+        step("      HINWEIS: Auto-Reframe ist AUS — Clips werden mittig gecroppt, "
+             "Gesichter rechts/links werden ggf. abgeschnitten. "
+             "Aktiviere '🎯 Auto-Reframe' in der GUI für face-following Crop.")
     step(f"[MULTI 4/4] render {len(moments)} shorts")
     outputs: list = []
     for i, m in enumerate(moments, 1):
