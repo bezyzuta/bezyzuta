@@ -2562,6 +2562,11 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         sub_job["source_file"] = str(raw)
         sub_job["scene_pick_mode"] = "manual"
         sub_job["manual_ranges"] = f"{m['start']:.2f}-{m['end']:.2f}"
+        # Override the GUI slider so downstream stages (silent audio track,
+        # progress bar, etc.) use the snap-adjusted actual range length
+        # instead of the slider's nominal target. Otherwise ffmpeg -shortest
+        # caps the final video at the GUI's 30s while the clip is 31s/29s/39s.
+        sub_job["target_duration"] = float(m["end"] - m["start"])
         if m.get("hook"):
             sub_job["hook_text"] = m["hook"]
         sub_job["multiclip_enabled"] = False  # prevent recursion
