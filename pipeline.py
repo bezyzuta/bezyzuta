@@ -2498,7 +2498,11 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
         "generationConfig": {
             "temperature": 0.7,
             "maxOutputTokens": 8192,
-            "thinkingConfig": {"thinkingBudget": 0},
+            # Dynamic thinking: model decides budget based on task complexity.
+            # Moment-picking is the one call where reasoning pays off (judging
+            # virality across a long transcript), so we don't disable it like
+            # we do for the cheaper script/scene/vision calls.
+            "thinkingConfig": {"thinkingBudget": -1},
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
