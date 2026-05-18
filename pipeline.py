@@ -1814,18 +1814,21 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
 
 def derive_image_prompt(seed_text: str) -> str:
     return (
-        "vertical cartoon illustration, Roblox blocky aesthetic, vibrant saturated colors, "
-        "dramatic action scene, dynamic composition, bold lighting, no text, no logos, "
-        f"no real people, theme: {seed_text[:200]}"
+        "vertical stylized illustration, vibrant saturated colors, dramatic scene, "
+        "dynamic composition, bold lighting, no text, no logos, no watermarks, "
+        f"theme: {seed_text[:200]}"
     )
 
 
-SCENE_PROMPT = """Du bekommst ein deutsches Voiceover-Skript fuer einen Roblox YouTube Short.
+SCENE_PROMPT = """Du bekommst ein deutsches Voiceover-Skript fuer einen YouTube Short.
 
 Teile das Skript gedanklich in {n} dramatische visuelle Schluesselmomente und schreibe pro Moment einen englischen Bild-Prompt fuer ein Text-zu-Bild-Modell.
 
 Pflicht-Stil pro Prompt:
-"vertical cartoon illustration, Roblox blocky aesthetic, vibrant saturated colors, [DEINE SZENE IN ENGLISCH], dramatic lighting, no text, no logos, no real people"
+"vertical stylized illustration, vibrant saturated colors, [DEINE SZENE IN ENGLISCH], dramatic lighting, no text, no logos, no watermarks"
+
+Whle den visuellen Stil passend zum Skript-Inhalt — z.B. realistisch fuer
+Doku/Talk-Themen, cartoonig fuer Gaming/Comedy, cinematisch fuer Storys.
 
 Skript:
 \"\"\"
