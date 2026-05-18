@@ -2174,13 +2174,17 @@ def transcribe_full_video(video_path: Path, model_name: str,
 
 
 def _snap_to_segment_boundary(time_target: float, segments: list,
-                              kind: str, tolerance: float) -> float:
+                              kind: str, tolerance: float,
+                              debug: list = None) -> float:
     """Snap a time to the nearest Whisper segment boundary within `tolerance`
     seconds. kind = 'start' (snap to a segment's start) or 'end' (snap to a
     segment's end). For 'end', strongly prefer segment ends whose transcribed
     text closes with .!? — those are real sentence endings, not just speech
-    pauses Whisper guessed at. Returns time_target unchanged if nothing fits."""
+    pauses Whisper guessed at. Returns time_target unchanged if nothing fits.
+    `debug`, if provided, is appended a short description for logging."""
     if not segments or tolerance <= 0:
+        if debug is not None:
+            debug.append(f"no segments / tol={tolerance}")
         return time_target
     sentence_enders = (".", "!", "?", "…")
     if kind == "start":
@@ -2190,21 +2194,21 @@ def _snap_to_segment_boundary(time_target: float, segments: list,
         cand = [(abs(s[1] - time_target), s[1], s) for s in segments
                 if abs(s[1] - time_target) <= tolerance]
     if not cand:
+        if debug is not None:
+            debug.append(f"no candidates within ±{tolerance}s of {time_target:.1f}")
         return time_target
+    n_total = len(cand)
+    n_punct = 0
     if kind == "end":
         with_punct = [c for c in cand
                       if str(c[2][2]).rstrip().endswith(sentence_enders)]
+        n_punct = len(with_punct)
         if with_punct:
             cand = with_punct
     elif kind == "start":
-        # Prefer segments that follow a sentence-ending segment, i.e. the
-        # previous segment closed with .!?
-        ends_at = {round(s[1], 2): str(s[2]).rstrip() for s in segments}
         with_clean_lead = []
         for c in cand:
             seg_start = c[1]
-            prev_end = round(seg_start, 2)
-            # Find the previous segment ending nearest to seg_start.
             best_prev = None
             best_gap = 1e9
             for s in segments:
@@ -2214,10 +2218,14 @@ def _snap_to_segment_boundary(time_target: float, segments: list,
                     best_prev = s
             if best_prev is not None and str(best_prev[2]).rstrip().endswith(sentence_enders):
                 with_clean_lead.append(c)
+        n_punct = len(with_clean_lead)
         if with_clean_lead:
             cand = with_clean_lead
     cand.sort(key=lambda x: x[0])
-    return cand[0][1]
+    result = cand[0][1]
+    if debug is not None:
+        debug.append(f"{n_total} cands ±{tolerance}s, {n_punct} punctuated, picked {result:.1f}")
+    return result
 
 
 def find_best_moments(segments: list, n_clips: int, target_duration: float,
@@ -2328,26 +2336,34 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
     src_end = max(s[1] for s in segments) if segments else 0.0
     target_min = max(15.0, float(target_duration) - 5.0)
     target_max = float(target_duration) + 10.0
+    if on_step:
+        try:
+            n_punct = sum(1 for s in segments if str(s[2]).rstrip().endswith((".","!","?","…")))
+            on_step(f"      snap context: {len(segments)} segments, {n_punct} end with .!?")
+        except Exception:
+            pass
     snapped = []
     for m in cleaned:
         orig_start, orig_end = m["start"], m["end"]
+        dbg_start: list = []
+        dbg_end: list = []
         # Start: snap to nearest segment start that follows a sentence end,
         # within ±5s of Gemini's pick.
-        snapped_start = _snap_to_segment_boundary(orig_start, segments, "start", 5.0)
+        snapped_start = _snap_to_segment_boundary(orig_start, segments, "start", 5.0, debug=dbg_start)
         # End: aim for snapped_start + target_duration, snap to nearest
-        # sentence-end within a wider window so we can stretch/trim into a
-        # clean stop.
+        # sentence-end within a wider window. ±12s lets us reach the next
+        # real sentence ending even when Whisper segments are 3-5s apart.
         ideal_end = snapped_start + float(target_duration)
-        snapped_end = _snap_to_segment_boundary(ideal_end, segments, "end", 8.0)
+        snapped_end = _snap_to_segment_boundary(ideal_end, segments, "end", 12.0, debug=dbg_end)
         # Enforce minimum length so we don't produce 5s pieces.
         if snapped_end - snapped_start < target_min:
             snapped_end = _snap_to_segment_boundary(
-                snapped_start + target_min, segments, "end", 6.0
+                snapped_start + target_min, segments, "end", 8.0,
             )
         # Cap maximum so we don't massively overshoot.
         if snapped_end - snapped_start > target_max:
             snapped_end = _snap_to_segment_boundary(
-                snapped_start + float(target_duration), segments, "end", 4.0
+                snapped_start + float(target_duration), segments, "end", 6.0,
             )
         # Clamp to source end.
         if src_end > 0 and snapped_end > src_end:
@@ -2361,7 +2377,9 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
                 on_step(
                     f"      snapped {orig_start:6.1f}-{orig_end:6.1f}s -> "
                     f"{snapped_start:6.1f}-{snapped_end:6.1f}s "
-                    f"({snapped_end - snapped_start:5.1f}s) | {m['title'][:40]}"
+                    f"({snapped_end - snapped_start:5.1f}s) "
+                    f"[start: {' / '.join(dbg_start) or '-'}] "
+                    f"[end: {' / '.join(dbg_end) or '-'}] | {m['title'][:40]}"
                 )
             except Exception:
                 pass
@@ -2378,7 +2396,7 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
             overlap = max(0.0, min(m["end"], prev["end"]) - max(m["start"], prev["start"]))
             m_dur = max(0.1, m["end"] - m["start"])
             p_dur = max(0.1, prev["end"] - prev["start"])
-            if overlap / min(m_dur, p_dur) > 0.5:
+            if overlap / min(m_dur, p_dur) > 0.7:
                 is_dup = True
                 if on_step:
                     try:
