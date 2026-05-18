@@ -2350,17 +2350,18 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
         f"Finde EXAKT {n_clips} Momente.\n\n"
         f"REGELN FÜR DIE LÄNGE jedes Moments:\n"
-        f"- Die Länge richtet sich nach dem INHALT, NICHT nach einer festen Zahl.\n"
+        f"- Die Länge richtet sich KOMPLETT nach dem INHALT, NICHT nach einer festen Zahl.\n"
         f"- Schneide NIE mitten im Satz oder Gedanken — IMMER am Ende eines vollständigen\n"
         f"  Gedankens, idealerweise am Ende eines Satzes mit Punkt/Frage/Ausruf.\n"
-        f"- Typische Längen je Content-Typ:\n"
+        f"- Typische Längen je Content-Typ (NUR Orientierung, kein Zwang):\n"
         f"  * Schnelle Pointe / kurze Reaction: 15-25s\n"
         f"  * Story mit Setup + Pointe: 25-45s\n"
         f"  * Argumentations-Kette / Erklärung: 45-75s\n"
-        f"  * Komplexe Diskussion / Debatte: 75-90s\n"
-        f"- Bevorzuge ~{hint}s als RICHTWERT, aber stretche oder kürze frei wenn der\n"
-        f"  Inhalt es verlangt. Vollständigkeit > Ziel-Länge.\n"
-        f"- Harte Grenzen: 15s minimum, 90s maximum.\n\n"
+        f"  * Komplexe Diskussion / Debatte: 75-120s\n"
+        f"  * Tiefe Geschichte / mehrere Pointen: 2-5 Minuten (120-300s) — wenn es WIRKLICH viral ist\n"
+        f"- Bevorzuge ~{hint}s als grober Richtwert, aber GEH LÄNGER wenn der Inhalt es verdient.\n"
+        f"  Lieber 2:30 Minuten ein komplettes Highlight als 30s ein abgeschnittenes.\n"
+        f"- Harte Grenzen: 15s minimum, 10 Minuten maximum.\n\n"
         f"Such nach: schockierenden Aussagen, Cliffhangern, lustigen Pointen, "
         f"Streit, Storys mit Hook, kontroversen Meinungen, 'wait what' Momenten, "
         f"emotionalen Spitzen.\n\n"
@@ -2434,9 +2435,9 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
     # means 26s or 38s instead of the requested 30s.
     src_end = max(s[1] for s in segments) if segments else 0.0
     # Opus-style free length: Gemini's chosen end IS the target. We just snap
-    # it to a nearby sentence boundary. Hard rails 10s / 110s are safety nets
-    # in case Gemini hallucinates a 5s or 5-minute pick.
-    HARD_MIN, HARD_MAX = 10.0, 110.0
+    # it to a nearby sentence boundary. Hard rails kept very loose (10s / 10min)
+    # so a strong narrative can run as long as it needs to.
+    HARD_MIN, HARD_MAX = 10.0, 600.0
     if on_step:
         try:
             n_punct = sum(1 for s in segments if str(s[2]).rstrip().endswith((".","!","?","…")))
@@ -2727,8 +2728,26 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         step(f"[4/5] transcribe + captions (device={whisper_device})")
         words, used_dev = transcribe_words(vo, cfg.whisper_model, device=whisper_device)
         step(f"      whisper ran on {used_dev}")
+    elif bool(job.get("enable_captions", True)):
+        # No TTS voice, but the user wants captions — pull the original
+        # speaker audio out of the cut clip and transcribe THAT. Whisper
+        # auto-detects the language (German / English / etc.).
+        whisper_device = str(job.get("whisper_device", "auto"))
+        step(f"[4/5] transcribe source audio for captions (device={whisper_device})")
+        clip_audio = work / "clip_audio.wav"
+        try:
+            run_capture_stderr([
+                "ffmpeg", "-y", "-i", str(clip),
+                "-vn", "-ac", "1", "-ar", "16000",
+                "-c:a", "pcm_s16le", str(clip_audio),
+            ])
+            words, used_dev = transcribe_words(clip_audio, cfg.whisper_model, device=whisper_device)
+            step(f"      whisper ran on {used_dev} — {len(words)} words from source audio")
+        except Exception as e:
+            step(f"      WARN: source transcription failed ({str(e)[:160]}); no captions")
+            words = []
     else:
-        step("[4/5] no voice — skipping transcription, no captions to render")
+        step("[4/5] no voice + captions disabled — skipping transcription")
         words = []
     ass = write_ass(
         words, cfg.target_w, cfg.target_h, work / "captions.ass",
