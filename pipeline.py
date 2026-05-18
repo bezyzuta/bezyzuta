@@ -2395,8 +2395,9 @@ def _snap_to_segment_boundary(time_target: float, segments: list,
 def find_best_moments(segments: list, n_clips: int, target_duration: float,
                       cfg: "Config", on_step=None) -> list:
     """Send the transcript to Gemini and ask for the N best viral moments.
-    Returns a list of dicts: {start, end, hook, title, hashtags, score, reason}.
-    Raises on failure (caller handles fallback)."""
+    For long sources (>10 min), splits the transcript into n_clips equal
+    time-regions and asks Gemini for ONE moment per region. Guarantees
+    distribution across the whole video. Returns list of moment dicts."""
     def log(msg):
         if on_step:
             try: on_step(msg)
@@ -2407,6 +2408,37 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         raise RuntimeError("no transcript segments to analyse")
     if not cfg.gemini_api_key:
         raise RuntimeError("multi-clip best-moments needs gemini_api_key")
+
+    src_dur_all = max(s[1] for s in segments)
+    if src_dur_all > 600 and n_clips >= 3:
+        log(f"      chunking transcript into {n_clips} regions for forced distribution")
+        chunk_dur = src_dur_all / n_clips
+        all_moments: list = []
+        for i in range(n_clips):
+            c_start = i * chunk_dur
+            c_end = (i + 1) * chunk_dur
+            chunk = [s for s in segments if s[0] >= c_start and s[1] <= c_end]
+            if len(chunk) < 5:
+                log(f"        region {i+1}/{n_clips} ({c_start:.0f}-{c_end:.0f}s): too few segments, skip")
+                continue
+            log(f"        region {i+1}/{n_clips} ({c_start:.0f}-{c_end:.0f}s): {len(chunk)} segments")
+            try:
+                ms = _find_moments_single_call(chunk, 1, target_duration, cfg)
+                all_moments.extend(ms)
+            except Exception as e:
+                log(f"        region {i+1} failed: {str(e)[:160]}")
+        if not all_moments:
+            raise RuntimeError("all transcript regions failed to yield moments")
+        return _snap_and_dedupe_moments(all_moments, segments, n_clips, target_duration, on_step=log)
+
+    # Short video / few clips: single call as before
+    ms = _find_moments_single_call(segments, n_clips, target_duration, cfg)
+    return _snap_and_dedupe_moments(ms, segments, n_clips, target_duration, on_step=log)
+
+
+def _find_moments_single_call(segments: list, n_clips: int, target_duration: float,
+                              cfg: "Config") -> list:
+    """One Gemini API call: parse N viral moments from the given transcript."""
     lines = []
     for s, e, t in segments:
         ts = f"{int(s // 60):02d}:{s % 60:05.2f}"
@@ -2512,6 +2544,21 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         })
     if not cleaned:
         raise RuntimeError("Gemini returned no usable moments")
+    return cleaned
+
+
+def _snap_and_dedupe_moments(cleaned: list, segments: list, n_clips: int,
+                             target_duration: float, on_step=None) -> list:
+    """Apply sentence-boundary snap + dedup + chronological sort to a raw
+    list of Gemini moment dicts. Returns up to n_clips final moments."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+    if not cleaned:
+        raise RuntimeError("no moments to snap")
 
     # Snap each Gemini moment to natural sentence boundaries (Whisper segment
     # ends, preferring real .!? endings). This is how Opus.pro avoids cutting
