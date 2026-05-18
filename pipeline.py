@@ -906,7 +906,45 @@ def _cloudflare_accept_vision_agreement(cfg) -> str:
 
 _MP_FACE_DETECTOR = None  # lazy-initialized singleton
 _IF_FACE_APP = None  # InsightFace FaceAnalysis singleton, False = unavailable
+_YOLO_FACE_MODEL = None  # Ultralytics YOLOv8-face singleton, False = unavailable
 _FACE_LOG_PRINTED = False  # log which detector we ended up with, once
+
+
+_YOLO_FACE_WEIGHTS_URL = (
+    "https://github.com/akanametov/yolo-face/releases/download/v0.0.0/yolov11n-face.pt"
+)
+
+
+def _get_yolo_face_detector():
+    """Lazy-init Ultralytics YOLO face detector. Downloads yolov11n-face.pt
+    (~6MB) to ~/.cache/yolo-face on first call. Returns None if ultralytics
+    isn't installed or the download fails."""
+    global _YOLO_FACE_MODEL, _FACE_LOG_PRINTED
+    if _YOLO_FACE_MODEL is False:
+        return None
+    if _YOLO_FACE_MODEL is not None:
+        return _YOLO_FACE_MODEL
+    try:
+        from ultralytics import YOLO
+    except Exception:
+        _YOLO_FACE_MODEL = False
+        return None
+    try:
+        cache_dir = Path.home() / ".cache" / "yolo-face"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        weights = cache_dir / "yolov11n-face.pt"
+        if not weights.exists() or weights.stat().st_size < 100_000:
+            r = requests.get(_YOLO_FACE_WEIGHTS_URL, timeout=120)
+            r.raise_for_status()
+            weights.write_bytes(r.content)
+        _YOLO_FACE_MODEL = YOLO(str(weights))
+    except Exception:
+        _YOLO_FACE_MODEL = False
+        return None
+    if not _FACE_LOG_PRINTED:
+        print("      face detection: using YOLOv11-face (ultralytics)")
+        _FACE_LOG_PRINTED = True
+    return _YOLO_FACE_MODEL
 
 
 def _get_insightface():
@@ -971,8 +1009,8 @@ def _get_mediapipe_detector():
 
 def _detect_face_center_x(thumb_path: Path):
     """Return (face_center_x_normalized, source_label) of the largest face
-    in `thumb_path`, or None if no face. Tries InsightFace first, MediaPipe
-    second."""
+    in `thumb_path`, or None if no face. Detector priority: YOLOv8-face ->
+    InsightFace -> MediaPipe."""
     try:
         import cv2
     except Exception:
@@ -983,6 +1021,27 @@ def _detect_face_center_x(thumb_path: Path):
     h, w = img.shape[:2]
     if h <= 0 or w <= 0:
         return None
+
+    # YOLOv8-face path (best accuracy/speed on GPU, requires ultralytics)
+    yolo = _get_yolo_face_detector()
+    if yolo:
+        try:
+            results = yolo(img, verbose=False, conf=0.35)
+        except Exception:
+            results = []
+        # ultralytics returns a list of Results; each has .boxes (xyxy tensor)
+        boxes_all = []
+        for r in results or []:
+            try:
+                for b in r.boxes:
+                    x1, y1, x2, y2 = [float(v) for v in b.xyxy[0].cpu().tolist()]
+                    boxes_all.append((x1, y1, x2, y2))
+            except Exception:
+                continue
+        if boxes_all:
+            best = max(boxes_all, key=lambda bb: (bb[2] - bb[0]) * (bb[3] - bb[1]))
+            center_x_px = (best[0] + best[2]) / 2.0
+            return (center_x_px / w, "yolo")
 
     # InsightFace path
     app = _get_insightface()
@@ -1190,11 +1249,15 @@ def _cloudflare_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
 
 
 def _face_detector_available() -> bool:
-    """True if a local face detector (InsightFace or MediaPipe) is loaded.
-    When one is available, "no face" is an authoritative answer — we should
-    stay centered instead of falling back to the vision LLM which has no way
-    to say 'no people here' and just guesses a side."""
-    return bool(_get_insightface() or _get_mediapipe_detector())
+    """True if any local face detector (YOLO / InsightFace / MediaPipe) is
+    loaded. When one is available, "no face" is an authoritative answer —
+    we should stay centered instead of falling back to the vision LLM which
+    has no way to say 'no people here' and just guesses a side."""
+    return bool(
+        _get_yolo_face_detector()
+        or _get_insightface()
+        or _get_mediapipe_detector()
+    )
 
 
 def _detect_subject_at_time(source: Path, at_time: float, cfg,

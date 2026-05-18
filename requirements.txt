@@ -2,13 +2,18 @@ requests>=2.31
 yt-dlp>=2024.5.27
 faster-whisper>=1.0.3
 gradio>=4.40
-# Local face detection for auto-reframe (offline, no API, ~10MB, Apache 2.0).
-# Plenty accurate for clear front-facing faces in podcasts / interviews.
+# Local face detection for auto-reframe. Detector priority at runtime:
+#   YOLOv8/v11-face (ultralytics)  -> best on GPU, requires torch
+#   InsightFace (RetinaFace/SCRFD) -> highest accuracy, needs VC++ on Windows
+#   MediaPipe                      -> always-on fallback, fast, no extras
 mediapipe>=0.10
-# Optional, NOT pulled by default: InsightFace gives better profile / partial-
-# face accuracy but needs Microsoft Visual C++ Build Tools on Windows to
-# compile a Cython extension. If you've installed it manually the pipeline
-# will use it automatically. Install with:
+# Optional, NOT pulled by default: YOLOv8-face. Best speed+accuracy on GPU
+# but pulls torch (~3GB). Install separately if you want it:
+#   .venv\Scripts\python.exe -m pip install ultralytics torch --index-url https://download.pytorch.org/whl/cu124
+# Pipeline auto-downloads yolov11n-face.pt (~6MB) to ~/.cache/yolo-face on
+# first use.
+# Optional, NOT pulled by default: InsightFace. Needs Microsoft Visual C++
+# Build Tools on Windows to compile a Cython extension. Install with:
 #   .venv\Scripts\python.exe -m pip install insightface onnxruntime
 # (after installing VC++ Build Tools from https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 # CUDA runtime libs for faster-whisper GPU mode (no-op on AMD/Intel/CPU-only)
