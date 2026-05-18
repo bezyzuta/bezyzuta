@@ -303,9 +303,12 @@ def build_app() -> gr.Blocks:
             )
             topic = gr.Textbox(
                 value="Krasser Moment, totaler Wahnsinn",
-                label="Skript-Thema",
+                label="Skript-Thema / Prompt an die KI",
                 lines=2,
-                info="Gemini/Llama schreibt daraus das Skript zur Ziel-Länge",
+                info=("Wird 1:1 als Anweisung an Gemini übergeben. Schreib hier was "
+                      "das Skript machen soll — z.B. 'erkläre kurz warum X funktioniert', "
+                      "'fasse das Thema Y für Jugendliche zusammen', oder einfach ein Thema "
+                      "wie 'krasser Roblox-Moment in Doors'."),
             )
             custom_script = gr.Textbox(
                 value="",

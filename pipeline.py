@@ -155,16 +155,17 @@ def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 20
     return pick
 
 
-SCRIPT_PROMPT = """Schreibe ein energetisches, jugendliches Skript fuer einen YouTube Short ueber Roblox auf Deutsch.
+SCRIPT_PROMPT = """Du schreibst ein deutsches YouTube-Short-Skript.
 
-Thema: {topic}
+Anweisung vom Nutzer:
+{topic}
 
-Anforderungen:
+Format-Anforderungen (immer einhalten):
 - Laenge: ca. {target_low}-{target_high} Sekunden Sprechzeit (etwa {words_low}-{words_high} deutsche Woerter)
-- Starker Hook am Anfang (z.B. "Bro, schau dir das an!", "Achtung!", "99% der Spieler...")
-- Action-Beschreibung in der Mitte, spannend und mitreissend
+- Starker Hook in den ersten 3 Sekunden (Frage, kontroverse Aussage, "Wusstest du...", "Achtung!", o.ae.)
+- Spannender Mittelteil — Inhalt richtet sich nach der Anweisung oben
 - Call-to-Action am Ende ("Folg fuer mehr...", "Lass ein Like da...")
-- Kein Markdown, keine Anfuehrungszeichen, keine Regie-Anweisungen
+- Kein Markdown, keine Anfuehrungszeichen, keine Regie-Anweisungen, keine Klammern
 - Gib NUR den reinen Sprechertext aus, sonst nichts"""
 
 
@@ -215,7 +216,7 @@ _SCRIPT_TEMPLATES = [
 
 
 def fallback_template_script(topic: str) -> str:
-    return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein krasser Roblox Moment")
+    return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein spannender Moment")
 
 
 def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
