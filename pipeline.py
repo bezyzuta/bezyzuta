@@ -1588,6 +1588,80 @@ def _register_cuda_dlls_windows() -> list[str]:
     return registered
 
 
+def transcribe_words_subprocess(audio_path: Path, model_name: str,
+                                device: str = "auto", on_step=None):
+    """Subprocess-isolated version of transcribe_words for word-level captions.
+    Same crash-safe approach as transcribe_full_video: child writes results to
+    a JSON sidecar before the model destructor runs, so a CUDA cleanup fault
+    on long sessions can't kill the parent GUI process."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+
+    out_json = audio_path.with_suffix(".words.json")
+    if out_json.exists():
+        try: out_json.unlink()
+        except Exception: pass
+
+    devices = (
+        ["cuda", "cpu"] if device == "auto"
+        else ["cuda"] if device == "cuda"
+        else ["cpu"]
+    )
+    child_code = (
+        "import json, os, sys, importlib.util\n"
+        "if sys.platform == 'win32':\n"
+        "    for pkg in ('nvidia.cublas','nvidia.cudnn','nvidia.cuda_runtime','nvidia.cuda_nvrtc'):\n"
+        "        try:\n"
+        "            spec = importlib.util.find_spec(pkg)\n"
+        "        except Exception:\n"
+        "            spec = None\n"
+        "        if spec and spec.submodule_search_locations:\n"
+        "            for loc in spec.submodule_search_locations:\n"
+        "                b = os.path.join(loc, 'bin')\n"
+        "                if os.path.isdir(b):\n"
+        "                    try: os.add_dll_directory(b)\n"
+        "                    except Exception: pass\n"
+        "                    os.environ['PATH'] = b + os.pathsep + os.environ.get('PATH','')\n"
+        "from faster_whisper import WhisperModel\n"
+        "audio, model_name, device, out_json = sys.argv[1:5]\n"
+        "ct = 'float16' if device == 'cuda' else 'int8'\n"
+        "model = WhisperModel(model_name, device=device, compute_type=ct)\n"
+        "segments, _info = model.transcribe(audio, word_timestamps=True)\n"
+        "out = []\n"
+        "for s in segments:\n"
+        "    for w in (s.words or []):\n"
+        "        out.append([float(w.start), float(w.end), str(w.word).strip()])\n"
+        "with open(out_json, 'w', encoding='utf-8') as f:\n"
+        "    json.dump(out, f)\n"
+        "print(f'OK {len(out)} words', flush=True)\n"
+    )
+    last_err = None
+    for dev in devices:
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", child_code, str(audio_path), model_name, dev, str(out_json)],
+                capture_output=True, text=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            last_err = f"timeout on {dev}"
+            continue
+        if out_json.exists() and out_json.stat().st_size > 2:
+            try:
+                arr = json.loads(out_json.read_text(encoding="utf-8"))
+                words = [(float(a), float(b), str(c)) for (a, b, c) in arr]
+                return words, dev
+            except Exception:
+                pass
+        err_tail = (proc.stderr or "").strip().splitlines()[-8:]
+        last_err = f"subprocess exit {proc.returncode} on {dev}: " + " | ".join(err_tail)
+        log(f"      whisper-words {dev} failed: {last_err[:200]}")
+    raise RuntimeError(f"transcribe_words_subprocess failed: {last_err}")
+
+
 def transcribe_words(audio_path: Path, model_name: str, device: str = "auto"):
     """Transcribe to word-level timestamps. device in {"auto","cuda","cpu"}.
     "auto" tries CUDA first and silently falls back to CPU if CUDA isn't available."""
@@ -2340,31 +2414,41 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         lines.append(f"{ts}-{te}  {t}")
     transcript = "\n".join(lines)
     # Opus-style free length: hint at a preferred duration but let Gemini
-    # pick the actual length based on content (15-90s typical), prioritizing
-    # complete thoughts over hitting a fixed number.
-    hint = max(20, int(target_duration))
+    # pick the actual length based on content. Hard floor 20s — anything
+    # shorter is rarely viral on its own without setup/punchline context.
+    hint = max(30, int(target_duration))
+    src_dur = max(s[1] for s in segments) if segments else 0.0
+    dur_min = int(src_dur // 60)
+    dur_sec_rem = int(src_dur % 60)
+    third = src_dur / 3.0
     prompt = (
-        f"Du analysierst ein deutsches Voll-Transkript (Podcast/Talk/Stream) und "
-        f"findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
+        f"Du analysierst ein deutsches Voll-Transkript eines Podcasts/Talks/Streams "
+        f"und findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
+        f"GESAMTDAUER des Videos: {dur_min}:{dur_sec_rem:02d} Minuten ({int(src_dur)}s).\n\n"
         f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n\n"
         f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
-        f"Finde EXAKT {n_clips} Momente.\n\n"
-        f"REGELN FÜR DIE LÄNGE jedes Moments:\n"
-        f"- Die Länge richtet sich KOMPLETT nach dem INHALT, NICHT nach einer festen Zahl.\n"
-        f"- Schneide NIE mitten im Satz oder Gedanken — IMMER am Ende eines vollständigen\n"
-        f"  Gedankens, idealerweise am Ende eines Satzes mit Punkt/Frage/Ausruf.\n"
-        f"- Typische Längen je Content-Typ (NUR Orientierung, kein Zwang):\n"
-        f"  * Schnelle Pointe / kurze Reaction: 15-25s\n"
-        f"  * Story mit Setup + Pointe: 25-45s\n"
-        f"  * Argumentations-Kette / Erklärung: 45-75s\n"
-        f"  * Komplexe Diskussion / Debatte: 75-120s\n"
-        f"  * Tiefe Geschichte / mehrere Pointen: 2-5 Minuten (120-300s) — wenn es WIRKLICH viral ist\n"
-        f"- Bevorzuge ~{hint}s als grober Richtwert, aber GEH LÄNGER wenn der Inhalt es verdient.\n"
-        f"  Lieber 2:30 Minuten ein komplettes Highlight als 30s ein abgeschnittenes.\n"
-        f"- Harte Grenzen: 15s minimum, 10 Minuten maximum.\n\n"
+        f"Finde EXAKT {n_clips} Momente. Beachte BEIDE Regeln strikt:\n\n"
+        f"REGEL 1 — VERTEILUNG (kritisch!):\n"
+        f"- Die {n_clips} Momente müssen ÜBER DAS GANZE VIDEO verteilt sein (0 bis {int(src_dur)}s).\n"
+        f"- Picke NICHT alle nur aus dem Anfang. Auch der mittlere und späte Teil hat "
+        f"  virale Momente — such sie aktiv.\n"
+        f"- Faustregel: ~{n_clips//3} Momente aus 0–{int(third):.0f}s, "
+        f"~{n_clips//3} aus {int(third):.0f}–{int(2*third):.0f}s, "
+        f"~{n_clips - 2*(n_clips//3)} aus {int(2*third):.0f}–{int(src_dur):.0f}s.\n\n"
+        f"REGEL 2 — LÄNGE (kritisch!):\n"
+        f"- Jeder Moment muss MINDESTENS 25 Sekunden lang sein (lieber 30–60s).\n"
+        f"- Schneide NIE mitten im Satz — IMMER am Ende eines vollständigen Gedankens.\n"
+        f"- Wenn die eigentliche Pointe 5s dauert: nimm den Kontext davor (Setup, Frage) "
+        f"  UND danach (Reaktion, Folgesatz) mit dazu bis es 25–60s wird.\n"
+        f"- Typische Längen je Content-Typ (Pflicht-Bereich):\n"
+        f"  * Pointe mit Setup: 25–40s\n"
+        f"  * Story mit Aufbau: 40–70s\n"
+        f"  * Debatte / Argumentation: 70–120s\n"
+        f"  * Komplexe Geschichte: bis zu 5 Minuten (300s) wenn es WIRKLICH viral ist\n"
+        f"- Richtwert: ~{hint}s. Harte Grenzen: 25s minimum, 10 Minuten maximum.\n\n"
         f"Such nach: schockierenden Aussagen, Cliffhangern, lustigen Pointen, "
         f"Streit, Storys mit Hook, kontroversen Meinungen, 'wait what' Momenten, "
-        f"emotionalen Spitzen.\n\n"
+        f"emotionalen Spitzen. AKTIV im ganzen Video — auch hinten!\n\n"
         f"Für JEDEN Moment liefere:\n"
         f"- start_seconds: float, Beginn in Sekunden vom Source-Anfang\n"
         f"- end_seconds: float, Ende in Sekunden\n"
@@ -2437,7 +2521,7 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
     # Opus-style free length: Gemini's chosen end IS the target. We just snap
     # it to a nearby sentence boundary. Hard rails kept very loose (10s / 10min)
     # so a strong narrative can run as long as it needs to.
-    HARD_MIN, HARD_MAX = 10.0, 600.0
+    HARD_MIN, HARD_MAX = 20.0, 600.0
     if on_step:
         try:
             n_punct = sum(1 for s in segments if str(s[2]).rstrip().endswith((".","!","?","…")))
@@ -2554,9 +2638,13 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         step(f"        {i:2d}. {m['start']:6.1f}s-{m['end']:6.1f}s  score={m['score']:3d}  {m['title'][:60]}")
 
     if not bool(job.get("auto_reframe", False)):
-        step("      HINWEIS: Auto-Reframe ist AUS — Clips werden mittig gecroppt, "
-             "Gesichter rechts/links werden ggf. abgeschnitten. "
-             "Aktiviere '🎯 Auto-Reframe' in der GUI für face-following Crop.")
+        step("")
+        step("  ⚠️⚠️⚠️  AUTO-REFRAME IST AUS  ⚠️⚠️⚠️")
+        step("  Die Clips werden ZENTRAL gecroppt — Sprecher links/rechts werden ABGESCHNITTEN.")
+        step("  In der GUI '🎯 Auto-Reframe (KI findet wo Menschen/Gesichter sind)' anhaken!")
+        step("")
+    else:
+        step("      auto-reframe: ON (YOLOv11/MediaPipe wird pro Clip rufen)")
     step(f"[MULTI 4/4] render {len(moments)} shorts")
     outputs: list = []
     for i, m in enumerate(moments, 1):
@@ -2741,7 +2829,11 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 "-vn", "-ac", "1", "-ar", "16000",
                 "-c:a", "pcm_s16le", str(clip_audio),
             ])
-            words, used_dev = transcribe_words(clip_audio, cfg.whisper_model, device=whisper_device)
+            # Use subprocess isolation: per-clip whisper calls accumulate
+            # CUDA cleanup state and can hard-crash python.exe after ~10 clips.
+            words, used_dev = transcribe_words_subprocess(
+                clip_audio, cfg.whisper_model, device=whisper_device, on_step=step,
+            )
             step(f"      whisper ran on {used_dev} — {len(words)} words from source audio")
         except Exception as e:
             step(f"      WARN: source transcription failed ({str(e)[:160]}); no captions")
