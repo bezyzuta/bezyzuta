@@ -215,8 +215,28 @@ _SCRIPT_TEMPLATES = [
 ]
 
 
-def fallback_template_script(topic: str) -> str:
-    return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein spannender Moment")
+def fallback_template_script(topic: str, target_seconds: float = 30.0) -> str:
+    """Chain templates until we hit roughly target_seconds worth of speech
+    (~2.2 deutsche Woerter pro Sekunde). One template alone is ~40 words ~=
+    17s — that's why we accumulate until we cross the target, otherwise a
+    90s clip ends up as a 17s clip when the Gemini call fails."""
+    target_words = max(20, int(target_seconds * 2.2))
+    safe_topic = topic.strip() or "ein spannender Moment"
+    indices = list(range(len(_SCRIPT_TEMPLATES)))
+    random.shuffle(indices)
+    selected: list[str] = []
+    word_count = 0
+    i = 0
+    while word_count < target_words:
+        idx = indices[i % len(indices)]
+        text = _SCRIPT_TEMPLATES[idx].format(topic=safe_topic)
+        selected.append(text)
+        word_count += len(text.split())
+        i += 1
+        # Hard cap so we never blow up on absurd targets.
+        if i > 30:
+            break
+    return " ".join(selected)
 
 
 def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
@@ -2837,9 +2857,13 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 script = generate_script(topic, cfg, target_seconds=target_duration,
                                          transcript=transcript_ctx, on_step=step)
             except RuntimeError as e:
-                step(f"      WARN: script gen failed: {e}")
-                step(f"      using template fallback script (pipeline continues)")
-                script = fallback_template_script(topic)
+                step("")
+                step("  ⚠️⚠️⚠️  GEMINI SCRIPT-GEN FEHLGESCHLAGEN  ⚠️⚠️⚠️")
+                step(f"  Grund: {str(e)[:240]}")
+                step(f"  Faelle auf Template-Skript zurueck (gechaint auf ~{target_duration:.0f}s).")
+                step("  Bei 429-Quota: paar Minuten warten oder Pay-as-you-go-Gemini-Key nutzen.")
+                step("")
+                script = fallback_template_script(topic, target_seconds=target_duration)
         (work / "script.txt").write_text(script, encoding="utf-8")
         preview = script[:80].replace("\n", " ")
         step(f"      script: {preview}...")
