@@ -159,7 +159,7 @@ SCRIPT_PROMPT = """Du schreibst ein deutsches YouTube-Short-Skript.
 
 Anweisung vom Nutzer:
 {topic}
-
+{transcript_section}
 Format-Anforderungen (immer einhalten):
 - Laenge: ca. {target_low}-{target_high} Sekunden Sprechzeit (etwa {words_low}-{words_high} deutsche Woerter)
 - Starker Hook in den ersten 3 Sekunden (Frage, kontroverse Aussage, "Wusstest du...", "Achtung!", o.ae.)
@@ -220,7 +220,7 @@ def fallback_template_script(topic: str) -> str:
 
 
 def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
-                    on_step=None) -> str:
+                    transcript: str = "", on_step=None) -> str:
     """Top-level script generator. Just Gemini for now; falls through to the
     template if Gemini isn't configured or rate-limits the caller."""
     def log(msg):
@@ -230,12 +230,14 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
         else:
             print(msg)
     if cfg.gemini_api_key:
-        log(f"      script via Gemini ({cfg.gemini_model})")
-        return generate_script_via_gemini(topic, cfg, target_seconds)
+        extra = f" + {len(transcript)} chars source transcript" if transcript else ""
+        log(f"      script via Gemini ({cfg.gemini_model}){extra}")
+        return generate_script_via_gemini(topic, cfg, target_seconds, transcript=transcript)
     raise RuntimeError("no script backend configured (gemini_api_key missing)")
 
 
-def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0) -> str:
+def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0,
+                               transcript: str = "") -> str:
     if not cfg.gemini_api_key:
         raise RuntimeError("topic given but gemini_api_key missing in config (and GEMINI_API_KEY env not set)")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
@@ -243,9 +245,20 @@ def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 
     target_high = int(target_seconds + 3)
     words_low = int(target_seconds * 2.0)
     words_high = int(target_seconds * 2.6)
+    transcript_section = ""
+    if transcript.strip():
+        # Cap at ~50K chars (~12K tokens) — well under Gemini's context window
+        # and avoids burning quota on edge cases (3h podcast etc.).
+        clipped = transcript.strip()[:50000]
+        transcript_section = (
+            "\nKONTEXT — Transkript des Quellvideos (nutze das als inhaltliche Grundlage "
+            "fuer das Skript; nicht woertlich wiederholen, sondern fuer das Short aufbereiten):\n"
+            f"\"\"\"\n{clipped}\n\"\"\"\n"
+        )
     prompt_text = SCRIPT_PROMPT.format(
         topic=topic, target_low=target_low, target_high=target_high,
         words_low=words_low, words_high=words_high,
+        transcript_section=transcript_section,
     )
     body = {
         "contents": [{"parts": [{"text": prompt_text}]}],
@@ -2711,6 +2724,16 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         sub_job["source_file"] = str(raw)
         sub_job["scene_pick_mode"] = "manual"
         sub_job["manual_ranges"] = f"{m['start']:.2f}-{m['end']:.2f}"
+        # Per-clip transcript context: the segments overlapping this moment's
+        # range. Lets the script generator (if voice is enabled) write a
+        # script that's actually grounded in what's being said in this clip,
+        # instead of inventing a story from just the topic field.
+        m_start, m_end = float(m["start"]), float(m["end"])
+        clip_lines = [
+            t for s, e, t in segments
+            if e > m_start - 1.0 and s < m_end + 1.0
+        ]
+        sub_job["transcript_context"] = " ".join(clip_lines).strip()
         # Override the GUI slider so downstream stages (silent audio track,
         # progress bar, etc.) use the snap-adjusted actual range length
         # instead of the slider's nominal target. Otherwise ffmpeg -shortest
@@ -2794,9 +2817,25 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             topic = (job.get("topic") or "").strip()
             if not topic:
                 raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
+            # Transcript-context: either pre-populated by run_multiclip (per-clip
+            # segment of the source transcript) or opt-in for single-clip via
+            # the GUI's "use source transcript" toggle.
+            transcript_ctx = (job.get("transcript_context") or "").strip()
+            if not transcript_ctx and bool(job.get("use_source_transcript", False)):
+                whisper_device = str(job.get("whisper_device", "auto"))
+                step(f"      transcribing source for script-context (device={whisper_device})")
+                try:
+                    segs = transcribe_full_video(raw, cfg.whisper_model,
+                                                 device=whisper_device, on_step=step)
+                    transcript_ctx = " ".join(t for _, _, t in segs).strip()
+                    step(f"      source transcript: {len(transcript_ctx)} chars from {len(segs)} segments")
+                except Exception as e:
+                    step(f"      WARN: source transcription failed: {str(e)[:200]}")
+                    step(f"      script will be generated without video context")
             step(f"      generating script for topic: {topic!r} (target {target_duration:.0f}s)")
             try:
-                script = generate_script(topic, cfg, target_seconds=target_duration, on_step=step)
+                script = generate_script(topic, cfg, target_seconds=target_duration,
+                                         transcript=transcript_ctx, on_step=step)
             except RuntimeError as e:
                 step(f"      WARN: script gen failed: {e}")
                 step(f"      using template fallback script (pipeline continues)")
