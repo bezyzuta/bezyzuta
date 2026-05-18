@@ -2339,19 +2339,28 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         te = f"{int(e // 60):02d}:{e % 60:05.2f}"
         lines.append(f"{ts}-{te}  {t}")
     transcript = "\n".join(lines)
-    target_low = max(15, int(target_duration - 10))
-    target_high = int(target_duration + 10)
+    # Opus-style free length: hint at a preferred duration but let Gemini
+    # pick the actual length based on content (15-90s typical), prioritizing
+    # complete thoughts over hitting a fixed number.
+    hint = max(20, int(target_duration))
     prompt = (
         f"Du analysierst ein deutsches Voll-Transkript (Podcast/Talk/Stream) und "
         f"findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
         f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n\n"
         f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
-        f"Finde EXAKT {n_clips} Momente. JEDER Moment MUSS mindestens "
-        f"{target_low} und höchstens {target_high} Sekunden lang sein. "
-        f"WICHTIG: end_seconds - start_seconds MUSS zwischen {target_low} und "
-        f"{target_high} liegen. Wenn der eigentliche viraler Spruch nur 3s "
-        f"dauert, dehne den Moment AUS — nimm den Kontext vorher und/oder "
-        f"nachher mit dazu, damit insgesamt mindestens {target_low}s rauskommen.\n\n"
+        f"Finde EXAKT {n_clips} Momente.\n\n"
+        f"REGELN FÜR DIE LÄNGE jedes Moments:\n"
+        f"- Die Länge richtet sich nach dem INHALT, NICHT nach einer festen Zahl.\n"
+        f"- Schneide NIE mitten im Satz oder Gedanken — IMMER am Ende eines vollständigen\n"
+        f"  Gedankens, idealerweise am Ende eines Satzes mit Punkt/Frage/Ausruf.\n"
+        f"- Typische Längen je Content-Typ:\n"
+        f"  * Schnelle Pointe / kurze Reaction: 15-25s\n"
+        f"  * Story mit Setup + Pointe: 25-45s\n"
+        f"  * Argumentations-Kette / Erklärung: 45-75s\n"
+        f"  * Komplexe Diskussion / Debatte: 75-90s\n"
+        f"- Bevorzuge ~{hint}s als RICHTWERT, aber stretche oder kürze frei wenn der\n"
+        f"  Inhalt es verlangt. Vollständigkeit > Ziel-Länge.\n"
+        f"- Harte Grenzen: 15s minimum, 90s maximum.\n\n"
         f"Such nach: schockierenden Aussagen, Cliffhangern, lustigen Pointen, "
         f"Streit, Storys mit Hook, kontroversen Meinungen, 'wait what' Momenten, "
         f"emotionalen Spitzen.\n\n"
@@ -2424,12 +2433,14 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
     # mid-sentence — the clip finishes at a real speech pause, even if that
     # means 26s or 38s instead of the requested 30s.
     src_end = max(s[1] for s in segments) if segments else 0.0
-    target_min = max(15.0, float(target_duration) - 5.0)
-    target_max = float(target_duration) + 10.0
+    # Opus-style free length: Gemini's chosen end IS the target. We just snap
+    # it to a nearby sentence boundary. Hard rails 10s / 110s are safety nets
+    # in case Gemini hallucinates a 5s or 5-minute pick.
+    HARD_MIN, HARD_MAX = 10.0, 110.0
     if on_step:
         try:
             n_punct = sum(1 for s in segments if str(s[2]).rstrip().endswith((".","!","?","…")))
-            on_step(f"      snap context: {len(segments)} segments, {n_punct} end with .!?")
+            on_step(f"      snap context: {len(segments)} segments, {n_punct} end with .!? — free-length mode")
         except Exception:
             pass
     snapped = []
@@ -2437,29 +2448,23 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         orig_start, orig_end = m["start"], m["end"]
         dbg_start: list = []
         dbg_end: list = []
-        # Start: snap to nearest segment start that follows a sentence end,
-        # within ±5s of Gemini's pick.
+        # Start: snap to nearest segment start that follows a sentence end.
         snapped_start = _snap_to_segment_boundary(orig_start, segments, "start", 5.0, debug=dbg_start)
-        # End: aim for snapped_start + target_duration, snap to nearest
-        # sentence-end within a wider window. ±12s lets us reach the next
-        # real sentence ending even when Whisper segments are 3-5s apart.
-        ideal_end = snapped_start + float(target_duration)
-        snapped_end = _snap_to_segment_boundary(ideal_end, segments, "end", 12.0, debug=dbg_end)
-        # Enforce minimum length so we don't produce 5s pieces.
-        if snapped_end - snapped_start < target_min:
+        # End: TRUST Gemini's chosen end as the ideal. Snap to nearest clean
+        # sentence boundary within ±8s of that — no forced target_duration.
+        snapped_end = _snap_to_segment_boundary(orig_end, segments, "end", 8.0, debug=dbg_end)
+        # Apply hard safety rails only.
+        if snapped_end - snapped_start < HARD_MIN:
             snapped_end = _snap_to_segment_boundary(
-                snapped_start + target_min, segments, "end", 8.0,
+                snapped_start + HARD_MIN, segments, "end", 6.0,
             )
-        # Cap maximum so we don't massively overshoot.
-        if snapped_end - snapped_start > target_max:
+        if snapped_end - snapped_start > HARD_MAX:
             snapped_end = _snap_to_segment_boundary(
-                snapped_start + float(target_duration), segments, "end", 6.0,
+                snapped_start + HARD_MAX, segments, "end", 6.0,
             )
         # Clamp to source end.
         if src_end > 0 and snapped_end > src_end:
             snapped_end = src_end
-            if snapped_end - snapped_start < target_min:
-                snapped_start = max(0.0, snapped_end - float(target_duration))
         m["start"] = snapped_start
         m["end"] = snapped_end
         if on_step:
