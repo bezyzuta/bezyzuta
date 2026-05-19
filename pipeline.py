@@ -2429,8 +2429,82 @@ def _snap_to_segment_boundary(time_target: float, segments: list,
     return best[1]
 
 
+def _detect_audio_events(loudness: list, segments: list,
+                         loud_sigma: float = 1.4,
+                         pause_min: float = 1.8) -> dict:
+    """Turn raw (time, rms_db) loudness samples + Whisper segments into two
+    signal types that a text-only LLM can read:
+      - loud_ranges: contiguous time-ranges where RMS is >= mean + N*stddev
+        (laughter, shouting, music swells, emotional emphasis).
+      - pause_gaps: silences >= pause_min seconds between segments
+        (dramatic beats, cliffhangers, "wait what" moments).
+    Both signals are strong viral-moment proxies the model can't see in text."""
+    out = {"loud_ranges": [], "pause_gaps": []}
+    if loudness:
+        vals = [db for _, db in loudness]
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        std = var ** 0.5
+        threshold = mean + loud_sigma * std
+        # Cluster consecutive above-threshold windows into ranges. Window
+        # size in analyze_loudness is 1s, so allow ≤2s gaps within a range
+        # (a quick breath between two loud beats stays one event).
+        ranges: list[tuple[float, float]] = []
+        cur_start = cur_end = None
+        for t, db in loudness:
+            if db >= threshold:
+                if cur_start is None:
+                    cur_start = cur_end = t
+                elif t - cur_end <= 2.0:
+                    cur_end = t
+                else:
+                    ranges.append((cur_start, cur_end))
+                    cur_start = cur_end = t
+        if cur_start is not None:
+            ranges.append((cur_start, cur_end))
+        # Drop sub-second blips — those are usually transient noise, not
+        # engagement signal.
+        out["loud_ranges"] = [(s, e) for s, e in ranges if e - s >= 0.5 or e == s]
+    for i in range(len(segments) - 1):
+        gap = segments[i + 1][0] - segments[i][1]
+        if gap >= pause_min:
+            out["pause_gaps"].append((segments[i][1], segments[i + 1][0], gap))
+    return out
+
+
+def _build_annotated_transcript(segments: list, events: dict) -> str:
+    """Render the transcript with inline 🔊/⏸️ markers so Gemini sees the
+    audio-energy hints alongside the words."""
+    loud_ranges = events.get("loud_ranges") or []
+    pause_after_idx: dict[int, float] = {}
+    for i in range(len(segments) - 1):
+        gap = segments[i + 1][0] - segments[i][1]
+        if (segments[i][1], segments[i + 1][0], gap) in events.get("pause_gaps", []):
+            pause_after_idx[i] = gap
+    # Pre-sort loud_ranges so per-segment overlap check is short on average.
+    loud_sorted = sorted(loud_ranges)
+    lines: list[str] = []
+    for i, (s, e, t) in enumerate(segments):
+        marker = ""
+        # Overlap test: segment [s,e] vs each loud range [ls,le].
+        for ls, le in loud_sorted:
+            if le < s:
+                continue
+            if ls > e:
+                break
+            marker = "🔊 "
+            break
+        ts = f"{int(s // 60):02d}:{s % 60:05.2f}"
+        te = f"{int(e // 60):02d}:{e % 60:05.2f}"
+        lines.append(f"{ts}-{te}  {marker}{t}")
+        if i in pause_after_idx:
+            lines.append(f"                    ⏸️  [{pause_after_idx[i]:.1f}s Stille]")
+    return "\n".join(lines)
+
+
 def find_best_moments(segments: list, n_clips: int, target_duration: float,
-                      cfg: "Config", on_step=None) -> list:
+                      cfg: "Config", loudness_samples: list | None = None,
+                      on_step=None) -> list:
     """Send the transcript to Gemini and ask for the N best viral moments.
     For long sources (>10 min), splits the transcript into n_clips equal
     time-regions and asks Gemini for ONE moment per region. Guarantees
@@ -2446,6 +2520,16 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
     if not cfg.gemini_api_key:
         raise RuntimeError("multi-clip best-moments needs gemini_api_key")
 
+    # Compute audio events ONCE over the whole video (loud thresholds are
+    # global stats). Per-region calls below filter by their own range when
+    # rendering, but they all share the same events dict.
+    events = _detect_audio_events(loudness_samples or [], segments)
+    if loudness_samples:
+        log(
+            f"      audio signals: {len(events['loud_ranges'])} loud ranges, "
+            f"{len(events['pause_gaps'])} pauses ≥1.8s"
+        )
+
     src_dur_all = max(s[1] for s in segments)
     if src_dur_all > 600 and n_clips >= 3:
         log(f"      chunking transcript into {n_clips} regions for forced distribution")
@@ -2460,7 +2544,7 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
                 continue
             log(f"        region {i+1}/{n_clips} ({c_start:.0f}-{c_end:.0f}s): {len(chunk)} segments")
             try:
-                ms = _find_moments_single_call(chunk, 1, target_duration, cfg)
+                ms = _find_moments_single_call(chunk, 1, target_duration, cfg, events=events)
                 all_moments.extend(ms)
             except Exception as e:
                 log(f"        region {i+1} failed: {str(e)[:160]}")
@@ -2469,19 +2553,24 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         return _snap_and_dedupe_moments(all_moments, segments, n_clips, target_duration, on_step=log)
 
     # Short video / few clips: single call as before
-    ms = _find_moments_single_call(segments, n_clips, target_duration, cfg)
+    ms = _find_moments_single_call(segments, n_clips, target_duration, cfg, events=events)
     return _snap_and_dedupe_moments(ms, segments, n_clips, target_duration, on_step=log)
 
 
 def _find_moments_single_call(segments: list, n_clips: int, target_duration: float,
-                              cfg: "Config") -> list:
+                              cfg: "Config", events: dict | None = None) -> list:
     """One Gemini API call: parse N viral moments from the given transcript."""
-    lines = []
-    for s, e, t in segments:
-        ts = f"{int(s // 60):02d}:{s % 60:05.2f}"
-        te = f"{int(e // 60):02d}:{e % 60:05.2f}"
-        lines.append(f"{ts}-{te}  {t}")
-    transcript = "\n".join(lines)
+    if events and (events.get("loud_ranges") or events.get("pause_gaps")):
+        transcript = _build_annotated_transcript(segments, events)
+        has_audio_signals = True
+    else:
+        lines = []
+        for s, e, t in segments:
+            ts = f"{int(s // 60):02d}:{s % 60:05.2f}"
+            te = f"{int(e // 60):02d}:{e % 60:05.2f}"
+            lines.append(f"{ts}-{te}  {t}")
+        transcript = "\n".join(lines)
+        has_audio_signals = False
     # Opus-style free length: hint at a preferred duration but let Gemini
     # pick the actual length based on content. Hard floor 20s — anything
     # shorter is rarely viral on its own without setup/punchline context.
@@ -2494,8 +2583,19 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
         f"Du analysierst ein deutsches Voll-Transkript eines Podcasts/Talks/Streams "
         f"und findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
         f"GESAMTDAUER des Videos: {dur_min}:{dur_sec_rem:02d} Minuten ({int(src_dur)}s).\n\n"
-        f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n\n"
-        f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
+        f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n"
+        + (
+            "Marker im Transkript:\n"
+            "  🔊 vor einem Satz  = Audio-Intensitaets-Peak (Lachen, Schreien, "
+            "Emphasis, Musik-Swell, emotionale Spitze).\n"
+            "  ⏸️  [Xs Stille]    = dramatische Pause zwischen Saetzen.\n"
+            "Diese Marker sind STARKE virale Signale — du siehst sonst nur Text, "
+            "aber Engagement entsteht oft genau dort wo Energie spitzt oder Stille "
+            "trifft. Bevorzuge Momente die diese Marker enthalten ODER unmittelbar "
+            "davor/danach liegen.\n\n"
+            if has_audio_signals else "\n"
+        )
+        + f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
         f"Finde EXAKT {n_clips} Momente. Beachte BEIDE Regeln strikt:\n\n"
         f"REGEL 1 — VERTEILUNG (kritisch!):\n"
         f"- Die {n_clips} Momente müssen ÜBER DAS GANZE VIDEO verteilt sein (0 bis {int(src_dur)}s).\n"
@@ -2719,8 +2819,22 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     src_dur = segments[-1][1] if segments else 0.0
     step(f"      transcript: {len(segments)} segments, source ≈ {src_dur:.0f}s")
 
+    # Audio-energy profile for moment-picker hints. Falls back gracefully if
+    # ffmpeg fails — moment-picking still works with text-only transcript.
+    step(f"      analyzing source loudness for engagement signals")
+    try:
+        loudness = analyze_loudness(raw, work_root, window_seconds=1.0)
+        if loudness:
+            step(f"      loudness profile: {len(loudness)} samples (1s windows)")
+        else:
+            step(f"      loudness profile empty — moment-picker runs text-only")
+    except Exception as e:
+        step(f"      WARN: loudness analysis failed ({str(e)[:160]}) — text-only mode")
+        loudness = []
+
     step(f"[MULTI 3/4] ask Gemini for the top {n_clips} viral moments")
-    moments = find_best_moments(segments, n_clips, target_dur, cfg, on_step=step)
+    moments = find_best_moments(segments, n_clips, target_dur, cfg,
+                                loudness_samples=loudness, on_step=step)
     step(f"      Gemini returned {len(moments)} moments:")
     for i, m in enumerate(moments, 1):
         step(f"        {i:2d}. {m['start']:6.1f}s-{m['end']:6.1f}s  score={m['score']:3d}  {m['title'][:60]}")
