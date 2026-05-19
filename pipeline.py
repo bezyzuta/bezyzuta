@@ -961,7 +961,7 @@ def _record_face_detector_failure(label: str, exc: Exception, where: str) -> Non
 
 
 _YOLO_FACE_WEIGHTS_URL = (
-    "https://github.com/akanametov/yolo-face/releases/download/v0.0.0/yolov11n-face.pt"
+    "https://github.com/akanametov/yolo-face/releases/download/1.0.0/yolov11n-face.pt"
 )
 
 
