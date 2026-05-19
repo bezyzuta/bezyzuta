@@ -2785,6 +2785,43 @@ def _snap_and_dedupe_moments(cleaned: list, segments: list, n_clips: int,
     return deduped[:n_clips]
 
 
+def _gpu_cleanup_and_log(on_step) -> None:
+    """Free CUDA caches + run gc and log free VRAM. Long multi-clip runs on
+    Windows can crash the NVIDIA driver (TDR/BSOD) when VRAM pressure builds
+    across clips — Whisper subprocesses, YOLO singleton, ffmpeg's nvdec etc.
+    Calling this between clips returns cached blocks to the driver so the
+    next clip starts from a clean baseline."""
+    import gc
+    gc.collect()
+    try:
+        import torch  # type: ignore
+        if not torch.cuda.is_available():
+            return
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+        try:
+            free_b, total_b = torch.cuda.mem_get_info()
+            alloc_gb = torch.cuda.memory_allocated() / 1024 ** 3
+            reserved_gb = torch.cuda.memory_reserved() / 1024 ** 3
+            free_gb = free_b / 1024 ** 3
+            total_gb = total_b / 1024 ** 3
+            if on_step:
+                try:
+                    on_step(
+                        f"      gpu: alloc={alloc_gb:.2f} reserved={reserved_gb:.2f} "
+                        f"free={free_gb:.2f}/{total_gb:.1f} GB"
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    except ImportError:
+        pass
+
+
 def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     """Download source once, transcribe whole video, ask Gemini for the N best
     moments, then render each as its own short via run_one. Returns list of
@@ -2848,10 +2885,24 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     else:
         step("      auto-reframe: ON (YOLOv11/MediaPipe wird pro Clip rufen)")
     step(f"[MULTI 4/4] render {len(moments)} shorts")
+    _gpu_cleanup_and_log(step)  # baseline before the loop starts
     outputs: list = []
     for i, m in enumerate(moments, 1):
         clip_slug = f"{base_slug}_{i:02d}_{_slugify_local(m['hook'] or m['title'])[:30]}"
         step(f"  ── Clip {i}/{len(moments)}: {clip_slug}")
+
+        # Resume-after-crash: if the final mp4 from a previous run is already
+        # on disk, skip this clip and treat it as done. Saves the user from
+        # re-rendering 2 hours of work when the PC crashed mid-loop.
+        expected_out = cfg.output_dir / f"{clip_slug}.mp4"
+        if expected_out.is_file() and expected_out.stat().st_size > 100_000:
+            step(
+                f"  ✓ Clip {i}/{len(moments)} already on disk "
+                f"({expected_out.stat().st_size // 1024} KB) — skip render"
+            )
+            outputs.append(expected_out)
+            continue
+
         sub_job = dict(job)
         sub_job["slug"] = clip_slug
         sub_job["source_url"] = source_url
@@ -2880,6 +2931,9 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
             out_mp4 = run_one(sub_job, cfg, on_step=step)
         except Exception as e:
             step(f"  ── Clip {i} FAILED: {e}")
+            # Still free GPU before the next clip even if this one crashed —
+            # the failure might itself have been a memory issue.
+            _gpu_cleanup_and_log(step)
             continue
         # Sidecar metadata
         meta = (
@@ -2896,6 +2950,9 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         except Exception:
             pass
         outputs.append(out_mp4)
+        # Free CUDA caches between clips so VRAM doesn't accumulate across
+        # repeated Whisper subprocess + YOLO + ffmpeg cycles.
+        _gpu_cleanup_and_log(step)
 
     step(f"[MULTI DONE] {len(outputs)}/{len(moments)} clips rendered")
     return outputs
