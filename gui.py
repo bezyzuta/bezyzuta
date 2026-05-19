@@ -87,6 +87,7 @@ def generate(
     scene_pick_mode: str,
     manual_ranges: str,
     auto_reframe: bool,
+    use_source_transcript: bool,
     enable_voice: bool,
     voice_id: str,
     enable_music: bool,
@@ -144,6 +145,7 @@ def generate(
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "manual_ranges": str(manual_ranges or ""),
             "auto_reframe": bool(auto_reframe),
+            "use_source_transcript": bool(use_source_transcript),
             "enable_voice": bool(enable_voice),
             "image_count": int(image_count),
             "image_duration": float(image_duration),
@@ -303,9 +305,12 @@ def build_app() -> gr.Blocks:
             )
             topic = gr.Textbox(
                 value="Krasser Moment, totaler Wahnsinn",
-                label="Skript-Thema",
+                label="Skript-Thema / Prompt an die KI",
                 lines=2,
-                info="Gemini/Llama schreibt daraus das Skript zur Ziel-Länge",
+                info=("Wird 1:1 als Anweisung an Gemini übergeben. Schreib hier was "
+                      "das Skript machen soll — z.B. 'erkläre kurz warum X funktioniert', "
+                      "'fasse das Thema Y für Jugendliche zusammen', oder einfach ein Thema "
+                      "wie 'krasser Roblox-Moment in Doors'."),
             )
             custom_script = gr.Textbox(
                 value="",
@@ -355,6 +360,14 @@ def build_app() -> gr.Blocks:
                 info=("Für Querformat-Videos mit Personen seitlich (Dokus, Interviews). "
                       "Statt mittig zu croppen, schiebt der 9:16-Ausschnitt sich zu den Subjekten. "
                       "Braucht Cloudflare-Credentials. ~+5s pro Video."),
+            )
+            use_source_transcript = gr.Checkbox(
+                value=False,
+                label="📖 Video-Transkript als Skript-Kontext",
+                info=("Für Single-Clip: Whisper transkribiert das Source-Video VOR dem Skript "
+                      "und gibt es Gemini als Kontext. So funktionieren Prompts wie 'fass das "
+                      "Video zusammen' oder 'erklär die Hauptpunkte'. +1-2 min Vorlauf pro Source "
+                      "(gecached). Bei Multi-Clip läuft das eh automatisch pro Moment, hier irrelevant."),
             )
             voice_id = gr.Dropdown(
                 choices=VOICES,
@@ -587,7 +600,8 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, scene_pick_mode, manual_ranges, auto_reframe, enable_voice, voice_id,
+                clip_segments, scene_pick_mode, manual_ranges, auto_reframe,
+                use_source_transcript, enable_voice, voice_id,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,

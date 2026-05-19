@@ -155,16 +155,17 @@ def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 20
     return pick
 
 
-SCRIPT_PROMPT = """Schreibe ein energetisches, jugendliches Skript fuer einen YouTube Short ueber Roblox auf Deutsch.
+SCRIPT_PROMPT = """Du schreibst ein deutsches YouTube-Short-Skript.
 
-Thema: {topic}
-
-Anforderungen:
+Anweisung vom Nutzer:
+{topic}
+{transcript_section}
+Format-Anforderungen (immer einhalten):
 - Laenge: ca. {target_low}-{target_high} Sekunden Sprechzeit (etwa {words_low}-{words_high} deutsche Woerter)
-- Starker Hook am Anfang (z.B. "Bro, schau dir das an!", "Achtung!", "99% der Spieler...")
-- Action-Beschreibung in der Mitte, spannend und mitreissend
+- Starker Hook in den ersten 3 Sekunden (Frage, kontroverse Aussage, "Wusstest du...", "Achtung!", o.ae.)
+- Spannender Mittelteil — Inhalt richtet sich nach der Anweisung oben
 - Call-to-Action am Ende ("Folg fuer mehr...", "Lass ein Like da...")
-- Kein Markdown, keine Anfuehrungszeichen, keine Regie-Anweisungen
+- Kein Markdown, keine Anfuehrungszeichen, keine Regie-Anweisungen, keine Klammern
 - Gib NUR den reinen Sprechertext aus, sonst nichts"""
 
 
@@ -214,12 +215,32 @@ _SCRIPT_TEMPLATES = [
 ]
 
 
-def fallback_template_script(topic: str) -> str:
-    return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein krasser Roblox Moment")
+def fallback_template_script(topic: str, target_seconds: float = 30.0) -> str:
+    """Chain templates until we hit roughly target_seconds worth of speech
+    (~2.2 deutsche Woerter pro Sekunde). One template alone is ~40 words ~=
+    17s — that's why we accumulate until we cross the target, otherwise a
+    90s clip ends up as a 17s clip when the Gemini call fails."""
+    target_words = max(20, int(target_seconds * 2.2))
+    safe_topic = topic.strip() or "ein spannender Moment"
+    indices = list(range(len(_SCRIPT_TEMPLATES)))
+    random.shuffle(indices)
+    selected: list[str] = []
+    word_count = 0
+    i = 0
+    while word_count < target_words:
+        idx = indices[i % len(indices)]
+        text = _SCRIPT_TEMPLATES[idx].format(topic=safe_topic)
+        selected.append(text)
+        word_count += len(text.split())
+        i += 1
+        # Hard cap so we never blow up on absurd targets.
+        if i > 30:
+            break
+    return " ".join(selected)
 
 
 def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
-                    on_step=None) -> str:
+                    transcript: str = "", on_step=None) -> str:
     """Top-level script generator. Just Gemini for now; falls through to the
     template if Gemini isn't configured or rate-limits the caller."""
     def log(msg):
@@ -229,12 +250,14 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
         else:
             print(msg)
     if cfg.gemini_api_key:
-        log(f"      script via Gemini ({cfg.gemini_model})")
-        return generate_script_via_gemini(topic, cfg, target_seconds)
+        extra = f" + {len(transcript)} chars source transcript" if transcript else ""
+        log(f"      script via Gemini ({cfg.gemini_model}){extra}")
+        return generate_script_via_gemini(topic, cfg, target_seconds, transcript=transcript)
     raise RuntimeError("no script backend configured (gemini_api_key missing)")
 
 
-def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0) -> str:
+def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0,
+                               transcript: str = "") -> str:
     if not cfg.gemini_api_key:
         raise RuntimeError("topic given but gemini_api_key missing in config (and GEMINI_API_KEY env not set)")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
@@ -242,9 +265,20 @@ def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 
     target_high = int(target_seconds + 3)
     words_low = int(target_seconds * 2.0)
     words_high = int(target_seconds * 2.6)
+    transcript_section = ""
+    if transcript.strip():
+        # Cap at ~50K chars (~12K tokens) — well under Gemini's context window
+        # and avoids burning quota on edge cases (3h podcast etc.).
+        clipped = transcript.strip()[:50000]
+        transcript_section = (
+            "\nKONTEXT — Transkript des Quellvideos (nutze das als inhaltliche Grundlage "
+            "fuer das Skript; nicht woertlich wiederholen, sondern fuer das Short aufbereiten):\n"
+            f"\"\"\"\n{clipped}\n\"\"\"\n"
+        )
     prompt_text = SCRIPT_PROMPT.format(
         topic=topic, target_low=target_low, target_high=target_high,
         words_low=words_low, words_high=words_high,
+        transcript_section=transcript_section,
     )
     body = {
         "contents": [{"parts": [{"text": prompt_text}]}],
@@ -802,6 +836,15 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 10,
     no_face_count = 0
     first_err = ""
     have_face_detector = _face_detector_available()
+    if not have_face_detector:
+        log("      auto-reframe: ⚠️  KEIN lokaler Face-Detector geladen — falle auf Cloudflare Vision zurueck.")
+        log("      auto-reframe: Cloudflare Vision ist ungenau (Llama-3.2-11B antwortet oft konsistent '30').")
+        if _FACE_DETECTOR_FAILURES:
+            log("      auto-reframe: Detector-Fehler:")
+            for fail in _FACE_DETECTOR_FAILURES:
+                log(f"        • {fail}")
+        else:
+            log("      auto-reframe: (keine Failures gesammelt — entweder Detector-Loader nie aufgerufen oder caching weggespeichert)")
     for i, t in enumerate(sample_times):
         thumb = work / f"reframe_sample_{i}.jpg"
         if not _extract_thumbnail(source, t, thumb, width=640):
@@ -908,10 +951,17 @@ _MP_FACE_DETECTOR = None  # lazy-initialized singleton
 _IF_FACE_APP = None  # InsightFace FaceAnalysis singleton, False = unavailable
 _YOLO_FACE_MODEL = None  # Ultralytics YOLOv8-face singleton, False = unavailable
 _FACE_LOG_PRINTED = False  # log which detector we ended up with, once
+_FACE_DETECTOR_FAILURES: list[str] = []  # collected failure reasons for GUI log
+
+
+def _record_face_detector_failure(label: str, exc: Exception, where: str) -> None:
+    msg = f"{label} ({where}): {type(exc).__name__}: {str(exc)[:200]}"
+    _FACE_DETECTOR_FAILURES.append(msg)
+    print(f"      face detection: {label} unavailable — {where}: {type(exc).__name__}: {str(exc)[:160]}")
 
 
 _YOLO_FACE_WEIGHTS_URL = (
-    "https://github.com/akanametov/yolo-face/releases/download/v0.0.0/yolov11n-face.pt"
+    "https://github.com/akanametov/yolo-face/releases/download/1.0.0/yolov11n-face.pt"
 )
 
 
@@ -926,8 +976,9 @@ def _get_yolo_face_detector():
         return _YOLO_FACE_MODEL
     try:
         from ultralytics import YOLO
-    except Exception:
+    except Exception as e:
         _YOLO_FACE_MODEL = False
+        _record_face_detector_failure("YOLOv11", e, "ultralytics import")
         return None
     try:
         cache_dir = Path.home() / ".cache" / "yolo-face"
@@ -938,8 +989,9 @@ def _get_yolo_face_detector():
             r.raise_for_status()
             weights.write_bytes(r.content)
         _YOLO_FACE_MODEL = YOLO(str(weights))
-    except Exception:
+    except Exception as e:
         _YOLO_FACE_MODEL = False
+        _record_face_detector_failure("YOLOv11", e, "weights load")
         return None
     if not _FACE_LOG_PRINTED:
         print("      face detection: using YOLOv11-face (ultralytics)")
@@ -957,8 +1009,9 @@ def _get_insightface():
         return _IF_FACE_APP
     try:
         from insightface.app import FaceAnalysis
-    except Exception:
+    except Exception as e:
         _IF_FACE_APP = False
+        _record_face_detector_failure("InsightFace", e, "import")
         return None
     # CUDAExecutionProvider works on Windows with the nvidia-cudnn wheel we
     # already pulled for faster-whisper; CPU is the safe fallback.
@@ -971,13 +1024,17 @@ def _get_insightface():
         )
         # ctx_id=0 picks the first GPU, falls back to CPU if CUDA provider fails.
         app.prepare(ctx_id=0, det_size=(640, 640))
-    except Exception:
+    except Exception as e_cuda:
         try:
             app = FaceAnalysis(name="buffalo_l", allowed_modules=["detection"],
                                providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=-1, det_size=(640, 640))
-        except Exception:
+        except Exception as e_cpu:
             _IF_FACE_APP = False
+            _record_face_detector_failure(
+                "InsightFace", e_cpu,
+                f"prepare (cuda also failed: {type(e_cuda).__name__})",
+            )
             return None
     _IF_FACE_APP = app
     if not _FACE_LOG_PRINTED:
@@ -995,12 +1052,18 @@ def _get_mediapipe_detector():
         return _MP_FACE_DETECTOR
     try:
         import mediapipe as mp
-    except Exception:
+    except Exception as e:
         _MP_FACE_DETECTOR = False
+        _record_face_detector_failure("MediaPipe", e, "import")
         return None
-    _MP_FACE_DETECTOR = mp.solutions.face_detection.FaceDetection(
-        model_selection=1, min_detection_confidence=0.4
-    )
+    try:
+        _MP_FACE_DETECTOR = mp.solutions.face_detection.FaceDetection(
+            model_selection=1, min_detection_confidence=0.4
+        )
+    except Exception as e:
+        _MP_FACE_DETECTOR = False
+        _record_face_detector_failure("MediaPipe", e, "FaceDetection init")
+        return None
     if not _FACE_LOG_PRINTED:
         print("      face detection: using MediaPipe (InsightFace unavailable)")
         _FACE_LOG_PRINTED = True
@@ -1813,18 +1876,21 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
 
 def derive_image_prompt(seed_text: str) -> str:
     return (
-        "vertical cartoon illustration, Roblox blocky aesthetic, vibrant saturated colors, "
-        "dramatic action scene, dynamic composition, bold lighting, no text, no logos, "
-        f"no real people, theme: {seed_text[:200]}"
+        "vertical stylized illustration, vibrant saturated colors, dramatic scene, "
+        "dynamic composition, bold lighting, no text, no logos, no watermarks, "
+        f"theme: {seed_text[:200]}"
     )
 
 
-SCENE_PROMPT = """Du bekommst ein deutsches Voiceover-Skript fuer einen Roblox YouTube Short.
+SCENE_PROMPT = """Du bekommst ein deutsches Voiceover-Skript fuer einen YouTube Short.
 
 Teile das Skript gedanklich in {n} dramatische visuelle Schluesselmomente und schreibe pro Moment einen englischen Bild-Prompt fuer ein Text-zu-Bild-Modell.
 
 Pflicht-Stil pro Prompt:
-"vertical cartoon illustration, Roblox blocky aesthetic, vibrant saturated colors, [DEINE SZENE IN ENGLISCH], dramatic lighting, no text, no logos, no real people"
+"vertical stylized illustration, vibrant saturated colors, [DEINE SZENE IN ENGLISCH], dramatic lighting, no text, no logos, no watermarks"
+
+Whle den visuellen Stil passend zum Skript-Inhalt — z.B. realistisch fuer
+Doku/Talk-Themen, cartoonig fuer Gaming/Comedy, cinematisch fuer Storys.
 
 Skript:
 \"\"\"
@@ -2392,8 +2458,82 @@ def _snap_to_segment_boundary(time_target: float, segments: list,
     return best[1]
 
 
+def _detect_audio_events(loudness: list, segments: list,
+                         loud_sigma: float = 1.4,
+                         pause_min: float = 1.8) -> dict:
+    """Turn raw (time, rms_db) loudness samples + Whisper segments into two
+    signal types that a text-only LLM can read:
+      - loud_ranges: contiguous time-ranges where RMS is >= mean + N*stddev
+        (laughter, shouting, music swells, emotional emphasis).
+      - pause_gaps: silences >= pause_min seconds between segments
+        (dramatic beats, cliffhangers, "wait what" moments).
+    Both signals are strong viral-moment proxies the model can't see in text."""
+    out = {"loud_ranges": [], "pause_gaps": []}
+    if loudness:
+        vals = [db for _, db in loudness]
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        std = var ** 0.5
+        threshold = mean + loud_sigma * std
+        # Cluster consecutive above-threshold windows into ranges. Window
+        # size in analyze_loudness is 1s, so allow ≤2s gaps within a range
+        # (a quick breath between two loud beats stays one event).
+        ranges: list[tuple[float, float]] = []
+        cur_start = cur_end = None
+        for t, db in loudness:
+            if db >= threshold:
+                if cur_start is None:
+                    cur_start = cur_end = t
+                elif t - cur_end <= 2.0:
+                    cur_end = t
+                else:
+                    ranges.append((cur_start, cur_end))
+                    cur_start = cur_end = t
+        if cur_start is not None:
+            ranges.append((cur_start, cur_end))
+        # Drop sub-second blips — those are usually transient noise, not
+        # engagement signal.
+        out["loud_ranges"] = [(s, e) for s, e in ranges if e - s >= 0.5 or e == s]
+    for i in range(len(segments) - 1):
+        gap = segments[i + 1][0] - segments[i][1]
+        if gap >= pause_min:
+            out["pause_gaps"].append((segments[i][1], segments[i + 1][0], gap))
+    return out
+
+
+def _build_annotated_transcript(segments: list, events: dict) -> str:
+    """Render the transcript with inline 🔊/⏸️ markers so Gemini sees the
+    audio-energy hints alongside the words."""
+    loud_ranges = events.get("loud_ranges") or []
+    pause_after_idx: dict[int, float] = {}
+    for i in range(len(segments) - 1):
+        gap = segments[i + 1][0] - segments[i][1]
+        if (segments[i][1], segments[i + 1][0], gap) in events.get("pause_gaps", []):
+            pause_after_idx[i] = gap
+    # Pre-sort loud_ranges so per-segment overlap check is short on average.
+    loud_sorted = sorted(loud_ranges)
+    lines: list[str] = []
+    for i, (s, e, t) in enumerate(segments):
+        marker = ""
+        # Overlap test: segment [s,e] vs each loud range [ls,le].
+        for ls, le in loud_sorted:
+            if le < s:
+                continue
+            if ls > e:
+                break
+            marker = "🔊 "
+            break
+        ts = f"{int(s // 60):02d}:{s % 60:05.2f}"
+        te = f"{int(e // 60):02d}:{e % 60:05.2f}"
+        lines.append(f"{ts}-{te}  {marker}{t}")
+        if i in pause_after_idx:
+            lines.append(f"                    ⏸️  [{pause_after_idx[i]:.1f}s Stille]")
+    return "\n".join(lines)
+
+
 def find_best_moments(segments: list, n_clips: int, target_duration: float,
-                      cfg: "Config", on_step=None) -> list:
+                      cfg: "Config", loudness_samples: list | None = None,
+                      on_step=None) -> list:
     """Send the transcript to Gemini and ask for the N best viral moments.
     For long sources (>10 min), splits the transcript into n_clips equal
     time-regions and asks Gemini for ONE moment per region. Guarantees
@@ -2409,6 +2549,16 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
     if not cfg.gemini_api_key:
         raise RuntimeError("multi-clip best-moments needs gemini_api_key")
 
+    # Compute audio events ONCE over the whole video (loud thresholds are
+    # global stats). Per-region calls below filter by their own range when
+    # rendering, but they all share the same events dict.
+    events = _detect_audio_events(loudness_samples or [], segments)
+    if loudness_samples:
+        log(
+            f"      audio signals: {len(events['loud_ranges'])} loud ranges, "
+            f"{len(events['pause_gaps'])} pauses ≥1.8s"
+        )
+
     src_dur_all = max(s[1] for s in segments)
     if src_dur_all > 600 and n_clips >= 3:
         log(f"      chunking transcript into {n_clips} regions for forced distribution")
@@ -2423,7 +2573,7 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
                 continue
             log(f"        region {i+1}/{n_clips} ({c_start:.0f}-{c_end:.0f}s): {len(chunk)} segments")
             try:
-                ms = _find_moments_single_call(chunk, 1, target_duration, cfg)
+                ms = _find_moments_single_call(chunk, 1, target_duration, cfg, events=events)
                 all_moments.extend(ms)
             except Exception as e:
                 log(f"        region {i+1} failed: {str(e)[:160]}")
@@ -2432,19 +2582,24 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
         return _snap_and_dedupe_moments(all_moments, segments, n_clips, target_duration, on_step=log)
 
     # Short video / few clips: single call as before
-    ms = _find_moments_single_call(segments, n_clips, target_duration, cfg)
+    ms = _find_moments_single_call(segments, n_clips, target_duration, cfg, events=events)
     return _snap_and_dedupe_moments(ms, segments, n_clips, target_duration, on_step=log)
 
 
 def _find_moments_single_call(segments: list, n_clips: int, target_duration: float,
-                              cfg: "Config") -> list:
+                              cfg: "Config", events: dict | None = None) -> list:
     """One Gemini API call: parse N viral moments from the given transcript."""
-    lines = []
-    for s, e, t in segments:
-        ts = f"{int(s // 60):02d}:{s % 60:05.2f}"
-        te = f"{int(e // 60):02d}:{e % 60:05.2f}"
-        lines.append(f"{ts}-{te}  {t}")
-    transcript = "\n".join(lines)
+    if events and (events.get("loud_ranges") or events.get("pause_gaps")):
+        transcript = _build_annotated_transcript(segments, events)
+        has_audio_signals = True
+    else:
+        lines = []
+        for s, e, t in segments:
+            ts = f"{int(s // 60):02d}:{s % 60:05.2f}"
+            te = f"{int(e // 60):02d}:{e % 60:05.2f}"
+            lines.append(f"{ts}-{te}  {t}")
+        transcript = "\n".join(lines)
+        has_audio_signals = False
     # Opus-style free length: hint at a preferred duration but let Gemini
     # pick the actual length based on content. Hard floor 20s — anything
     # shorter is rarely viral on its own without setup/punchline context.
@@ -2457,8 +2612,19 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
         f"Du analysierst ein deutsches Voll-Transkript eines Podcasts/Talks/Streams "
         f"und findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
         f"GESAMTDAUER des Videos: {dur_min}:{dur_sec_rem:02d} Minuten ({int(src_dur)}s).\n\n"
-        f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n\n"
-        f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
+        f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n"
+        + (
+            "Marker im Transkript:\n"
+            "  🔊 vor einem Satz  = Audio-Intensitaets-Peak (Lachen, Schreien, "
+            "Emphasis, Musik-Swell, emotionale Spitze).\n"
+            "  ⏸️  [Xs Stille]    = dramatische Pause zwischen Saetzen.\n"
+            "Diese Marker sind STARKE virale Signale — du siehst sonst nur Text, "
+            "aber Engagement entsteht oft genau dort wo Energie spitzt oder Stille "
+            "trifft. Bevorzuge Momente die diese Marker enthalten ODER unmittelbar "
+            "davor/danach liegen.\n\n"
+            if has_audio_signals else "\n"
+        )
+        + f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
         f"Finde EXAKT {n_clips} Momente. Beachte BEIDE Regeln strikt:\n\n"
         f"REGEL 1 — VERTEILUNG (kritisch!):\n"
         f"- Die {n_clips} Momente müssen ÜBER DAS GANZE VIDEO verteilt sein (0 bis {int(src_dur)}s).\n"
@@ -2498,7 +2664,11 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
         "generationConfig": {
             "temperature": 0.7,
             "maxOutputTokens": 8192,
-            "thinkingConfig": {"thinkingBudget": 0},
+            # Dynamic thinking: model decides budget based on task complexity.
+            # Moment-picking is the one call where reasoning pays off (judging
+            # virality across a long transcript), so we don't disable it like
+            # we do for the cheaper script/scene/vision calls.
+            "thinkingConfig": {"thinkingBudget": -1},
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
@@ -2644,6 +2814,43 @@ def _snap_and_dedupe_moments(cleaned: list, segments: list, n_clips: int,
     return deduped[:n_clips]
 
 
+def _gpu_cleanup_and_log(on_step) -> None:
+    """Free CUDA caches + run gc and log free VRAM. Long multi-clip runs on
+    Windows can crash the NVIDIA driver (TDR/BSOD) when VRAM pressure builds
+    across clips — Whisper subprocesses, YOLO singleton, ffmpeg's nvdec etc.
+    Calling this between clips returns cached blocks to the driver so the
+    next clip starts from a clean baseline."""
+    import gc
+    gc.collect()
+    try:
+        import torch  # type: ignore
+        if not torch.cuda.is_available():
+            return
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+        try:
+            free_b, total_b = torch.cuda.mem_get_info()
+            alloc_gb = torch.cuda.memory_allocated() / 1024 ** 3
+            reserved_gb = torch.cuda.memory_reserved() / 1024 ** 3
+            free_gb = free_b / 1024 ** 3
+            total_gb = total_b / 1024 ** 3
+            if on_step:
+                try:
+                    on_step(
+                        f"      gpu: alloc={alloc_gb:.2f} reserved={reserved_gb:.2f} "
+                        f"free={free_gb:.2f}/{total_gb:.1f} GB"
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    except ImportError:
+        pass
+
+
 def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     """Download source once, transcribe whole video, ask Gemini for the N best
     moments, then render each as its own short via run_one. Returns list of
@@ -2678,8 +2885,22 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     src_dur = segments[-1][1] if segments else 0.0
     step(f"      transcript: {len(segments)} segments, source ≈ {src_dur:.0f}s")
 
+    # Audio-energy profile for moment-picker hints. Falls back gracefully if
+    # ffmpeg fails — moment-picking still works with text-only transcript.
+    step(f"      analyzing source loudness for engagement signals")
+    try:
+        loudness = analyze_loudness(raw, work_root, window_seconds=1.0)
+        if loudness:
+            step(f"      loudness profile: {len(loudness)} samples (1s windows)")
+        else:
+            step(f"      loudness profile empty — moment-picker runs text-only")
+    except Exception as e:
+        step(f"      WARN: loudness analysis failed ({str(e)[:160]}) — text-only mode")
+        loudness = []
+
     step(f"[MULTI 3/4] ask Gemini for the top {n_clips} viral moments")
-    moments = find_best_moments(segments, n_clips, target_dur, cfg, on_step=step)
+    moments = find_best_moments(segments, n_clips, target_dur, cfg,
+                                loudness_samples=loudness, on_step=step)
     step(f"      Gemini returned {len(moments)} moments:")
     for i, m in enumerate(moments, 1):
         step(f"        {i:2d}. {m['start']:6.1f}s-{m['end']:6.1f}s  score={m['score']:3d}  {m['title'][:60]}")
@@ -2693,16 +2914,40 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     else:
         step("      auto-reframe: ON (YOLOv11/MediaPipe wird pro Clip rufen)")
     step(f"[MULTI 4/4] render {len(moments)} shorts")
+    _gpu_cleanup_and_log(step)  # baseline before the loop starts
     outputs: list = []
     for i, m in enumerate(moments, 1):
         clip_slug = f"{base_slug}_{i:02d}_{_slugify_local(m['hook'] or m['title'])[:30]}"
         step(f"  ── Clip {i}/{len(moments)}: {clip_slug}")
+
+        # Resume-after-crash: if the final mp4 from a previous run is already
+        # on disk, skip this clip and treat it as done. Saves the user from
+        # re-rendering 2 hours of work when the PC crashed mid-loop.
+        expected_out = cfg.output_dir / f"{clip_slug}.mp4"
+        if expected_out.is_file() and expected_out.stat().st_size > 100_000:
+            step(
+                f"  ✓ Clip {i}/{len(moments)} already on disk "
+                f"({expected_out.stat().st_size // 1024} KB) — skip render"
+            )
+            outputs.append(expected_out)
+            continue
+
         sub_job = dict(job)
         sub_job["slug"] = clip_slug
         sub_job["source_url"] = source_url
         sub_job["source_file"] = str(raw)
         sub_job["scene_pick_mode"] = "manual"
         sub_job["manual_ranges"] = f"{m['start']:.2f}-{m['end']:.2f}"
+        # Per-clip transcript context: the segments overlapping this moment's
+        # range. Lets the script generator (if voice is enabled) write a
+        # script that's actually grounded in what's being said in this clip,
+        # instead of inventing a story from just the topic field.
+        m_start, m_end = float(m["start"]), float(m["end"])
+        clip_lines = [
+            t for s, e, t in segments
+            if e > m_start - 1.0 and s < m_end + 1.0
+        ]
+        sub_job["transcript_context"] = " ".join(clip_lines).strip()
         # Override the GUI slider so downstream stages (silent audio track,
         # progress bar, etc.) use the snap-adjusted actual range length
         # instead of the slider's nominal target. Otherwise ffmpeg -shortest
@@ -2715,6 +2960,9 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
             out_mp4 = run_one(sub_job, cfg, on_step=step)
         except Exception as e:
             step(f"  ── Clip {i} FAILED: {e}")
+            # Still free GPU before the next clip even if this one crashed —
+            # the failure might itself have been a memory issue.
+            _gpu_cleanup_and_log(step)
             continue
         # Sidecar metadata
         meta = (
@@ -2731,6 +2979,9 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         except Exception:
             pass
         outputs.append(out_mp4)
+        # Free CUDA caches between clips so VRAM doesn't accumulate across
+        # repeated Whisper subprocess + YOLO + ffmpeg cycles.
+        _gpu_cleanup_and_log(step)
 
     step(f"[MULTI DONE] {len(outputs)}/{len(moments)} clips rendered")
     return outputs
@@ -2786,13 +3037,33 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             topic = (job.get("topic") or "").strip()
             if not topic:
                 raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
+            # Transcript-context: either pre-populated by run_multiclip (per-clip
+            # segment of the source transcript) or opt-in for single-clip via
+            # the GUI's "use source transcript" toggle.
+            transcript_ctx = (job.get("transcript_context") or "").strip()
+            if not transcript_ctx and bool(job.get("use_source_transcript", False)):
+                whisper_device = str(job.get("whisper_device", "auto"))
+                step(f"      transcribing source for script-context (device={whisper_device})")
+                try:
+                    segs = transcribe_full_video(raw, cfg.whisper_model,
+                                                 device=whisper_device, on_step=step)
+                    transcript_ctx = " ".join(t for _, _, t in segs).strip()
+                    step(f"      source transcript: {len(transcript_ctx)} chars from {len(segs)} segments")
+                except Exception as e:
+                    step(f"      WARN: source transcription failed: {str(e)[:200]}")
+                    step(f"      script will be generated without video context")
             step(f"      generating script for topic: {topic!r} (target {target_duration:.0f}s)")
             try:
-                script = generate_script(topic, cfg, target_seconds=target_duration, on_step=step)
+                script = generate_script(topic, cfg, target_seconds=target_duration,
+                                         transcript=transcript_ctx, on_step=step)
             except RuntimeError as e:
-                step(f"      WARN: script gen failed: {e}")
-                step(f"      using template fallback script (pipeline continues)")
-                script = fallback_template_script(topic)
+                step("")
+                step("  ⚠️⚠️⚠️  GEMINI SCRIPT-GEN FEHLGESCHLAGEN  ⚠️⚠️⚠️")
+                step(f"  Grund: {str(e)[:240]}")
+                step(f"  Faelle auf Template-Skript zurueck (gechaint auf ~{target_duration:.0f}s).")
+                step("  Bei 429-Quota: paar Minuten warten oder Pay-as-you-go-Gemini-Key nutzen.")
+                step("")
+                script = fallback_template_script(topic, target_seconds=target_duration)
         (work / "script.txt").write_text(script, encoding="utf-8")
         preview = script[:80].replace("\n", " ")
         step(f"      script: {preview}...")
