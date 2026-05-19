@@ -837,12 +837,14 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 10,
     first_err = ""
     have_face_detector = _face_detector_available()
     if not have_face_detector:
-        log(
-            "      auto-reframe: ⚠️  KEIN lokaler Face-Detector geladen "
-            "(YOLOv11 / InsightFace / MediaPipe alle failed) — falle auf "
-            "Cloudflare Vision zurueck. Das ist ungenau (Modell antwortet oft "
-            "konsistent '30'). Logs oben zeigen den Fehler je Detector."
-        )
+        log("      auto-reframe: ⚠️  KEIN lokaler Face-Detector geladen — falle auf Cloudflare Vision zurueck.")
+        log("      auto-reframe: Cloudflare Vision ist ungenau (Llama-3.2-11B antwortet oft konsistent '30').")
+        if _FACE_DETECTOR_FAILURES:
+            log("      auto-reframe: Detector-Fehler:")
+            for fail in _FACE_DETECTOR_FAILURES:
+                log(f"        • {fail}")
+        else:
+            log("      auto-reframe: (keine Failures gesammelt — entweder Detector-Loader nie aufgerufen oder caching weggespeichert)")
     for i, t in enumerate(sample_times):
         thumb = work / f"reframe_sample_{i}.jpg"
         if not _extract_thumbnail(source, t, thumb, width=640):
@@ -949,6 +951,13 @@ _MP_FACE_DETECTOR = None  # lazy-initialized singleton
 _IF_FACE_APP = None  # InsightFace FaceAnalysis singleton, False = unavailable
 _YOLO_FACE_MODEL = None  # Ultralytics YOLOv8-face singleton, False = unavailable
 _FACE_LOG_PRINTED = False  # log which detector we ended up with, once
+_FACE_DETECTOR_FAILURES: list[str] = []  # collected failure reasons for GUI log
+
+
+def _record_face_detector_failure(label: str, exc: Exception, where: str) -> None:
+    msg = f"{label} ({where}): {type(exc).__name__}: {str(exc)[:200]}"
+    _FACE_DETECTOR_FAILURES.append(msg)
+    print(f"      face detection: {label} unavailable — {where}: {type(exc).__name__}: {str(exc)[:160]}")
 
 
 _YOLO_FACE_WEIGHTS_URL = (
@@ -969,7 +978,7 @@ def _get_yolo_face_detector():
         from ultralytics import YOLO
     except Exception as e:
         _YOLO_FACE_MODEL = False
-        print(f"      face detection: YOLOv11 unavailable — ultralytics import failed: {type(e).__name__}: {str(e)[:140]}")
+        _record_face_detector_failure("YOLOv11", e, "ultralytics import")
         return None
     try:
         cache_dir = Path.home() / ".cache" / "yolo-face"
@@ -982,7 +991,7 @@ def _get_yolo_face_detector():
         _YOLO_FACE_MODEL = YOLO(str(weights))
     except Exception as e:
         _YOLO_FACE_MODEL = False
-        print(f"      face detection: YOLOv11 unavailable — model load failed: {type(e).__name__}: {str(e)[:200]}")
+        _record_face_detector_failure("YOLOv11", e, "weights load")
         return None
     if not _FACE_LOG_PRINTED:
         print("      face detection: using YOLOv11-face (ultralytics)")
@@ -1002,15 +1011,11 @@ def _get_insightface():
         from insightface.app import FaceAnalysis
     except Exception as e:
         _IF_FACE_APP = False
-        # InsightFace is optional on Windows (needs VC++ build tools).
-        # Only print if YOLO also wasn't the picked detector — otherwise spammy.
-        if _YOLO_FACE_MODEL is False:
-            print(f"      face detection: InsightFace unavailable — import failed: {type(e).__name__}: {str(e)[:140]}")
+        _record_face_detector_failure("InsightFace", e, "import")
         return None
     # CUDAExecutionProvider works on Windows with the nvidia-cudnn wheel we
     # already pulled for faster-whisper; CPU is the safe fallback.
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    last_err: str = ""
     try:
         app = FaceAnalysis(
             name="buffalo_l",
@@ -1019,16 +1024,17 @@ def _get_insightface():
         )
         # ctx_id=0 picks the first GPU, falls back to CPU if CUDA provider fails.
         app.prepare(ctx_id=0, det_size=(640, 640))
-    except Exception as e:
-        last_err = f"{type(e).__name__}: {str(e)[:160]}"
+    except Exception as e_cuda:
         try:
             app = FaceAnalysis(name="buffalo_l", allowed_modules=["detection"],
                                providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=-1, det_size=(640, 640))
-        except Exception as e2:
+        except Exception as e_cpu:
             _IF_FACE_APP = False
-            if _YOLO_FACE_MODEL is False:
-                print(f"      face detection: InsightFace unavailable — prepare failed (cuda: {last_err}; cpu: {type(e2).__name__}: {str(e2)[:140]})")
+            _record_face_detector_failure(
+                "InsightFace", e_cpu,
+                f"prepare (cuda also failed: {type(e_cuda).__name__})",
+            )
             return None
     _IF_FACE_APP = app
     if not _FACE_LOG_PRINTED:
@@ -1048,7 +1054,7 @@ def _get_mediapipe_detector():
         import mediapipe as mp
     except Exception as e:
         _MP_FACE_DETECTOR = False
-        print(f"      face detection: MediaPipe unavailable — import failed: {type(e).__name__}: {str(e)[:140]}")
+        _record_face_detector_failure("MediaPipe", e, "import")
         return None
     try:
         _MP_FACE_DETECTOR = mp.solutions.face_detection.FaceDetection(
@@ -1056,7 +1062,7 @@ def _get_mediapipe_detector():
         )
     except Exception as e:
         _MP_FACE_DETECTOR = False
-        print(f"      face detection: MediaPipe unavailable — FaceDetection init failed: {type(e).__name__}: {str(e)[:160]}")
+        _record_face_detector_failure("MediaPipe", e, "FaceDetection init")
         return None
     if not _FACE_LOG_PRINTED:
         print("      face detection: using MediaPipe (InsightFace unavailable)")
