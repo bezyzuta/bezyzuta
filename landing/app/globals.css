@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #07070c;
+  --color-surface: #0f0f18;
+  --color-border-subtle: #1f1f2e;
+
+  --font-sans: var(--font-inter), system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #07070c;
+    color: #fafafa;
+    font-family: var(--font-sans);
+    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background-color: rgba(168, 85, 247, 0.4);
+    color: #fff;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .bg-grid {
+    background-image: linear-gradient(
+        to right,
+        rgba(255, 255, 255, 0.04) 1px,
+        transparent 1px
+      ),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  .bg-dots {
+    background-image: radial-gradient(
+      circle,
+      rgba(255, 255, 255, 0.06) 1px,
+      transparent 1px
+    );
+    background-size: 28px 28px;
+  }
+
+  .mask-radial-fade {
+    mask-image: radial-gradient(
+      ellipse 80% 60% at 50% 30%,
+      black 40%,
+      transparent 100%
+    );
+  }
+}
