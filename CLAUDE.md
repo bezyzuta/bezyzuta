@@ -5,10 +5,91 @@ Owner: Besmir / bezyzuta. Aktuell lokales Tool, Roadmap: Web-App + Mobile-App.
 
 ## Repo
 
-- **Branch:** `claude/youtube-shorts-roblox-setup-d13bP`
+- **Branch:** `claude/upgrade-roblox-autopilot-cdW3P` (active)
+- Prior: `claude/youtube-shorts-roblox-setup-d13bP`
 - **Working dir on user's machine:** `C:\Users\bezy\Desktop\roblox-shorts\bezyzuta`
 - **Python:** 3.12, Windows venv at `.venv`
 - **Entry points:** `gui.py` (Gradio web UI), `pipeline.py` (engine), `start-gui.bat`
+- **New modules:** `state_manager.py` (resume), `youtube_optimizer.py` (metadata), `reframe_v2.py` (smoothed face track)
+
+## Upgrade (Mai 2026 — Branch `claude/upgrade-roblox-autopilot-cdW3P`)
+
+Drei große Features dazugebaut, ALLE opt-in über Job-Flags (Default-Verhalten unverändert):
+
+### 1) Robust Resume + Advanced Logging (`state_manager.py`)
+- **Wann aktiv:** GUI-Toggle "♻️ Resume aktiv" → `job["resume"] = True`
+- Pro Slug wird `{output_dir}/{slug}/job_state.json` geschrieben mit
+  Step-Status + Artefakt-Pfaden. Beim erneuten Lauf werden fertige Steps
+  übersprungen (Artefakt-File muss noch existieren — sonst re-run).
+- **Multi-Clip:** Eigener State unter `{output_dir}/{base_slug}__multiclip_work/job_state.json`.
+  Pro Sub-Clip wird Status getrackt — `pending` / `done` / `failed`. Abgebrochener
+  Multi-Clip läuft beim 2. Lauf nur die fehlenden weiter. Jeder Sub-Clip hat
+  zusätzlich seinen eigenen run_one-State (kann mitten in Sub-Clip 7 weiter machen).
+- **Logger** mit Levels DEBUG/INFO/WARN/ERROR, Timestamps, ANSI-Farben auf TTY,
+  GUI bekommt weiterhin alle Zeilen über `step()` callback. GUI-Dropdown gesetzt
+  Level über `job["log_level"]`.
+- **Spec-Hash:** Job-Spec-Hash wird mitgespeichert; wenn User Parameter zwischen
+  Läufen ändert → Warnung, aber Steps werden trotzdem wiederverwendet. Wer
+  full re-render will: `job_state.json` löschen.
+
+### 2) YouTube Optimizer (`youtube_optimizer.py`)
+- **Wann aktiv:** GUI-Toggle "📝 YouTube-Metadaten generieren" → `job["youtube_metadata"] = True`
+- Generiert nach `compose_short` einen `{video}.youtube.json` + `{video}.youtube.txt`
+  Sidecar mit Titel (max 100 Z., wird gekappt), Description (mit `#Shorts`),
+  8-15 Tags, Thumbnail-Prompt.
+- **Provider-Reihenfolge:** Gemini → Cloudflare Llama 3.1 → Template-Fallback.
+  Template-Fallback baut posting-ready Metadaten auch komplett ohne LLM
+  (für den Fall dass beide APIs down sind — Pipeline failt nie an Metadaten).
+- **Thumbnail-Bild:** optional via Cloudflare Flux / Pollinations Fallback,
+  speichert als `{slug}_thumb.png`. Toggle in GUI.
+- **Upload-Stub:** `upload_to_youtube()` ist implementiert (Google Data API v3 mit
+  OAuth flow), aber NICHT aus GUI aufrufbar — fehlt die `google-api-python-client`
+  Lib, wirft Fehler mit Install-Anweisung. Bewusst: User soll erst die Sidecars
+  prüfen bevor automatisch hochgeladen wird.
+
+### 3) Auto-Reframe v2 (`reframe_v2.py`)
+- **Wann aktiv:** GUI-Toggle "⚡ Auto-Reframe v2" → `job["reframe_v2"] = True`
+  (nur wirksam wenn Auto-Reframe oben auch an ist).
+- Verbesserungen ggü. v1:
+  - **Per-Segment auch in Single-Clip-Mode** — v1 hat über das ganze Clip
+    gemittelt → Speaker der links→rechts läuft wurde mittig gecroppt mit
+    beiden Rändern abgeschnitten. v2 macht immer per-Segment Timeline
+    (auto auf ~3s Buckets in Single-Cut, manuell pro Cut in Multi-Cut).
+  - **3 Samples pro Segment statt 1** — verhindert "no face → 0.5" bei
+    Motion-Blur oder Hard-Cut auf der Sample-Stelle.
+  - **Konfidenz-Gewichtung** — bigger box = mehr confidence. 20px Background-Face
+    überstimmt nicht mehr den 200px Foreground-Host.
+  - **Temporal Smoothing** — adjacent Segmente mit niedriger Confidence werden
+    zum Vorgänger blended → kein Frame-Jitter bei einer Fehlerkennung.
+  - **Multi-Face-Awareness** — Podcast-Layout (≥2 vergleichbar-große Gesichter)
+    zieht den Crop näher zur Mitte statt das größte Face an den Rand zu jagen.
+  - **Hold-Last für no-face Segmente** — Speaker dreht kurz weg → bleibt
+    auf der letzten guten Position, statt nach Mitte zu springen.
+- Detector-Kaskade unverändert (YOLOv11 → InsightFace → MediaPipe), v2 importiert
+  lazy aus pipeline.py.
+
+### GUI-Änderungen (`gui.py`)
+- Neuer Toggle "⚡ Auto-Reframe v2" + Slider "Samples pro Segment (v2)" unter
+  bestehendem Auto-Reframe.
+- Neue Accordion "🔄 Resume & Logging" (Resume + Log-Level).
+- Neue Accordion "📈 YouTube Optimizer" (Metadaten + Thumbnail + Sprache).
+
+### Job-Dict-Felder (neu)
+```
+"resume": bool                  # checkpointing aktiv
+"log_level": "DEBUG"|"INFO"|"WARN"|"ERROR"
+"reframe_v2": bool              # smoothed v2 algorithm
+"reframe_samples_per_seg": int  # 1-7, default 3
+"youtube_metadata": bool        # generate sidecar
+"youtube_thumbnail": bool       # generate thumb image too
+"youtube_lang": "auto"|"de"|"en"
+```
+
+### Step-Constants (`state_manager.Step`)
+Single: download, script, voiceover, scene_pick, transcribe, captions,
+images, audio_mix (currently not checkpointed — fast), reframe, compose,
+youtube_metadata
+Multi: multi_download, multi_transcribe, multi_moments, multi_render
 
 ## Features (Stand: aktuell aktiv)
 

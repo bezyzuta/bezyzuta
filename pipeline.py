@@ -15,6 +15,13 @@ from pathlib import Path
 
 import requests
 
+# Opt-in upgrades (resume, YT optimizer, reframe v2). The modules are
+# tolerant of missing optional deps and produce no behavior change unless
+# the matching job flag is set.
+from state_manager import Logger, StateStore, Step, set_subclip_done, set_subclip_failed, get_subclip_status
+import youtube_optimizer as _yt_opt
+import reframe_v2 as _reframe2
+
 
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 
@@ -2659,6 +2666,9 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         else:
             print(msg)
 
+    resume_enabled = bool(job.get("resume", False))
+    log = Logger(step_cb=on_step, level=str(job.get("log_level", "INFO")))
+
     base_slug = job.get("slug") or "multiclip"
     source_url = (job.get("source_url") or "").strip()
     if not source_url:
@@ -2669,18 +2679,62 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
 
     work_root = cfg.output_dir / f"{base_slug}__multiclip_work"
     work_root.mkdir(parents=True, exist_ok=True)
-    step(f"[MULTI 1/4] download source: {source_url}")
-    raw = download_gameplay(source_url, work_root)
 
-    step("[MULTI 2/4] full-video transcription (Whisper)")
+    # Multi-clip state lives in the shared work_root (single source of truth
+    # for the per-subclip status table). The per-subclip run_one calls each
+    # get their own state file inside their own work dir.
+    state: StateStore | None = None
+    if resume_enabled:
+        state = StateStore(work_root, base_slug, "multiclip", job, log=log)
+        log.info(f"multiclip resume: {state.progress_summary()}")
+
+    # [MULTI 1/4] Download (cached)
+    if state and state.is_done(Step.MULTI_DOWNLOAD):
+        raw = Path(state.get_artifact(Step.MULTI_DOWNLOAD, "raw_path"))
+        step(f"[MULTI 1/4] resume: source already downloaded ({raw.name})")
+    else:
+        step(f"[MULTI 1/4] download source: {source_url}")
+        raw = download_gameplay(source_url, work_root)
+        if state:
+            state.mark_done(Step.MULTI_DOWNLOAD, {"raw_path": raw})
+
+    # [MULTI 2/4] Full-video transcription (cached to disk; expensive)
+    seg_cache = work_root / "full_transcript.json"
     whisper_device = str(job.get("whisper_device", "auto"))
-    segments = transcribe_full_video(raw, cfg.whisper_model, device=whisper_device, on_step=step)
+    if state and state.is_done(Step.MULTI_TRANSCRIBE) and seg_cache.is_file():
+        try:
+            segments = json.loads(seg_cache.read_text(encoding="utf-8"))
+            step(f"[MULTI 2/4] resume: transcript cached ({len(segments)} segments)")
+        except Exception:
+            segments = transcribe_full_video(raw, cfg.whisper_model,
+                                              device=whisper_device, on_step=step)
+    else:
+        step("[MULTI 2/4] full-video transcription (Whisper)")
+        segments = transcribe_full_video(raw, cfg.whisper_model,
+                                          device=whisper_device, on_step=step)
+        try:
+            seg_cache.write_text(json.dumps(segments), encoding="utf-8")
+        except Exception:
+            pass
+        if state:
+            state.mark_done(Step.MULTI_TRANSCRIBE, {
+                "transcript_path": seg_cache,
+                "segment_count": len(segments),
+            })
     src_dur = segments[-1][1] if segments else 0.0
     step(f"      transcript: {len(segments)} segments, source ≈ {src_dur:.0f}s")
 
-    step(f"[MULTI 3/4] ask Gemini for the top {n_clips} viral moments")
-    moments = find_best_moments(segments, n_clips, target_dur, cfg, on_step=step)
-    step(f"      Gemini returned {len(moments)} moments:")
+    # [MULTI 3/4] Moments (cached in state metadata; small, structured)
+    if state and state.is_done(Step.MULTI_MOMENTS):
+        moments = state.get_meta("moments") or []
+        step(f"[MULTI 3/4] resume: {len(moments)} moments cached from previous run")
+    else:
+        step(f"[MULTI 3/4] ask Gemini for the top {n_clips} viral moments")
+        moments = find_best_moments(segments, n_clips, target_dur, cfg, on_step=step)
+        if state:
+            state.set_meta("moments", moments)
+            state.mark_done(Step.MULTI_MOMENTS, {"count": len(moments)})
+    step(f"      {len(moments)} moments:")
     for i, m in enumerate(moments, 1):
         step(f"        {i:2d}. {m['start']:6.1f}s-{m['end']:6.1f}s  score={m['score']:3d}  {m['title'][:60]}")
 
@@ -2696,6 +2750,20 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     outputs: list = []
     for i, m in enumerate(moments, 1):
         clip_slug = f"{base_slug}_{i:02d}_{_slugify_local(m['hook'] or m['title'])[:30]}"
+
+        # Per-subclip resume: if we already rendered this one and the file is
+        # still on disk, skip it. The run_one call below also has its own
+        # state file, so partial subclip work is recoverable too.
+        if state:
+            status = get_subclip_status(state, i)
+            subs = state.get_meta("subclips", {}) or {}
+            existing = subs.get(str(i), {}) or {}
+            existing_path = Path(str(existing.get("out_path", "")))
+            if status == "done" and existing_path.is_file():
+                step(f"  ── Clip {i}/{len(moments)}: cached ({existing_path.name})")
+                outputs.append(existing_path)
+                continue
+
         step(f"  ── Clip {i}/{len(moments)}: {clip_slug}")
         sub_job = dict(job)
         sub_job["slug"] = clip_slug
@@ -2711,10 +2779,15 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         if m.get("hook"):
             sub_job["hook_text"] = m["hook"]
         sub_job["multiclip_enabled"] = False  # prevent recursion
+        # Propagate the parent's resume + v2 + YT-meta flags so each subclip
+        # gets its own checkpointed run_one.
+        sub_job["resume"] = resume_enabled
         try:
             out_mp4 = run_one(sub_job, cfg, on_step=step)
         except Exception as e:
             step(f"  ── Clip {i} FAILED: {e}")
+            if state:
+                set_subclip_failed(state, i, str(e))
             continue
         # Sidecar metadata
         meta = (
@@ -2731,6 +2804,11 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         except Exception:
             pass
         outputs.append(out_mp4)
+        if state:
+            set_subclip_done(state, i, out_mp4, title=m.get("title", ""))
+
+    if state and len(outputs) == len(moments):
+        state.mark_done(Step.MULTI_RENDER, {"clip_count": len(outputs)})
 
     step(f"[MULTI DONE] {len(outputs)}/{len(moments)} clips rendered")
     return outputs
@@ -2744,6 +2822,13 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             except Exception:
                 pass
         print(msg)
+
+    # Opt-in upgrades. When all flags are off, behavior is identical to the
+    # legacy pipeline.
+    resume_enabled    = bool(job.get("resume", False))
+    use_reframe_v2    = bool(job.get("reframe_v2", False))
+    yt_meta_enabled   = bool(job.get("youtube_metadata", False))
+    log = Logger(step_cb=on_step, level=str(job.get("log_level", "INFO")))
 
     base_slug = job["slug"]
     source_url = (job.get("source_url") or "").strip()
@@ -2766,19 +2851,37 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     work = cfg.output_dir / slug
     work.mkdir(parents=True, exist_ok=True)
 
+    # State store is opt-in; when None, all the `if state` guards below
+    # are bypassed and the pipeline runs end-to-end as before.
+    state: StateStore | None = None
+    if resume_enabled:
+        state = StateStore(work, slug, "single", job, log=log)
+        log.info(f"resume: {state.progress_summary()}")
+
     pre_downloaded = job.get("source_file")
     if pre_downloaded and Path(pre_downloaded).is_file():
         raw = Path(pre_downloaded)
         step(f"[1/5] reusing pre-downloaded source: {raw.name}")
+        if state:
+            state.mark_done(Step.DOWNLOAD, {"raw_path": raw})
+    elif state and state.is_done(Step.DOWNLOAD):
+        raw = Path(state.get_artifact(Step.DOWNLOAD, "raw_path"))
+        step(f"[1/5] resume: source already downloaded ({raw.name})")
     else:
         step(f"[1/5] download: {source_url}")
         raw = download_gameplay(source_url, work / "source")
+        if state:
+            state.mark_done(Step.DOWNLOAD, {"raw_path": raw})
 
     target_duration = float(job.get("target_duration", 30.0))
 
     enable_voice = bool(job.get("enable_voice", True))
 
-    if enable_voice:
+    # ── Script ──
+    if state and state.is_done(Step.SCRIPT):
+        script = str(state.get_artifact(Step.SCRIPT, "script_text") or "")
+        step(f"      resume: script cached ({len(script)} chars)")
+    elif enable_voice:
         script = (job.get("script") or "").strip()
         if script:
             step(f"      using user-provided script ({len(script)} chars)")
@@ -2796,18 +2899,42 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         (work / "script.txt").write_text(script, encoding="utf-8")
         preview = script[:80].replace("\n", " ")
         step(f"      script: {preview}...")
+        if state:
+            state.mark_done(Step.SCRIPT, {
+                "script_path": work / "script.txt",
+                "script_text": script,
+            })
+    else:
+        # Still need a non-empty seed for image prompt generation; fall back to
+        # the topic field if there's no script.
+        script = (job.get("topic") or "").strip() or "cinematic scene"
+        if state:
+            state.mark_done(Step.SCRIPT, {"script_text": script})
 
+    # ── Voiceover ──
+    if state and state.is_done(Step.VOICEOVER):
+        vo = Path(state.get_artifact(Step.VOICEOVER, "voice_path"))
+        vo_dur = float(state.get_artifact(Step.VOICEOVER, "voice_duration") or 0.0)
+        if vo_dur <= 0:
+            vo_dur = probe_duration(vo)
+        step(f"[2/5] resume: voice cached ({vo.name}, {vo_dur:.1f}s)")
+    elif enable_voice:
         step("[2/5] voiceover")
         vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
         vo = trim_leading_silence(vo_raw, work / "voice.mp3")
         vo_dur = probe_duration(vo)
+        if state:
+            state.mark_done(Step.VOICEOVER, {
+                "voice_path": vo, "voice_duration": vo_dur,
+            })
     else:
         step("[2/5] voice disabled — generating silent base track")
         vo_dur = float(target_duration)
         vo = make_silent_track(vo_dur, work / "voice.mp3")
-        # Still need a non-empty seed for image prompt generation; fall back to
-        # the topic field if there's no script.
-        script = (job.get("topic") or "").strip() or "cinematic scene"
+        if state:
+            state.mark_done(Step.VOICEOVER, {
+                "voice_path": vo, "voice_duration": vo_dur,
+            })
 
     # bias clip duration toward target_duration but never cut the voiceover
     target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0, 150.0)
@@ -2818,7 +2945,18 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     # Back-compat with the old smart_picking checkbox
     if mode == "even" and bool(job.get("smart_picking", False)):
         mode = "loud"
-    if mode == "manual":
+
+    if state and state.is_done(Step.SCENE_PICK):
+        clip = Path(state.get_artifact(Step.SCENE_PICK, "clip_path"))
+        # Recover the post-mutation values so downstream stages match cache.
+        cached_target = state.get_artifact(Step.SCENE_PICK, "target")
+        cached_segs = state.get_artifact(Step.SCENE_PICK, "clip_segments")
+        if cached_target is not None:
+            target = float(cached_target)
+        if cached_segs is not None:
+            clip_segments = int(cached_segs)
+        step(f"[3/5] resume: clip cached ({clip.name}, {target:.1f}s, {clip_segments} seg)")
+    elif mode == "manual":
         manual_text = str(job.get("manual_ranges", "")).strip()
         if not manual_text:
             raise RuntimeError(
@@ -2835,6 +2973,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         pretty = ", ".join(f"{s:.1f}s-{s+d:.1f}s" for s, d in ranges)
         step(f"[3/5] manual pick {clip_segments} scenes ({target:.1f}s total): {pretty}")
         clip = pick_manual_clips(raw, ranges, work / "clip.mp4")
+        if state:
+            state.mark_done(Step.SCENE_PICK, {
+                "clip_path": clip, "target": target, "clip_segments": clip_segments,
+            })
     elif clip_segments > 1:
         if mode == "ai":
             step(f"[3/5] AI pick {clip_segments} scenes via Vision LLM (~{target / clip_segments:.1f}s each)")
@@ -2846,6 +2988,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         else:
             step(f"[3/5] even pick {clip_segments} gameplay scenes (~{target / clip_segments:.1f}s each, stitched)")
             clip = pick_multi_clips(raw, target, clip_segments, work / "clip.mp4")
+        if state:
+            state.mark_done(Step.SCENE_PICK, {
+                "clip_path": clip, "target": target, "clip_segments": clip_segments,
+            })
     else:
         if mode == "ai":
             step("[3/5] AI pick: most exciting window via Vision LLM")
@@ -2857,12 +3003,31 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         else:
             step("[3/5] pick gameplay segment")
             clip = pick_clip(raw, target, work / "clip.mp4")
+        if state:
+            state.mark_done(Step.SCENE_PICK, {
+                "clip_path": clip, "target": target, "clip_segments": clip_segments,
+            })
 
-    if enable_voice:
+    words_cache = work / "words.json"
+    if state and state.is_done(Step.TRANSCRIBE) and words_cache.is_file():
+        try:
+            words = json.loads(words_cache.read_text(encoding="utf-8"))
+            step(f"[4/5] resume: transcript cached ({len(words)} words)")
+        except Exception:
+            words = []
+    elif enable_voice:
         whisper_device = str(job.get("whisper_device", "auto"))
         step(f"[4/5] transcribe + captions (device={whisper_device})")
         words, used_dev = transcribe_words(vo, cfg.whisper_model, device=whisper_device)
         step(f"      whisper ran on {used_dev}")
+        try:
+            words_cache.write_text(json.dumps(words), encoding="utf-8")
+        except Exception:
+            pass
+        if state:
+            state.mark_done(Step.TRANSCRIBE, {
+                "words_path": words_cache, "word_count": len(words),
+            })
     elif bool(job.get("enable_captions", True)):
         # No TTS voice, but the user wants captions — pull the original
         # speaker audio out of the cut clip and transcribe THAT. Whisper
@@ -2882,31 +3047,52 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 clip_audio, cfg.whisper_model, device=whisper_device, on_step=step,
             )
             step(f"      whisper ran on {used_dev} — {len(words)} words from source audio")
+            try:
+                words_cache.write_text(json.dumps(words), encoding="utf-8")
+            except Exception:
+                pass
+            if state:
+                state.mark_done(Step.TRANSCRIBE, {
+                    "words_path": words_cache, "word_count": len(words),
+                })
         except Exception as e:
             step(f"      WARN: source transcription failed ({str(e)[:160]}); no captions")
             words = []
     else:
         step("[4/5] no voice + captions disabled — skipping transcription")
         words = []
-    ass = write_ass(
-        words, cfg.target_w, cfg.target_h, work / "captions.ass",
-        font_name=str(job.get("caption_font", "Impact")),
-        font_size=int(job.get("caption_font_size", 0)) or None,
-        primary_color=str(job.get("caption_color", "#FFFFFF")),
-        outline_color=str(job.get("caption_stroke_color", "#000000")),
-        outline_width=int(job.get("caption_stroke_width", 5)),
-        hook_text=str(job.get("hook_text", "")),
-        hook_duration=float(job.get("hook_duration", 3.0)),
-        pop_captions=bool(job.get("pop_captions", False)),
-        subscribe_overlay=bool(job.get("subscribe_overlay", False)),
-        subscribe_text=str(job.get("subscribe_text", "ABONNIEREN")),
-        total_duration=vo_dur,
-        enable_captions=bool(job.get("enable_captions", True)),
-    )
+        if state:
+            state.mark_done(Step.TRANSCRIBE, {"word_count": 0})
+    ass_path = work / "captions.ass"
+    if state and state.is_done(Step.CAPTIONS) and ass_path.is_file():
+        ass = ass_path
+        step("      resume: captions.ass cached")
+    else:
+        ass = write_ass(
+            words, cfg.target_w, cfg.target_h, ass_path,
+            font_name=str(job.get("caption_font", "Impact")),
+            font_size=int(job.get("caption_font_size", 0)) or None,
+            primary_color=str(job.get("caption_color", "#FFFFFF")),
+            outline_color=str(job.get("caption_stroke_color", "#000000")),
+            outline_width=int(job.get("caption_stroke_width", 5)),
+            hook_text=str(job.get("hook_text", "")),
+            hook_duration=float(job.get("hook_duration", 3.0)),
+            pop_captions=bool(job.get("pop_captions", False)),
+            subscribe_overlay=bool(job.get("subscribe_overlay", False)),
+            subscribe_text=str(job.get("subscribe_text", "ABONNIEREN")),
+            total_duration=vo_dur,
+            enable_captions=bool(job.get("enable_captions", True)),
+        )
+        if state:
+            state.mark_done(Step.CAPTIONS, {"ass_path": ass})
 
     image_paths: list = []
     image_duration = float(job.get("image_duration", 1.5))
-    if not job.get("no_image"):
+    if state and state.is_done(Step.IMAGES):
+        cached_paths = state.get_artifact(Step.IMAGES, "paths") or []
+        image_paths = [Path(p) for p in cached_paths if Path(p).is_file()]
+        step(f"      resume: {len(image_paths)} image(s) cached")
+    elif not job.get("no_image"):
         explicit_paths = job.get("image_paths") or []
         if explicit_paths:
             image_paths = [Path(p).expanduser() for p in explicit_paths]
@@ -2974,6 +3160,12 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                             f"{n_images - i} image(s); pipeline continues without them"
                         )
                         break
+
+    if state and not state.is_done(Step.IMAGES):
+        state.mark_done(Step.IMAGES, {
+            "paths": [str(p) for p in image_paths],
+            "count": len(image_paths),
+        })
 
     # Background music: mix AFTER transcription (so captions stay clean)
     audio_for_compose = vo
@@ -3069,8 +3261,30 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             using_bgm = True
 
     crop_offset = 0.5
-    if bool(job.get("auto_reframe", False)):
-        if clip_segments > 1:
+    if state and state.is_done(Step.REFRAME):
+        cached = state.get_artifact(Step.REFRAME, "crop_offset")
+        if isinstance(cached, list):
+            crop_offset = [(float(t), float(o)) for t, o in cached]
+        elif cached is not None:
+            crop_offset = float(cached)
+        step(f"      resume: reframe offset cached")
+    elif bool(job.get("auto_reframe", False)):
+        if use_reframe_v2:
+            seg_dur = target / clip_segments if clip_segments > 0 else target
+            step(f"      auto-reframe v2: per-scene tracking "
+                 f"({clip_segments} seg × {seg_dur:.1f}s)")
+            offsets = _reframe2.detect_crop_offsets_v2(
+                clip, cfg,
+                n_segments=clip_segments,
+                seg_duration=seg_dur,
+                samples_per_segment=int(job.get("reframe_samples_per_seg", 3)),
+                on_step=step,
+            )
+            if clip_segments > 1:
+                crop_offset = offsets
+            else:
+                crop_offset = _reframe2.collapse_to_single_offset(offsets)
+        elif clip_segments > 1:
             seg_dur = target / clip_segments
             step(f"      auto-reframe: per-scene detection ({clip_segments} segments)")
             crop_offset = detect_subjects_per_segment(
@@ -3079,21 +3293,56 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         else:
             step("      auto-reframe: asking Cloudflare Vision where the subject is")
             crop_offset = detect_subject_x_position(clip, cfg, on_step=step)
+        if state:
+            state.mark_done(Step.REFRAME, {"crop_offset": crop_offset})
 
     step("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
-    compose_short(
-        clip, audio_for_compose, ass, cfg, out,
-        image_paths=image_paths,
-        duration=target,
-        image_duration=image_duration,
-        mute_source_audio=using_bgm,
-        progress_bar=bool(job.get("progress_bar", False)),
-        progress_color=str(job.get("progress_color", "red")),
-        progress_duration=vo_dur,
-        crop_offset=crop_offset,
-    )
+    if state and state.is_done(Step.COMPOSE) and out.is_file():
+        step(f"      resume: final video already rendered: {out.name}")
+    else:
+        compose_short(
+            clip, audio_for_compose, ass, cfg, out,
+            image_paths=image_paths,
+            duration=target,
+            image_duration=image_duration,
+            mute_source_audio=using_bgm,
+            progress_bar=bool(job.get("progress_bar", False)),
+            progress_color=str(job.get("progress_color", "red")),
+            progress_duration=vo_dur,
+            crop_offset=crop_offset,
+        )
+        if state:
+            state.mark_done(Step.COMPOSE, {"out_path": out})
     step(f"      -> {out}")
+
+    # ── Optional YouTube metadata sidecar ──
+    if yt_meta_enabled:
+        if state and state.is_done(Step.YT_METADATA):
+            log.info("resume: youtube metadata already generated")
+        else:
+            step("[YT] generating youtube metadata")
+            try:
+                meta = _yt_opt.generate_youtube_metadata(
+                    topic=str(job.get("topic", "")),
+                    script=script,
+                    cfg=cfg,
+                    target_lang=str(job.get("youtube_lang", "auto")),
+                    on_step=step,
+                )
+                if bool(job.get("youtube_thumbnail", True)):
+                    thumb_out = work / f"{slug}_thumb.png"
+                    _yt_opt.generate_thumbnail(meta, thumb_out, cfg, on_step=step)
+                json_path, txt_path = _yt_opt.write_metadata_sidecars(meta, out)
+                step(f"      youtube: {json_path.name} + {txt_path.name}")
+                if state:
+                    state.mark_done(Step.YT_METADATA, {
+                        "json_path": json_path,
+                        "txt_path": txt_path,
+                        "title": meta.title,
+                    })
+            except Exception as e:
+                log.warn(f"youtube metadata failed (pipeline continues): {e}")
     return out
 
 

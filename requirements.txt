@@ -20,3 +20,7 @@ mediapipe>=0.10
 nvidia-cublas-cu12; platform_system != "Darwin"
 nvidia-cuda-runtime-cu12; platform_system != "Darwin"
 nvidia-cudnn-cu12<10; platform_system != "Darwin"
+# Optional, ONLY needed if you want direct YouTube upload from youtube_optimizer
+# .upload_to_youtube(). The metadata + thumbnail sidecar features work without it.
+#   .venv\Scripts\python.exe -m pip install \
+#     google-auth google-auth-oauthlib google-api-python-client

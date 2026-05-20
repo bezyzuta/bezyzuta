@@ -87,6 +87,8 @@ def generate(
     scene_pick_mode: str,
     manual_ranges: str,
     auto_reframe: bool,
+    reframe_v2: bool,
+    reframe_samples_per_seg: int,
     enable_voice: bool,
     voice_id: str,
     enable_music: bool,
@@ -119,6 +121,11 @@ def generate(
     multiclip_enabled: bool,
     multiclip_count: int,
     batch_count: int,
+    resume_enabled: bool,
+    log_level: str,
+    youtube_metadata: bool,
+    youtube_thumbnail: bool,
+    youtube_lang: str,
 ):
     log = ""
     try:
@@ -144,6 +151,13 @@ def generate(
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "manual_ranges": str(manual_ranges or ""),
             "auto_reframe": bool(auto_reframe),
+            "reframe_v2": bool(reframe_v2),
+            "reframe_samples_per_seg": int(reframe_samples_per_seg),
+            "resume": bool(resume_enabled),
+            "log_level": str(log_level or "INFO"),
+            "youtube_metadata": bool(youtube_metadata),
+            "youtube_thumbnail": bool(youtube_thumbnail),
+            "youtube_lang": str(youtube_lang or "auto"),
             "enable_voice": bool(enable_voice),
             "image_count": int(image_count),
             "image_duration": float(image_duration),
@@ -356,6 +370,20 @@ def build_app() -> gr.Blocks:
                       "Statt mittig zu croppen, schiebt der 9:16-Ausschnitt sich zu den Subjekten. "
                       "Braucht Cloudflare-Credentials. ~+5s pro Video."),
             )
+            with gr.Row():
+                reframe_v2 = gr.Checkbox(
+                    value=False,
+                    label="⚡ Auto-Reframe v2 (stabiler, mit Smoothing + Multi-Face)",
+                    info=("Verbesserter Algorithmus: pro Segment 3 Samples, konfidenz-gewichtete "
+                          "Aggregation, zeitliches Smoothing (kein Frame-Sprung bei einer "
+                          "Fehlerkennung), Multi-Face-Awareness für Podcasts. Nur wirksam wenn "
+                          "Auto-Reframe oben angehakt ist."),
+                )
+                reframe_samples_per_seg = gr.Slider(
+                    1, 7, value=3, step=1,
+                    label="Samples pro Segment (v2)",
+                    info="Mehr Samples = stabiler, aber langsamer. 3 ist der Sweet Spot.",
+                )
             voice_id = gr.Dropdown(
                 choices=VOICES,
                 value=VOICES[0][1],
@@ -540,6 +568,49 @@ def build_app() -> gr.Blocks:
         with gr.Accordion("🔁 Batch (gleiches Setup, mehrere Random-Picks)", open=False):
             batch_count = gr.Slider(1, 10, value=1, step=1, label="Anzahl Shorts hintereinander")
 
+        # ───────────── Resume & Logging ─────────────
+        with gr.Accordion("🔄 Resume & Logging", open=False):
+            resume_enabled = gr.Checkbox(
+                value=False,
+                label="♻️ Resume aktiv (Job kann unterbrochen + fortgesetzt werden)",
+                info=("Speichert nach jedem Pipeline-Schritt einen Checkpoint in "
+                      "{output_dir}/{slug}/job_state.json. Beim nächsten Lauf mit "
+                      "gleichem Slug werden fertige Schritte (Download, Transkription, "
+                      "Voiceover, Bilder, …) NICHT neu gemacht. Multi-Clip: pro Sub-Clip "
+                      "separater Checkpoint — abgebrochenes Multi-Clip läuft genau dort "
+                      "weiter wo's gecrashed ist."),
+            )
+            log_level = gr.Dropdown(
+                choices=["DEBUG", "INFO", "WARN", "ERROR"],
+                value="INFO",
+                label="Log-Level",
+                info="DEBUG zeigt jede Detector-Entscheidung. WARN versteckt Routine-Infos.",
+            )
+
+        # ───────────── YouTube Optimizer ─────────────
+        with gr.Accordion("📈 YouTube Optimizer (Title / Description / Tags / Thumbnail)", open=False):
+            youtube_metadata = gr.Checkbox(
+                value=False,
+                label="📝 YouTube-Metadaten generieren",
+                info=("Erstellt für jeden fertigen Short eine .youtube.json + .youtube.txt "
+                      "mit Titel (max 100 Z.), Beschreibung (mit #Shorts), 8-15 Tags und "
+                      "Thumbnail-Prompt. Gemini wird zuerst versucht, Cloudflare Llama als "
+                      "Fallback, sonst Template. Kein direkter Upload — Sidecar-Files sind "
+                      "zum Copy-Paste in den YouTube-Studio."),
+            )
+            with gr.Row():
+                youtube_thumbnail = gr.Checkbox(
+                    value=True,
+                    label="🖼️ Thumbnail-Bild dazu generieren",
+                    info="Erzeugt zusätzlich {slug}_thumb.png via Cloudflare Flux / Pollinations.",
+                )
+                youtube_lang = gr.Dropdown(
+                    choices=[("Auto (Skript-Sprache übernehmen)", "auto"),
+                             ("Deutsch", "de"), ("Englisch", "en")],
+                    value="auto",
+                    label="Sprache für Metadaten",
+                )
+
         generate_btn = gr.Button("🎬 Short generieren", variant="primary", size="lg")
 
         with gr.Row():
@@ -587,7 +658,9 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, scene_pick_mode, manual_ranges, auto_reframe, enable_voice, voice_id,
+                clip_segments, scene_pick_mode, manual_ranges, auto_reframe,
+                reframe_v2, reframe_samples_per_seg,
+                enable_voice, voice_id,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
@@ -601,6 +674,8 @@ def build_app() -> gr.Blocks:
                 whisper_device,
                 multiclip_enabled, multiclip_count,
                 batch_count,
+                resume_enabled, log_level,
+                youtube_metadata, youtube_thumbnail, youtube_lang,
             ],
             outputs=[status_log, video_out],
         )
