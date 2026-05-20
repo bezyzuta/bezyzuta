@@ -1,0 +1,1614 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wind Partners GmbH — Rückenwind für Ihr Backoffice, HR & Organisation</title>
+  <meta name="description" content="Wind Partners GmbH ist eine spezialisierte Beratung für Startups und KMU. Wir bringen Klarheit in Backoffice, HR, Payroll und Administration – partnerschaftlich, strukturiert und verlässlich." />
+
+  <!-- =========================================================
+       Wind Partners — Single Page Website
+       Tech: HTML5, Tailwind CSS (CDN), Vanilla JS
+       Autor-Hinweis: Kontaktformular nutzt Formspree (kostenlos).
+       Aktivierung siehe Kommentar bei <form action="..."> weiter unten.
+       ========================================================= -->
+
+  <!-- Tailwind via CDN inkl. Custom-Config (Farben, Schriften) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            // Markenfarben laut Brief
+            navy: {
+              50:  '#EEF2FB',
+              100: '#D9E1F2',
+              200: '#A8B8DD',
+              300: '#7891C7',
+              400: '#3E5DA0',
+              500: '#1E3A8A', // Primär (Variante 1)
+              600: '#16306F',
+              700: '#0F2C5A', // Primär (Variante 2 – tief & elegant)
+              800: '#0A1F40',
+              900: '#061429',
+            },
+            cream: {
+              50:  '#FDFBF7',
+              100: '#FAF6F0', // Hintergrund hell
+              200: '#F8F1E9', // Akzent / Sekundär
+              300: '#EFE4D2',
+              400: '#E2D2B5',
+            },
+            ink: {
+              700: '#2A2A2A',
+              800: '#1A1A1A',
+              900: '#0B0B0B',
+            },
+          },
+          fontFamily: {
+            // Elegante Serif für Headlines, klare Sans für Body
+            serif: ['"Playfair Display"', 'Georgia', 'serif'],
+            sans:  ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+          },
+          boxShadow: {
+            'soft':   '0 10px 30px -12px rgba(15, 44, 90, 0.18)',
+            'softer': '0 4px 20px -8px rgba(15, 44, 90, 0.10)',
+            'lift':   '0 24px 60px -20px rgba(15, 44, 90, 0.28)',
+          },
+          keyframes: {
+            floaty: {
+              '0%, 100%': { transform: 'translateY(0px)' },
+              '50%':      { transform: 'translateY(-12px)' },
+            },
+            shine: {
+              '0%':   { transform: 'translateX(-120%)' },
+              '100%': { transform: 'translateX(220%)' },
+            },
+          },
+          animation: {
+            floaty: 'floaty 7s ease-in-out infinite',
+            shine:  'shine 1.2s ease-in-out',
+          },
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts: Playfair Display + Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+
+  <style>
+    /* Globale Basics – ergänzt Tailwind */
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #FAF6F0;
+      color: #1A1A1A;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    /* Feines Hintergrund-Muster */
+    .bg-grain {
+      background-image:
+        radial-gradient(rgba(15,44,90,0.04) 1px, transparent 1px);
+      background-size: 22px 22px;
+    }
+
+    /* Scroll-Reveal Basis (wird via JS getriggert) */
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 900ms cubic-bezier(.2,.7,.2,1), transform 900ms cubic-bezier(.2,.7,.2,1);
+      will-change: opacity, transform;
+    }
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    /* Staggered Kinder eines .reveal-group */
+    .reveal-group > * {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 800ms cubic-bezier(.2,.7,.2,1), transform 800ms cubic-bezier(.2,.7,.2,1);
+    }
+    .reveal-group.visible > *           { opacity: 1; transform: translateY(0); }
+    .reveal-group.visible > *:nth-child(1) { transition-delay: 60ms;  }
+    .reveal-group.visible > *:nth-child(2) { transition-delay: 160ms; }
+    .reveal-group.visible > *:nth-child(3) { transition-delay: 260ms; }
+    .reveal-group.visible > *:nth-child(4) { transition-delay: 360ms; }
+    .reveal-group.visible > *:nth-child(5) { transition-delay: 460ms; }
+    .reveal-group.visible > *:nth-child(6) { transition-delay: 560ms; }
+
+    /* Hover-Lift für Karten */
+    .card {
+      transition: transform 500ms cubic-bezier(.2,.7,.2,1),
+                  box-shadow 500ms cubic-bezier(.2,.7,.2,1),
+                  border-color 500ms;
+    }
+    .card:hover {
+      transform: translateY(-6px);
+      box-shadow: 0 24px 60px -20px rgba(15,44,90,0.28);
+    }
+
+    /* Button-Glanz beim Hover */
+    .btn-shine { position: relative; overflow: hidden; isolation: isolate; }
+    .btn-shine::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(120deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
+      transform: translateX(-120%);
+      transition: transform 600ms ease;
+      pointer-events: none;
+    }
+    .btn-shine:hover::after { transform: translateX(220%); }
+
+    /* Animierter Underline für Navlinks */
+    .nav-link { position: relative; }
+    .nav-link::after {
+      content: '';
+      position: absolute; left: 0; bottom: -6px;
+      width: 100%; height: 2px;
+      background: #0F2C5A;
+      transform: scaleX(0);
+      transform-origin: right center;
+      transition: transform 350ms cubic-bezier(.2,.7,.2,1);
+    }
+    .nav-link:hover::after,
+    .nav-link.active::after { transform: scaleX(1); transform-origin: left center; }
+
+    /* Hero Wind-Visual (CSS-only, performant) */
+    .wind-orb {
+      background: radial-gradient(circle at 30% 30%, #1E3A8A 0%, #0F2C5A 55%, #061429 100%);
+      filter: blur(0.5px);
+    }
+    .wind-ring {
+      border: 1px solid rgba(15,44,90,0.18);
+      border-radius: 9999px;
+    }
+
+    /* Sanfter Hintergrund-Verlauf für Sections */
+    .section-fade {
+      background: linear-gradient(180deg, #FAF6F0 0%, #F8F1E9 100%);
+    }
+
+    /* Schrift-Feinabstimmung */
+    h1, h2, h3, h4 { letter-spacing: -0.01em; }
+    .display { font-family: 'Playfair Display', Georgia, serif; font-weight: 600; }
+
+    /* Bessere Form-Inputs */
+    .field {
+      transition: border-color 200ms, box-shadow 200ms, background 200ms;
+    }
+    .field:focus {
+      outline: none;
+      border-color: #0F2C5A;
+      box-shadow: 0 0 0 4px rgba(15,44,90,0.10);
+      background: #ffffff;
+    }
+
+    /* Reduce motion respektieren */
+    @media (prefers-reduced-motion: reduce) {
+      .reveal, .reveal-group > *, .card, .btn-shine::after, .nav-link::after {
+        transition: none !important;
+        animation: none !important;
+        opacity: 1 !important;
+        transform: none !important;
+      }
+    }
+  </style>
+</head>
+
+<body class="bg-cream-100 text-ink-800 font-sans antialiased">
+
+  <!-- =====================================================
+       NAVBAR (Sticky)
+       ===================================================== -->
+  <header id="navbar" class="fixed top-0 inset-x-0 z-50 transition-all duration-500">
+    <div class="mx-auto max-w-7xl px-5 sm:px-8">
+      <nav class="mt-3 sm:mt-4 flex items-center justify-between rounded-2xl border border-white/40 bg-cream-100/80 backdrop-blur-md px-3 sm:px-5 py-2.5 sm:py-3 shadow-softer">
+
+        <!-- Logo -->
+        <a href="#top" class="flex items-center gap-2 group">
+          <!-- Mini-Logo: stilisierter "Windhauch" -->
+          <span class="inline-flex h-8 w-8 sm:h-9 sm:w-9 items-center justify-center rounded-xl bg-navy-700 text-cream-100 shadow-soft transition-transform duration-500 group-hover:rotate-6">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 sm:h-5 sm:w-5">
+              <path d="M3 8h11a3 3 0 1 0-3-3"/>
+              <path d="M3 12h15a3 3 0 1 1-3 3"/>
+              <path d="M3 16h9"/>
+            </svg>
+          </span>
+          <span class="display text-sm sm:text-lg lg:text-xl text-navy-700 tracking-tight whitespace-nowrap">Wind Partners GmbH</span>
+        </a>
+
+        <!-- Desktop-Menü -->
+        <ul class="hidden lg:flex items-center gap-9 text-sm font-medium text-ink-800">
+          <li><a class="nav-link" href="#top">Startseite</a></li>
+          <li><a class="nav-link" href="#ueber-uns">Über uns</a></li>
+          <li><a class="nav-link" href="#leistungen">Leistungen</a></li>
+          <li><a class="nav-link" href="#so-arbeiten-wir">So arbeiten wir</a></li>
+          <li><a class="nav-link" href="#team">Team</a></li>
+          <li><a class="nav-link" href="#kontakt">Kontakt</a></li>
+        </ul>
+
+        <!-- CTA + Mobile Toggle -->
+        <div class="flex items-center gap-2">
+          <a href="#kontakt"
+             class="btn-shine hidden sm:inline-flex items-center gap-2 rounded-full bg-navy-700 px-5 py-2.5 text-sm font-medium text-cream-100 shadow-soft hover:bg-navy-800 transition-colors">
+            Kontakt aufnehmen
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12h14"/><path d="m13 5 7 7-7 7"/>
+            </svg>
+          </a>
+
+          <button id="menu-toggle" aria-label="Menü öffnen"
+                  class="lg:hidden inline-flex h-10 w-10 items-center justify-center rounded-full border border-navy-700/15 text-navy-700 hover:bg-navy-700 hover:text-cream-100 transition-colors">
+            <svg id="icon-open"  class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+            <svg id="icon-close" class="hidden h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+          </button>
+        </div>
+      </nav>
+
+      <!-- Mobile Menü -->
+      <div id="mobile-menu" class="lg:hidden hidden mt-2 rounded-2xl border border-white/60 bg-cream-100/95 backdrop-blur-md shadow-soft p-4">
+        <ul class="flex flex-col gap-1 text-sm font-medium">
+          <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#top">Startseite</a></li>
+          <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#ueber-uns">Über uns</a></li>
+          <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#leistungen">Leistungen</a></li>
+          <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#so-arbeiten-wir">So arbeiten wir</a></li>
+          <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#team">Team</a></li>
+          <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#kontakt">Kontakt</a></li>
+          <li class="pt-2">
+            <a href="#kontakt" class="block w-full text-center rounded-full bg-navy-700 px-5 py-3 text-cream-100 hover:bg-navy-800 transition-colors">Kontakt aufnehmen</a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <!-- =====================================================
+         HERO
+         ===================================================== -->
+    <section class="relative overflow-hidden pt-28 sm:pt-36 lg:pt-44 pb-16 sm:pb-24 lg:pb-32 bg-grain">
+      <!-- Dekorative Hintergrund-Ringe -->
+      <div aria-hidden="true" class="pointer-events-none absolute inset-0 -z-0">
+        <div class="wind-ring absolute -top-32 -right-24 h-[520px] w-[520px] opacity-60"></div>
+        <div class="wind-ring absolute top-10 -right-10 h-[360px] w-[360px] opacity-50"></div>
+        <div class="wind-ring absolute -bottom-32 -left-24 h-[420px] w-[420px] opacity-40"></div>
+      </div>
+
+      <div class="relative mx-auto max-w-7xl px-5 sm:px-8 grid lg:grid-cols-12 gap-12 lg:gap-16 items-center">
+
+        <!-- Text -->
+        <div class="lg:col-span-7 reveal">
+          <span class="inline-flex items-center gap-2 rounded-full border border-navy-700/15 bg-white/60 px-3 py-1 text-xs font-medium text-navy-700">
+            <span class="h-1.5 w-1.5 rounded-full bg-navy-700 animate-pulse"></span>
+            Spezialisierte Beratung für Startups & KMU
+          </span>
+
+          <h1 class="display mt-6 text-4xl sm:text-5xl lg:text-6xl leading-[1.05] text-navy-700">
+            Rückenwind für Ihr <span class="italic">operatives</span> Geschäft.
+          </h1>
+
+          <p class="mt-6 max-w-2xl text-lg sm:text-xl leading-relaxed text-ink-700">
+            Wir bringen Klarheit in Backoffice, HR, Payroll und Administration —
+            damit Sie sich auf das konzentrieren können, was wirklich zählt: Ihr Unternehmen wachsen zu lassen.
+          </p>
+
+          <div class="mt-9 flex flex-col sm:flex-row gap-3">
+            <a href="#kontakt"
+               class="btn-shine inline-flex justify-center items-center gap-2 rounded-full bg-navy-700 px-7 py-4 text-sm sm:text-base font-medium text-cream-100 shadow-soft hover:bg-navy-800 transition-colors">
+              Jetzt unverbindlich sprechen
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+            </a>
+            <a href="#leistungen"
+               class="inline-flex justify-center items-center gap-2 rounded-full border border-navy-700/20 bg-white/60 px-7 py-4 text-sm sm:text-base font-medium text-navy-700 hover:bg-white transition-colors">
+              Leistungen entdecken
+            </a>
+          </div>
+
+          <!-- Trust-Strip -->
+          <dl class="mt-10 sm:mt-12 grid grid-cols-1 sm:grid-cols-3 max-w-2xl gap-5 sm:gap-6 border-t border-navy-700/10 pt-8 sm:border-0 sm:pt-0">
+            <div class="flex sm:block items-baseline gap-3">
+              <dt class="text-xs uppercase tracking-wider text-ink-700/70 min-w-[88px] sm:min-w-0">Erfahrung</dt>
+              <dd class="display sm:mt-1 text-xl sm:text-2xl leading-tight text-navy-700">5+ Jahre</dd>
+            </div>
+            <div class="flex sm:block items-baseline gap-3">
+              <dt class="text-xs uppercase tracking-wider text-ink-700/70 min-w-[88px] sm:min-w-0">Fokus</dt>
+              <dd class="display sm:mt-1 text-xl sm:text-2xl leading-tight text-navy-700">Operative Exzellenz</dd>
+            </div>
+            <div class="flex sm:block items-baseline gap-3">
+              <dt class="text-xs uppercase tracking-wider text-ink-700/70 min-w-[88px] sm:min-w-0">Werte</dt>
+              <dd class="display sm:mt-1 text-xl sm:text-2xl leading-tight text-navy-700">Klarheit &amp; Partnerschaft</dd>
+            </div>
+          </dl>
+        </div>
+
+        <!-- Visual -->
+        <div class="lg:col-span-5 reveal">
+          <div class="relative mx-auto max-w-md aspect-[4/5]">
+            <!-- Hauptkarte -->
+            <div class="absolute inset-0 rounded-[28px] bg-gradient-to-br from-cream-100 via-cream-200 to-cream-300 shadow-lift border border-white/70 overflow-hidden">
+              <!-- Stilisierter "Wind" -->
+              <svg viewBox="0 0 400 500" xmlns="http://www.w3.org/2000/svg" class="absolute inset-0 h-full w-full">
+                <defs>
+                  <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%"  stop-color="#1E3A8A"/>
+                    <stop offset="100%" stop-color="#0F2C5A"/>
+                  </linearGradient>
+                </defs>
+                <g fill="none" stroke="url(#g1)" stroke-linecap="round" stroke-width="2.4" opacity="0.85">
+                  <path d="M40 140 C 140 110, 230 200, 360 150" />
+                  <path d="M40 200 C 150 170, 240 250, 360 210" opacity="0.7"/>
+                  <path d="M40 260 C 130 230, 250 310, 360 270" opacity="0.55"/>
+                  <path d="M40 320 C 160 290, 240 370, 360 330" opacity="0.4"/>
+                  <path d="M40 380 C 140 360, 250 420, 360 390" opacity="0.28"/>
+                </g>
+                <!-- Subtile Punkte -->
+                <g fill="#0F2C5A" opacity="0.5">
+                  <circle cx="80"  cy="450" r="2"/>
+                  <circle cx="120" cy="440" r="2"/>
+                  <circle cx="160" cy="455" r="2"/>
+                  <circle cx="200" cy="445" r="2"/>
+                  <circle cx="240" cy="455" r="2"/>
+                  <circle cx="280" cy="442" r="2"/>
+                  <circle cx="320" cy="452" r="2"/>
+                </g>
+              </svg>
+
+              <!-- Floating Badge oben rechts -->
+              <div class="absolute top-5 right-5 rounded-2xl bg-white/90 backdrop-blur px-4 py-3 shadow-soft animate-floaty">
+                <div class="flex items-center gap-2">
+                  <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-navy-700 text-cream-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                  </span>
+                  <div>
+                    <p class="text-[11px] uppercase tracking-wider text-ink-700/70">Status</p>
+                    <p class="text-sm font-medium text-navy-700">Alles im Fluss</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Floating Card unten links -->
+              <div class="absolute bottom-5 left-5 rounded-2xl bg-navy-700 text-cream-100 px-5 py-4 shadow-lift max-w-[230px]">
+                <p class="text-[11px] uppercase tracking-wider text-cream-200/80">Unser Versprechen</p>
+                <p class="display mt-1 text-lg leading-snug">Struktur. Klarheit. Verlässlichkeit.</p>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================
+         UNSERE HALTUNG
+         ===================================================== -->
+    <section id="ueber-uns" class="relative py-16 sm:py-24 lg:py-32 bg-white">
+      <div class="mx-auto max-w-5xl px-5 sm:px-8 text-center reveal">
+        <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Unsere Haltung</p>
+        <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+          Klarheit entsteht durch <span class="italic">Aufmerksamkeit</span>.
+        </h2>
+        <p class="mt-8 text-lg sm:text-xl leading-relaxed text-ink-700 max-w-3xl mx-auto">
+          Wir glauben, dass gute Organisation kein bürokratisches Konstrukt ist —
+          sondern eine Form von Sorgfalt. Wer genau hinsieht, erkennt, was ein Team
+          wirklich braucht. Wir nehmen uns diese Zeit. Wir hören zu, ordnen, gestalten —
+          und schaffen Strukturen, die tragen, statt zu belasten.
+        </p>
+
+        <div class="mt-12 inline-flex items-center gap-3 rounded-full border border-navy-700/15 bg-cream-100 px-5 py-3 text-sm text-navy-700">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-4.35-7-10a7 7 0 0 1 14 0c0 5.65-7 10-7 10z"/><circle cx="12" cy="11" r="2.5"/></svg>
+          Persönlich. Diskret. Partnerschaftlich.
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================
+         FÜR WEN WIR ARBEITEN
+         ===================================================== -->
+    <section class="relative py-16 sm:py-24 lg:py-32 section-fade">
+      <div class="mx-auto max-w-7xl px-5 sm:px-8">
+
+        <div class="max-w-3xl reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Für wen wir arbeiten</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            Zwei Welten. Eine Haltung.
+          </h2>
+          <p class="mt-5 text-lg text-ink-700 leading-relaxed">
+            Ob Sie gerade gründen oder seit Jahren am Markt sind — wir sprechen Ihre Sprache
+            und passen unsere Arbeit an Ihre Realität an.
+          </p>
+        </div>
+
+        <div class="mt-14 grid md:grid-cols-2 gap-6 lg:gap-8 reveal-group">
+
+          <!-- Startups -->
+          <article class="card group rounded-3xl bg-white border border-navy-700/10 p-8 sm:p-10 shadow-softer">
+            <div class="flex items-center justify-between">
+              <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-navy-700 text-cream-100">
+                <!-- Rocket Icon -->
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
+                  <path d="M12 15 9 12a13 13 0 0 1 6-9 13 13 0 0 1 9 6c-.74 3.34-2.5 6.42-5 9z"/>
+                  <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+                  <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+                </svg>
+              </span>
+              <span class="text-xs uppercase tracking-wider text-ink-700/60">01</span>
+            </div>
+
+            <h3 class="display mt-6 text-2xl sm:text-3xl text-navy-700">Für Startups</h3>
+            <p class="mt-4 text-ink-700 leading-relaxed">
+              In der frühen Phase entscheidet Geschwindigkeit — aber nicht ohne Fundament.
+              Wir bauen mit Ihnen das operative Rückgrat auf: schlanke Prozesse, saubere
+              Payroll, klare Verantwortlichkeiten. So bleibt Ihre Energie da, wo sie hingehört —
+              im Produkt und am Kunden.
+            </p>
+
+            <ul class="mt-6 space-y-2.5 text-sm text-ink-700">
+              <li class="flex gap-2"><span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-navy-700"></span>Onboarding-Prozesse von Tag eins</li>
+              <li class="flex gap-2"><span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-navy-700"></span>Skalierbare HR- & Payroll-Strukturen</li>
+              <li class="flex gap-2"><span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-navy-700"></span>Backoffice ohne Overhead</li>
+            </ul>
+          </article>
+
+          <!-- Unternehmen -->
+          <article class="card group rounded-3xl bg-navy-700 text-cream-100 p-8 sm:p-10 shadow-soft">
+            <div class="flex items-center justify-between">
+              <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-cream-100 text-navy-700">
+                <!-- Building Icon -->
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/>
+                  <path d="M9 9h.01"/><path d="M9 12h.01"/><path d="M9 15h.01"/><path d="M9 18h.01"/>
+                </svg>
+              </span>
+              <span class="text-xs uppercase tracking-wider text-cream-200/70">02</span>
+            </div>
+
+            <h3 class="display mt-6 text-2xl sm:text-3xl">Für Unternehmen</h3>
+            <p class="mt-4 leading-relaxed text-cream-100/90">
+              Etablierte Unternehmen kommen zu uns, wenn Strukturen mitgewachsen sind —
+              aber nicht immer mitgedacht wurden. Wir entwirren, vereinfachen und
+              professionalisieren. Mit dem Blick einer Externen, der Verbindlichkeit
+              einer Internen.
+            </p>
+
+            <ul class="mt-6 space-y-2.5 text-sm text-cream-100/90">
+              <li class="flex gap-2"><span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-cream-100"></span>Prozess- und Strukturanalysen</li>
+              <li class="flex gap-2"><span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-cream-100"></span>Entlastung Geschäftsführung & HR</li>
+              <li class="flex gap-2"><span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-cream-100"></span>Langfristige operative Begleitung</li>
+            </ul>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================
+         UNSERE LEISTUNGEN
+         ===================================================== -->
+    <section id="leistungen" class="relative py-16 sm:py-24 lg:py-32 bg-cream-100">
+      <div class="mx-auto max-w-7xl px-5 sm:px-8">
+
+        <div class="max-w-3xl reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Unsere Leistungen</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            Ihr Partner für strukturierte Organisation, Administration und People-Themen.
+          </h2>
+          <p class="mt-5 text-lg text-ink-700 leading-relaxed">
+            Wir verstehen uns nicht als Dienstleister, sondern als Mitdenker —
+            mit klarem Blick für das Wesentliche und der nötigen Sorgfalt im Detail.
+          </p>
+        </div>
+
+        <div class="mt-14 grid sm:grid-cols-2 lg:grid-cols-4 gap-6 reveal-group">
+
+          <!-- Card 1: Personalvermittlung -->
+          <article class="card group rounded-3xl bg-white border border-navy-700/10 p-7 shadow-softer hover:border-navy-700/30">
+            <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-cream-200 text-navy-700 group-hover:bg-navy-700 group-hover:text-cream-100 transition-colors">
+              <!-- Users / Talent Icon -->
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+            </span>
+            <h3 class="display mt-5 text-xl text-navy-700">Personalvermittlung</h3>
+            <p class="mt-3 text-sm leading-relaxed text-ink-700">
+              Wir finden Menschen, die zu Ihrem Team passen — fachlich und menschlich.
+              Diskret, individuell und mit dem nötigen Gespür für Ihre Unternehmenskultur.
+            </p>
+            <a href="#personalvermittlung" class="mt-5 inline-flex items-center gap-2 text-sm font-medium text-navy-700 hover:text-navy-800">
+              Mehr erfahren
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 transition-transform group-hover:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+            </a>
+          </article>
+
+          <!-- Card 2: HR-Support & Beratung -->
+          <article class="card group rounded-3xl bg-white border border-navy-700/10 p-7 shadow-softer hover:border-navy-700/30">
+            <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-cream-200 text-navy-700 group-hover:bg-navy-700 group-hover:text-cream-100 transition-colors">
+              <!-- Heart / Support Icon -->
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+              </svg>
+            </span>
+            <h3 class="display mt-5 text-xl text-navy-700">HR-Support &amp; Beratung</h3>
+            <p class="mt-3 text-sm leading-relaxed text-ink-700">
+              Ob Onboarding, Arbeitsverträge oder schwierige Personalfragen —
+              wir begleiten Sie sachlich, empathisch und juristisch fundiert
+              im gesamten Mitarbeiterzyklus.
+            </p>
+            <a href="#hr-support" class="mt-5 inline-flex items-center gap-2 text-sm font-medium text-navy-700 hover:text-navy-800">
+              Mehr erfahren
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 transition-transform group-hover:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+            </a>
+          </article>
+
+          <!-- Card 3: Payroll / HR-Management -->
+          <article class="card group rounded-3xl bg-white border border-navy-700/10 p-7 shadow-softer hover:border-navy-700/30">
+            <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-cream-200 text-navy-700 group-hover:bg-navy-700 group-hover:text-cream-100 transition-colors">
+              <!-- Calculator / Payroll Icon -->
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="2" width="16" height="20" rx="2"/>
+                <line x1="8" y1="6" x2="16" y2="6"/>
+                <line x1="8" y1="10" x2="10" y2="10"/>
+                <line x1="12" y1="10" x2="14" y2="10"/>
+                <line x1="16" y1="10" x2="16" y2="10"/>
+                <line x1="8" y1="14" x2="10" y2="14"/>
+                <line x1="12" y1="14" x2="14" y2="14"/>
+                <line x1="16" y1="14" x2="16" y2="14"/>
+                <line x1="8" y1="18" x2="10" y2="18"/>
+                <line x1="12" y1="18" x2="14" y2="18"/>
+              </svg>
+            </span>
+            <h3 class="display mt-5 text-xl text-navy-700">Payroll &amp; HR-Management</h3>
+            <p class="mt-3 text-sm leading-relaxed text-ink-700">
+              Pünktlich, korrekt, nachvollziehbar — wir übernehmen Lohnabrechnung
+              und administratives HR-Management, damit Sie sich um den Rest
+              keine Sorgen mehr machen müssen.
+            </p>
+            <a href="#payroll" class="mt-5 inline-flex items-center gap-2 text-sm font-medium text-navy-700 hover:text-navy-800">
+              Mehr erfahren
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 transition-transform group-hover:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+            </a>
+          </article>
+
+          <!-- Card 4: Backoffice & Administration -->
+          <article class="card group rounded-3xl bg-white border border-navy-700/10 p-7 shadow-softer hover:border-navy-700/30">
+            <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-cream-200 text-navy-700 group-hover:bg-navy-700 group-hover:text-cream-100 transition-colors">
+              <!-- Folder / Backoffice Icon -->
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 4h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/>
+                <line x1="7" y1="13" x2="17" y2="13"/>
+                <line x1="7" y1="17" x2="13" y2="17"/>
+              </svg>
+            </span>
+            <h3 class="display mt-5 text-xl text-navy-700">Backoffice &amp; Administration</h3>
+            <p class="mt-3 text-sm leading-relaxed text-ink-700">
+              Wir strukturieren Ihr operatives Tagesgeschäft: Ablage, Korrespondenz,
+              Schnittstellen zu Treuhand und Behörden. Verlässlich im Hintergrund —
+              spürbar im Ergebnis.
+            </p>
+            <a href="#backoffice" class="mt-5 inline-flex items-center gap-2 text-sm font-medium text-navy-700 hover:text-navy-800">
+              Mehr erfahren
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 transition-transform group-hover:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+            </a>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================
+         LEISTUNGS-DETAILS — 4 Anker-Sections
+         Jeweils alternierender Layout (Text/Visual links/rechts)
+         und alternierender Hintergrund für Rhythmus.
+         scroll-mt-28 sorgt dafür, dass beim Sprung von "Mehr erfahren"
+         der Sticky-Navbar nichts verdeckt.
+         ===================================================== -->
+
+    <!-- ----- Detail 01: Personalvermittlung ----- -->
+    <section id="personalvermittlung" class="relative py-16 sm:py-24 lg:py-32 bg-white scroll-mt-28">
+      <div class="mx-auto max-w-7xl px-5 sm:px-8 grid lg:grid-cols-12 gap-12 lg:gap-16 items-center">
+
+        <!-- Text -->
+        <div class="lg:col-span-7 reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Leistung 01</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            Personalvermittlung
+          </h2>
+          <p class="mt-5 text-lg leading-relaxed text-ink-700">
+            Wir finden Menschen, die nicht nur fachlich, sondern auch kulturell perfekt
+            zu Ihrem Unternehmen passen. Mit einem diskreten, individuellen und sehr
+            persönlichen Vorgehen begleiten wir den gesamten Prozess — von der
+            Bedarfsanalyse über die Suche bis zur erfolgreichen Integration.
+          </p>
+
+          <p class="mt-10 text-xs uppercase tracking-[0.2em] text-navy-700 font-semibold">Ihre Vorteile</p>
+          <ul class="mt-4 grid sm:grid-cols-2 gap-4 text-sm">
+            <li class="flex gap-3">
+              <span class="mt-1 inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-navy-700 text-cream-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+              </span>
+              <span class="text-ink-700">Zeitersparnis bei der Suche und Auswahl</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="mt-1 inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-navy-700 text-cream-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+              </span>
+              <span class="text-ink-700">Höhere Passgenauigkeit und geringere Fluktuation</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="mt-1 inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-navy-700 text-cream-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+              </span>
+              <span class="text-ink-700">Diskrete Behandlung sensibler Besetzungen</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="mt-1 inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-navy-700 text-cream-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+              </span>
+              <span class="text-ink-700">Unterstützung bei Onboarding und Integration</span>
+            </li>
+          </ul>
+
+          <a href="#kontakt"
+             class="btn-shine mt-10 inline-flex items-center gap-2 rounded-full bg-navy-700 px-7 py-4 text-sm font-medium text-cream-100 shadow-soft hover:bg-navy-800 transition-colors">
+            Kontakt aufnehmen
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+          </a>
+        </div>
+
+        <!-- Visual -->
+        <div class="lg:col-span-5 reveal">
+          <div class="relative mx-auto max-w-md aspect-square">
+            <div class="absolute inset-0 rounded-[28px] bg-gradient-to-br from-cream-100 via-cream-200 to-cream-300 shadow-lift border border-white/70 overflow-hidden">
+              <!-- Verbundene Personen / Netzwerk -->
+              <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" class="absolute inset-0 h-full w-full">
+                <g stroke="#0F2C5A" stroke-width="1.5" opacity="0.4" fill="none">
+                  <line x1="120" y1="110" x2="280" y2="110"/>
+                  <line x1="120" y1="110" x2="200" y2="220"/>
+                  <line x1="280" y1="110" x2="200" y2="220"/>
+                  <line x1="200" y1="220" x2="100" y2="300"/>
+                  <line x1="200" y1="220" x2="300" y2="300"/>
+                  <line x1="100" y1="300" x2="300" y2="300"/>
+                </g>
+                <g fill="#0F2C5A">
+                  <circle cx="120" cy="110" r="22"/>
+                  <circle cx="280" cy="110" r="22"/>
+                  <circle cx="200" cy="220" r="28"/>
+                  <circle cx="100" cy="300" r="20"/>
+                  <circle cx="300" cy="300" r="20"/>
+                </g>
+                <g fill="#F8F1E9">
+                  <circle cx="120" cy="103" r="6"/><rect x="108" y="113" width="24" height="14" rx="6"/>
+                  <circle cx="280" cy="103" r="6"/><rect x="268" y="113" width="24" height="14" rx="6"/>
+                  <circle cx="200" cy="212" r="7"/><rect x="186" y="223" width="28" height="16" rx="7"/>
+                  <circle cx="100" cy="294" r="5"/><rect x="90"  y="302" width="20" height="12" rx="5"/>
+                  <circle cx="300" cy="294" r="5"/><rect x="290" y="302" width="20" height="12" rx="5"/>
+                </g>
+              </svg>
+              <div class="absolute bottom-5 left-5 rounded-2xl bg-white/90 backdrop-blur px-5 py-3 shadow-soft">
+                <p class="text-[11px] uppercase tracking-wider text-ink-700/60">Talente verbinden</p>
+                <p class="display text-base text-navy-700">Menschen, die passen.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ----- Detail 02: HR-Support & Beratung ----- -->
+    <section id="hr-support" class="relative py-16 sm:py-24 lg:py-32 bg-cream-100 scroll-mt-28">
+      <div class="mx-auto max-w-7xl px-5 sm:px-8 grid lg:grid-cols-12 gap-12 lg:gap-16 items-center">
+
+        <!-- Visual (links bei diesem Layout) -->
+        <div class="lg:col-span-5 reveal lg:order-first order-last">
+          <div class="relative mx-auto max-w-md aspect-square">
+            <div class="absolute inset-0 rounded-[28px] bg-gradient-to-br from-navy-700 via-navy-700 to-navy-800 shadow-lift overflow-hidden">
+              <!-- Chat-Bubbles / Dialog -->
+              <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" class="absolute inset-0 h-full w-full">
+                <g fill="rgba(248,241,233,0.95)">
+                  <path d="M60 120 q0 -20 20 -20 h140 q20 0 20 20 v40 q0 20 -20 20 h-80 l-25 22 v-22 h-35 q-20 0 -20 -20 z"/>
+                </g>
+                <g fill="rgba(248,241,233,0.7)">
+                  <rect x="80"  y="125" width="120" height="6" rx="3"/>
+                  <rect x="80"  y="140" width="90"  height="6" rx="3"/>
+                  <rect x="80"  y="155" width="100" height="6" rx="3"/>
+                </g>
+                <g fill="#F8F1E9">
+                  <path d="M340 220 q0 -20 -20 -20 h-130 q-20 0 -20 20 v40 q0 20 20 20 h70 l25 22 v-22 h35 q20 0 20 -20 z"/>
+                </g>
+                <g fill="#0F2C5A">
+                  <rect x="185" y="225" width="120" height="6" rx="3"/>
+                  <rect x="185" y="240" width="80"  height="6" rx="3"/>
+                  <rect x="185" y="255" width="100" height="6" rx="3"/>
+                </g>
+                <!-- Herz Akzent -->
+                <path d="M200 330 c -12 -16 -32 -8 -32 8 c 0 14 32 30 32 30 c 0 0 32 -16 32 -30 c 0 -16 -20 -24 -32 -8 z" fill="#F8F1E9" opacity="0.85"/>
+              </svg>
+              <div class="absolute top-5 right-5 rounded-2xl bg-cream-100 px-4 py-3 shadow-soft">
+                <p class="text-[11px] uppercase tracking-wider text-navy-700/60">Auf Augenhöhe</p>
+                <p class="display text-base text-navy-700">Sachlich. Empathisch.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Text -->
+        <div class="lg:col-span-7 reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Leistung 02</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            HR-Support &amp; Beratung
+          </h2>
+          <p class="mt-5 text-lg leading-relaxed text-ink-700">
+            Ob Onboarding, Arbeitsverträge, Konfliktmanagement oder schwierige
+            Personalfragen — wir stehen Ihnen als erfahrene HR-Partnerin zur Seite.
+            Wir beraten Sie sachlich, empathisch und immer juristisch fundiert.
+          </p>
+          <p class="mt-4 text-lg leading-relaxed text-ink-700">
+            Wir unterstützen Sie operativ wie strategisch: von der täglichen
+            HR-Arbeit bis hin zu grösseren Veränderungsprozessen.
+          </p>
+
+          <!-- Typische Themen als Tag-Chips -->
+          <p class="mt-10 text-xs uppercase tracking-[0.2em] text-navy-700 font-semibold">Typische Themen</p>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <span class="rounded-full bg-white border border-navy-700/15 px-4 py-2 text-sm text-navy-700">Arbeitsverträge</span>
+            <span class="rounded-full bg-white border border-navy-700/15 px-4 py-2 text-sm text-navy-700">Mitarbeitergespräche</span>
+            <span class="rounded-full bg-white border border-navy-700/15 px-4 py-2 text-sm text-navy-700">Abmahnungen</span>
+            <span class="rounded-full bg-white border border-navy-700/15 px-4 py-2 text-sm text-navy-700">Kündigungen</span>
+            <span class="rounded-full bg-white border border-navy-700/15 px-4 py-2 text-sm text-navy-700">Mutterschaftsurlaub</span>
+            <span class="rounded-full bg-white border border-navy-700/15 px-4 py-2 text-sm text-navy-700">Weiterbildungskonzepte</span>
+            <span class="rounded-full bg-navy-700 border border-navy-700 px-4 py-2 text-sm text-cream-100">u.v.m.</span>
+          </div>
+
+          <a href="#kontakt"
+             class="btn-shine mt-10 inline-flex items-center gap-2 rounded-full bg-navy-700 px-7 py-4 text-sm font-medium text-cream-100 shadow-soft hover:bg-navy-800 transition-colors">
+            Kontakt aufnehmen
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+          </a>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ----- Detail 03: Payroll & HR-Management ----- -->
+    <section id="payroll" class="relative py-16 sm:py-24 lg:py-32 bg-white scroll-mt-28">
+      <div class="mx-auto max-w-7xl px-5 sm:px-8 grid lg:grid-cols-12 gap-12 lg:gap-16 items-center">
+
+        <!-- Text -->
+        <div class="lg:col-span-7 reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Leistung 03</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            Payroll &amp; HR-Management
+          </h2>
+          <p class="mt-5 text-lg leading-relaxed text-ink-700">
+            Wir übernehmen Ihre komplette Lohn- und Gehaltsabrechnung zuverlässig,
+            korrekt und termingerecht. Dabei kümmern wir uns nicht nur um die
+            Abrechnung, sondern auch um alle administrativen HR-Prozesse.
+          </p>
+          <p class="mt-4 text-lg leading-relaxed text-ink-700">
+            Sie erhalten monatlich klare Unterlagen, haben immer einen direkten
+            Ansprechpartner und können sich darauf verlassen, dass alles
+            gesetzeskonform und transparent abläuft.
+          </p>
+
+          <a href="#kontakt"
+             class="btn-shine mt-10 inline-flex items-center gap-2 rounded-full bg-navy-700 px-7 py-4 text-sm font-medium text-cream-100 shadow-soft hover:bg-navy-800 transition-colors">
+            Kontakt aufnehmen
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+          </a>
+        </div>
+
+        <!-- Visual -->
+        <div class="lg:col-span-5 reveal">
+          <div class="relative mx-auto max-w-md aspect-square">
+            <div class="absolute inset-0 rounded-[28px] bg-gradient-to-br from-cream-100 via-cream-200 to-cream-300 shadow-lift border border-white/70 overflow-hidden">
+              <!-- Stilisierte Lohn-Abrechnung -->
+              <div class="absolute inset-6 rounded-2xl bg-white shadow-soft p-5">
+                <div class="flex items-center justify-between border-b border-navy-700/10 pb-3">
+                  <div>
+                    <p class="text-[10px] uppercase tracking-wider text-ink-700/50">Lohnabrechnung</p>
+                    <p class="display text-sm text-navy-700">Monat Mai</p>
+                  </div>
+                  <span class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-navy-700 text-cream-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                  </span>
+                </div>
+                <div class="mt-4 space-y-2.5 text-xs">
+                  <div class="flex justify-between"><span class="text-ink-700/70">Bruttolohn</span><span class="font-medium text-navy-700">CHF 7'500.00</span></div>
+                  <div class="flex justify-between"><span class="text-ink-700/70">AHV/IV/EO</span><span class="text-ink-700">– 397.50</span></div>
+                  <div class="flex justify-between"><span class="text-ink-700/70">ALV</span><span class="text-ink-700">– 82.50</span></div>
+                  <div class="flex justify-between"><span class="text-ink-700/70">BVG</span><span class="text-ink-700">– 412.50</span></div>
+                  <div class="flex justify-between"><span class="text-ink-700/70">UVG / KTG</span><span class="text-ink-700">– 45.00</span></div>
+                  <div class="flex justify-between border-t border-navy-700/10 pt-2.5 mt-2"><span class="font-medium text-navy-700">Nettolohn</span><span class="font-semibold text-navy-700">CHF 6'562.50</span></div>
+                </div>
+                <div class="mt-4 flex items-center justify-between rounded-xl bg-cream-100 px-3 py-2 text-[11px]">
+                  <span class="text-navy-700/70">Auszahlung</span>
+                  <span class="display text-navy-700">25. Mai · pünktlich</span>
+                </div>
+              </div>
+              <div class="absolute bottom-5 right-5 rounded-2xl bg-navy-700 text-cream-100 px-4 py-3 shadow-soft animate-floaty">
+                <p class="text-[11px] uppercase tracking-wider text-cream-200/70">Status</p>
+                <p class="display text-base">Alles korrekt</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ----- Detail 04: Backoffice & Administration ----- -->
+    <section id="backoffice" class="relative py-16 sm:py-24 lg:py-32 bg-cream-100 scroll-mt-28">
+      <div class="mx-auto max-w-7xl px-5 sm:px-8 grid lg:grid-cols-12 gap-12 lg:gap-16 items-center">
+
+        <!-- Visual (links) -->
+        <div class="lg:col-span-5 reveal lg:order-first order-last">
+          <div class="relative mx-auto max-w-md aspect-square">
+            <div class="absolute inset-0 rounded-[28px] bg-gradient-to-br from-cream-200 via-cream-100 to-white shadow-lift border border-white/70 overflow-hidden">
+              <!-- Stapel von Dokumenten / Ordnung -->
+              <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" class="absolute inset-0 h-full w-full">
+                <!-- Hintere Mappe -->
+                <rect x="80"  y="100" width="240" height="160" rx="10" fill="#0F2C5A" opacity="0.15"/>
+                <!-- Mittlere Mappe -->
+                <rect x="70"  y="130" width="240" height="160" rx="10" fill="#0F2C5A" opacity="0.35"/>
+                <!-- Vordere Mappe (Hauptdokument) -->
+                <rect x="60"  y="160" width="280" height="180" rx="14" fill="#0F2C5A"/>
+                <rect x="80"  y="180" width="120" height="10" rx="5" fill="#F8F1E9"/>
+                <rect x="80"  y="200" width="240" height="6"  rx="3" fill="#F8F1E9" opacity="0.6"/>
+                <rect x="80"  y="214" width="200" height="6"  rx="3" fill="#F8F1E9" opacity="0.6"/>
+                <rect x="80"  y="228" width="220" height="6"  rx="3" fill="#F8F1E9" opacity="0.6"/>
+                <rect x="80"  y="252" width="100" height="20" rx="6" fill="#F8F1E9"/>
+                <rect x="190" y="252" width="100" height="20" rx="6" fill="#F8F1E9" opacity="0.3"/>
+                <rect x="80"  y="282" width="240" height="6"  rx="3" fill="#F8F1E9" opacity="0.6"/>
+                <rect x="80"  y="296" width="180" height="6"  rx="3" fill="#F8F1E9" opacity="0.6"/>
+                <rect x="80"  y="310" width="220" height="6"  rx="3" fill="#F8F1E9" opacity="0.6"/>
+                <!-- Tag / Label -->
+                <g transform="translate(290 158) rotate(15)">
+                  <rect x="0" y="0" width="60" height="30" rx="6" fill="#F8F1E9"/>
+                  <circle cx="10" cy="15" r="3" fill="#0F2C5A"/>
+                  <rect x="20" y="11" width="32" height="3" rx="1.5" fill="#0F2C5A" opacity="0.5"/>
+                  <rect x="20" y="18" width="22" height="3" rx="1.5" fill="#0F2C5A" opacity="0.4"/>
+                </g>
+              </svg>
+              <div class="absolute bottom-5 right-5 rounded-2xl bg-white/90 backdrop-blur px-4 py-3 shadow-soft">
+                <p class="text-[11px] uppercase tracking-wider text-ink-700/60">Im Hintergrund</p>
+                <p class="display text-base text-navy-700">Alles am Platz.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Text -->
+        <div class="lg:col-span-7 reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Leistung 04</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            Backoffice &amp; Administration
+          </h2>
+          <p class="mt-5 text-lg leading-relaxed text-ink-700">
+            Wir strukturieren und organisieren Ihr operatives Tagesgeschäft.
+            Von der Ablage über die Korrespondenz, Rechnungsstellung bis hin zu
+            Schnittstellen mit Treuhand, Behörden und Versicherungen.
+          </p>
+          <p class="mt-4 text-lg leading-relaxed text-ink-700">
+            Das Ergebnis: Ein spürbar entlastetes Team, klare Prozesse und mehr
+            Zeit für Ihr Kerngeschäft.
+          </p>
+
+          <!-- Highlight: Flexibilität -->
+          <div class="mt-10 rounded-2xl border-l-4 border-navy-700 bg-white px-6 py-5">
+            <p class="text-base leading-relaxed text-ink-700">
+              <strong class="text-navy-700">Ob temporäre Unterstützung, Ferienvertretung
+              oder dauerhafte Entlastung</strong> — wir passen uns flexibel an Ihre
+              Bedürfnisse an.
+            </p>
+          </div>
+
+          <a href="#kontakt"
+             class="btn-shine mt-10 inline-flex items-center gap-2 rounded-full bg-navy-700 px-7 py-4 text-sm font-medium text-cream-100 shadow-soft hover:bg-navy-800 transition-colors">
+            Kontakt aufnehmen
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
+          </a>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- =====================================================
+         SO ARBEITEN WIR (3-Schritte-Prozess)
+         ===================================================== -->
+    <section id="so-arbeiten-wir" class="relative py-16 sm:py-24 lg:py-32 bg-white overflow-hidden">
+
+      <!-- Dezente Hintergrund-Wellen -->
+      <svg aria-hidden="true" class="absolute -top-10 left-0 w-full opacity-[0.05] text-navy-700" viewBox="0 0 1200 120" preserveAspectRatio="none">
+        <path d="M0,0V46.29c47.79,22.2,103.59,32.17,158,28,70.36-5.37,136.33-33.31,206.8-37.5C438.64,32.43,512.34,53.67,583,72.05c69.27,18,138.3,24.88,209.4,13.08,36.15-6,69.85-17.84,104.45-29.34C989.49,25,1113-14.29,1200,52.47V0Z" fill="currentColor"/>
+      </svg>
+
+      <div class="relative mx-auto max-w-7xl px-5 sm:px-8">
+
+        <div class="max-w-3xl reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">So arbeiten wir</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            In drei Schritten zu klaren Strukturen.
+          </h2>
+          <p class="mt-5 text-lg text-ink-700 leading-relaxed">
+            Wir bringen kein vorgefertigtes System mit — sondern hören erst zu.
+            Daraus entsteht eine Zusammenarbeit, die Ihre Realität abbildet.
+          </p>
+        </div>
+
+        <ol class="mt-16 grid md:grid-cols-3 gap-6 lg:gap-8 reveal-group">
+
+          <!-- Step 1 -->
+          <li class="relative rounded-3xl border border-navy-700/10 bg-cream-100 p-8 card">
+            <div class="flex items-center justify-between">
+              <span class="display text-5xl text-navy-700/15">01</span>
+              <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-navy-700 text-cream-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              </span>
+            </div>
+            <h3 class="display mt-6 text-xl text-navy-700">Kontakt &amp; Analyse</h3>
+            <p class="mt-3 text-sm leading-relaxed text-ink-700">
+              Ein erstes Gespräch — unverbindlich und auf Augenhöhe. Wir hören zu,
+              stellen die richtigen Fragen und verstehen, wo Sie heute stehen
+              und was Sie wirklich brauchen.
+            </p>
+          </li>
+
+          <!-- Step 2 -->
+          <li class="relative rounded-3xl border border-navy-700/10 bg-cream-100 p-8 card">
+            <div class="flex items-center justify-between">
+              <span class="display text-5xl text-navy-700/15">02</span>
+              <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-navy-700 text-cream-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4z"/>
+                </svg>
+              </span>
+            </div>
+            <h3 class="display mt-6 text-xl text-navy-700">Umsetzung &amp; Struktur</h3>
+            <p class="mt-3 text-sm leading-relaxed text-ink-700">
+              Aus der Analyse entstehen klare Lösungen. Wir setzen Prozesse auf,
+              führen sie ein und dokumentieren sie so, dass sie für Sie und Ihr
+              Team verständlich, anwendbar und nachhaltig sind.
+            </p>
+          </li>
+
+          <!-- Step 3 -->
+          <li class="relative rounded-3xl border border-navy-700/10 bg-cream-100 p-8 card">
+            <div class="flex items-center justify-between">
+              <span class="display text-5xl text-navy-700/15">03</span>
+              <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-navy-700 text-cream-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 3v18h18"/><path d="m7 14 4-4 4 4 6-6"/>
+                </svg>
+              </span>
+            </div>
+            <h3 class="display mt-6 text-xl text-navy-700">Wachstum &amp; Partnerschaft</h3>
+            <p class="mt-3 text-sm leading-relaxed text-ink-700">
+              Wir bleiben an Ihrer Seite — als verlässliche Partnerin, die mit Ihrem
+              Unternehmen mitwächst. Strukturen verändern sich, Anforderungen auch.
+              Wir entwickeln beide gemeinsam weiter.
+            </p>
+          </li>
+
+        </ol>
+      </div>
+    </section>
+
+    <!-- =====================================================
+         TEAM — Wir sind Wind Partners
+         ---------------------------------------------------------
+         Avatar-Platzhalter sind inline-SVG-Monogramme (keine
+         externen Bilder nötig). Sobald echte Fotos da sind:
+         Den gesamten <div class="...monogram-card..."> Block
+         durch ein <img src="..." alt="..." class="h-64 w-64
+         rounded-2xl object-cover shadow-lift" /> ersetzen.
+         ===================================================== -->
+    <section id="team" class="relative py-16 sm:py-24 lg:py-32 bg-cream-100 scroll-mt-28">
+      <div class="mx-auto max-w-7xl px-5 sm:px-8">
+
+        <!-- Header -->
+        <div class="text-center reveal max-w-3xl mx-auto">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Das Team</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            Wir sind Wind Partners.
+          </h2>
+          <p class="mt-6 text-lg sm:text-xl leading-relaxed text-ink-700">
+            Zwei erfahrene Betriebswirtschafterinnen mit Leidenschaft für klare
+            Strukturen und echte Zusammenarbeit.
+          </p>
+        </div>
+
+        <!-- Team-Grid -->
+        <div class="mt-16 sm:mt-20 grid md:grid-cols-2 gap-12 lg:gap-16 max-w-5xl mx-auto reveal-group">
+
+          <!-- ===== Bjonda Zuta ===== -->
+          <article class="text-center md:text-left">
+            <!-- Avatar (Monogram-Platzhalter, später durch <img> ersetzen) -->
+            <div class="monogram-card relative mx-auto md:mx-0 h-52 w-52 sm:h-60 sm:w-60 md:h-64 md:w-64 rounded-2xl shadow-lift overflow-hidden bg-gradient-to-br from-navy-500 via-navy-700 to-navy-800 transition-transform duration-500 hover:-translate-y-1">
+              <!-- dekoratives Wind-Muster -->
+              <svg aria-hidden="true" viewBox="0 0 256 256" class="absolute inset-0 h-full w-full opacity-25">
+                <g fill="none" stroke="#F8F1E9" stroke-width="1.5" stroke-linecap="round">
+                  <path d="M30 60 C 90 40, 150 90, 230 65" />
+                  <path d="M30 100 C 100 80, 160 120, 230 100" opacity="0.7"/>
+                  <path d="M30 200 C 100 180, 160 215, 230 195" opacity="0.5"/>
+                </g>
+              </svg>
+              <!-- Initialen -->
+              <span class="absolute inset-0 flex items-center justify-center display text-7xl text-cream-100">BZ</span>
+              <!-- Mini-Tag -->
+              <span class="absolute bottom-3 left-3 rounded-full bg-cream-100/90 backdrop-blur text-navy-700 text-[10px] uppercase tracking-wider px-3 py-1">Foto folgt</span>
+            </div>
+
+            <h3 class="display mt-6 text-2xl sm:text-3xl text-navy-700">Bjonda Zuta</h3>
+            <p class="mt-1 text-sm font-medium uppercase tracking-[0.15em] text-navy-700/70">Geschäftsführerin &amp; Partnerin</p>
+            <p class="mt-5 leading-relaxed text-ink-700">
+              Als detailverliebte und hoch organisierte Betriebswirtschafterin
+              bringe ich Struktur und Effizienz in Backoffice, Payroll und
+              Administration. Ich begleite Unternehmen mit Ruhe, Präzision und
+              dem nötigen Feingefühl für Menschen.
+            </p>
+          </article>
+
+          <!-- ===== Thamylini Jegatheeswaran ===== -->
+          <article class="text-center md:text-left">
+            <div class="monogram-card relative mx-auto md:mx-0 h-52 w-52 sm:h-60 sm:w-60 md:h-64 md:w-64 rounded-2xl shadow-lift overflow-hidden bg-gradient-to-br from-navy-700 via-navy-800 to-navy-900 transition-transform duration-500 hover:-translate-y-1">
+              <svg aria-hidden="true" viewBox="0 0 256 256" class="absolute inset-0 h-full w-full opacity-25">
+                <g fill="none" stroke="#F8F1E9" stroke-width="1.5" stroke-linecap="round">
+                  <path d="M30 80 C 90 55, 160 105, 230 75" />
+                  <path d="M30 140 C 110 115, 160 165, 230 140" opacity="0.65"/>
+                  <path d="M30 210 C 90 190, 170 225, 230 205" opacity="0.45"/>
+                </g>
+              </svg>
+              <span class="absolute inset-0 flex items-center justify-center display text-7xl text-cream-100">TJ</span>
+              <span class="absolute bottom-3 left-3 rounded-full bg-cream-100/90 backdrop-blur text-navy-700 text-[10px] uppercase tracking-wider px-3 py-1">Foto folgt</span>
+            </div>
+
+            <h3 class="display mt-6 text-2xl sm:text-3xl text-navy-700">Thamylini Jegatheeswaran</h3>
+            <p class="mt-1 text-sm font-medium uppercase tracking-[0.15em] text-navy-700/70">Geschäftsführerin &amp; Partnerin</p>
+            <p class="mt-5 leading-relaxed text-ink-700">
+              Mit langjähriger Erfahrung in der operativen Unternehmensführung
+              und im HR-Bereich sorge ich dafür, dass Strukturen nicht nur
+              funktionieren, sondern auch von Menschen gelebt werden. Ich liebe
+              es, wenn aus Chaos Klarheit wird — und Teams wieder mit Freude
+              arbeiten können.
+            </p>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================
+         UNSERE MISSION
+         ===================================================== -->
+    <section class="relative py-20 sm:py-28 lg:py-36 bg-navy-700 text-cream-100 overflow-hidden">
+
+      <!-- Dekorative Ringe -->
+      <div aria-hidden="true" class="pointer-events-none absolute inset-0">
+        <div class="absolute -top-32 -left-32 h-[520px] w-[520px] rounded-full border border-cream-100/10"></div>
+        <div class="absolute -bottom-32 -right-32 h-[600px] w-[600px] rounded-full border border-cream-100/10"></div>
+        <div class="absolute bottom-1/3 right-1/4 h-3 w-3 rounded-full bg-cream-100/40"></div>
+        <div class="absolute top-1/3 left-1/4 h-2 w-2 rounded-full bg-cream-100/50"></div>
+      </div>
+
+      <div class="relative mx-auto max-w-5xl px-5 sm:px-8 text-center reveal">
+        <p class="text-xs uppercase tracking-[0.25em] text-cream-200/70 font-medium">Unsere Mission</p>
+        <h2 class="display mt-5 text-3xl sm:text-5xl lg:text-6xl leading-[1.1]">
+          Wir verbinden Menschen, schaffen Struktur und geben Organisationen <span class="italic">Orientierung</span>.
+        </h2>
+      </div>
+
+      <div class="relative mt-16 mx-auto max-w-6xl px-5 sm:px-8 grid md:grid-cols-3 gap-6 lg:gap-8 reveal-group">
+
+        <!-- Drucker-Zitat -->
+        <figure class="rounded-3xl border border-cream-100/15 bg-white/[0.03] p-8 backdrop-blur-sm">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 text-cream-200" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M7.17 6A5.17 5.17 0 0 0 2 11.17V18h7v-7H5.5a3.67 3.67 0 0 1 3.67-3.67V6h-2zM17.17 6A5.17 5.17 0 0 0 12 11.17V18h7v-7h-3.5a3.67 3.67 0 0 1 3.67-3.67V6h-2z"/>
+          </svg>
+          <blockquote class="mt-5 display text-xl leading-snug">
+            „Effizienz ist, die Dinge richtig zu tun. Effektivität ist, die richtigen Dinge zu tun.“
+          </blockquote>
+          <figcaption class="mt-4 text-sm text-cream-200/80">— Peter F. Drucker</figcaption>
+        </figure>
+
+        <!-- Vertrauen & Verantwortung -->
+        <article class="rounded-3xl border border-cream-100/15 bg-white/[0.03] p-8 backdrop-blur-sm">
+          <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-cream-100 text-navy-700">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2 4 6v6c0 5 3.5 9.4 8 10 4.5-.6 8-5 8-10V6l-8-4z"/>
+              <path d="m9 12 2 2 4-4"/>
+            </svg>
+          </span>
+          <h3 class="display mt-5 text-2xl">Vertrauen &amp; Verantwortung</h3>
+          <p class="mt-3 text-cream-100/85 leading-relaxed">
+            Wir gehen mit Ihren Themen so um, als wären es unsere eigenen.
+            Diskretion ist für uns nicht Vorgabe, sondern Selbstverständnis —
+            und Verlässlichkeit das, was wir täglich beweisen.
+          </p>
+        </article>
+
+        <!-- Partnerschaft auf Augenhöhe -->
+        <article class="rounded-3xl border border-cream-100/15 bg-white/[0.03] p-8 backdrop-blur-sm">
+          <span class="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-cream-100 text-navy-700">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 11.5 22 9l-5-3-5 3"/>
+              <path d="M2 9l5 3 5-3"/>
+              <path d="M7 12v6l5 3 5-3v-6"/>
+              <path d="M12 6V3"/>
+            </svg>
+          </span>
+          <h3 class="display mt-5 text-2xl">Partnerschaft auf Augenhöhe</h3>
+          <p class="mt-3 text-cream-100/85 leading-relaxed">
+            Beratung heißt für uns: zuhören, mitdenken, mitentscheiden.
+            Wir treten nicht als Externe auf, die Konzepte überreichen,
+            sondern als Partnerin, die mit Ihnen umsetzt.
+          </p>
+        </article>
+
+      </div>
+    </section>
+
+    <!-- =====================================================
+         KONTAKT
+         ===================================================== -->
+    <section id="kontakt" class="relative py-16 sm:py-24 lg:py-32 bg-cream-100">
+      <div class="mx-auto max-w-7xl px-5 sm:px-8 grid lg:grid-cols-12 gap-12 lg:gap-16">
+
+        <!-- Linke Seite: Intro + Infos -->
+        <div class="lg:col-span-5 reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Kontakt</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            Lassen Sie uns sprechen.
+          </h2>
+          <p class="mt-5 text-lg leading-relaxed text-ink-700">
+            Ein erstes Gespräch ist unverbindlich, vertraulich und oft schon klärend.
+            Schreiben Sie uns — wir melden uns innerhalb eines Werktages.
+          </p>
+
+          <ul class="mt-10 space-y-5 text-sm">
+            <li class="flex items-start gap-4">
+              <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-white border border-navy-700/10 text-navy-700">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                  <polyline points="22,6 12,13 2,6"/>
+                </svg>
+              </span>
+              <div>
+                <p class="text-xs uppercase tracking-wider text-ink-700/60">E-Mail</p>
+                <a href="mailto:info@windpartners.ch" class="mt-1 block font-medium text-navy-700 hover:underline">info@windpartners.ch</a>
+              </div>
+            </li>
+            <li class="flex items-start gap-4">
+              <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-white border border-navy-700/10 text-navy-700">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.37 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.33 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>
+                </svg>
+              </span>
+              <div>
+                <p class="text-xs uppercase tracking-wider text-ink-700/60">Telefon</p>
+                <a href="tel:+41321234567" class="mt-1 block font-medium text-navy-700 hover:underline">+41 32 123 45 67</a>
+              </div>
+            </li>
+            <li class="flex items-start gap-4">
+              <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-white border border-navy-700/10 text-navy-700">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                  <circle cx="12" cy="10" r="3"/>
+                </svg>
+              </span>
+              <div>
+                <p class="text-xs uppercase tracking-wider text-ink-700/60">Standort</p>
+                <p class="mt-1 font-medium text-navy-700">Bern — schweizweit tätig</p>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Rechte Seite: Formular -->
+        <div class="lg:col-span-7 reveal">
+          <!-- =========================================================
+               KONTAKTFORMULAR (Formspree)
+               -------------------------------------------------------
+               Aktivierung:
+                 1. Auf https://formspree.io kostenloses Konto erstellen.
+                 2. Neues Formular anlegen → ID kopieren (z.B. "abcdwxyz").
+                 3. Unten im <form>-Tag den Wert "YOUR_FORMSPREE_ID"
+                    durch diese ID ersetzen, also:
+                    action="https://formspree.io/f/abcdwxyz"
+                 4. Fertig — Einsendungen kommen direkt per E-Mail.
+               -------------------------------------------------------
+               Alternative kostenlose Optionen (gleiches Prinzip):
+                 - Getform   → action="https://getform.io/f/<ID>"
+                 - EmailJS   → benötigt zusätzlich Client-side JS-Init
+               ========================================================= -->
+          <form id="contact-form"
+                action="https://formspree.io/f/YOUR_FORMSPREE_ID"
+                method="POST"
+                class="rounded-3xl bg-white border border-navy-700/10 p-7 sm:p-10 shadow-soft">
+
+            <div class="grid sm:grid-cols-2 gap-5">
+              <div>
+                <label for="name" class="block text-sm font-medium text-navy-700">Vor- und Nachname *</label>
+                <input id="name" name="name" type="text" required autocomplete="name"
+                       class="field mt-2 w-full rounded-xl border border-navy-700/15 bg-cream-100/60 px-4 py-3 text-sm placeholder-ink-700/40"
+                       placeholder="z.B. Maria Müller" />
+              </div>
+
+              <div>
+                <label for="company" class="block text-sm font-medium text-navy-700">Unternehmen *</label>
+                <input id="company" name="company" type="text" required autocomplete="organization"
+                       class="field mt-2 w-full rounded-xl border border-navy-700/15 bg-cream-100/60 px-4 py-3 text-sm placeholder-ink-700/40"
+                       placeholder="z.B. Beispiel AG" />
+              </div>
+
+              <div>
+                <label for="email" class="block text-sm font-medium text-navy-700">E-Mail *</label>
+                <input id="email" name="email" type="email" required autocomplete="email"
+                       class="field mt-2 w-full rounded-xl border border-navy-700/15 bg-cream-100/60 px-4 py-3 text-sm placeholder-ink-700/40"
+                       placeholder="name@unternehmen.ch" />
+              </div>
+
+              <div>
+                <label for="phone" class="block text-sm font-medium text-navy-700">Telefon <span class="text-ink-700/50 font-normal">(optional)</span></label>
+                <input id="phone" name="phone" type="tel" autocomplete="tel"
+                       class="field mt-2 w-full rounded-xl border border-navy-700/15 bg-cream-100/60 px-4 py-3 text-sm placeholder-ink-700/40"
+                       placeholder="+41 32 123 45 67" />
+              </div>
+            </div>
+
+            <div class="mt-5">
+              <label for="message" class="block text-sm font-medium text-navy-700">Ihre Nachricht / Ihr Anliegen *</label>
+              <textarea id="message" name="message" rows="5" required
+                        class="field mt-2 w-full rounded-xl border border-navy-700/15 bg-cream-100/60 px-4 py-3 text-sm placeholder-ink-700/40 resize-y"
+                        placeholder="Erzählen Sie uns kurz, worum es geht — wir hören zu."></textarea>
+            </div>
+
+            <div class="mt-5 flex items-start gap-3">
+              <input id="privacy" name="privacy" type="checkbox" required
+                     class="mt-1 h-4 w-4 rounded border-navy-700/30 text-navy-700 focus:ring-navy-700" />
+              <label for="privacy" class="text-sm text-ink-700 leading-relaxed">
+                Ich habe die <a href="#datenschutz" class="text-navy-700 underline hover:no-underline">Datenschutzerklärung</a>
+                gelesen und akzeptiere sie. *
+              </label>
+            </div>
+
+            <!-- Honeypot (Anti-Spam, von Formspree unterstützt) -->
+            <input type="text" name="_gotcha" class="hidden" tabindex="-1" autocomplete="off" />
+
+            <div class="mt-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <p class="text-xs text-ink-700/60">* Pflichtfeld. Wir behandeln Ihre Daten vertraulich.</p>
+              <button type="submit"
+                      class="btn-shine inline-flex justify-center items-center gap-2 rounded-full bg-navy-700 px-7 py-4 text-sm font-medium text-cream-100 shadow-soft hover:bg-navy-800 transition-colors">
+                Nachricht senden
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22,2 15,22 11,13 2,9 22,2"/></svg>
+              </button>
+            </div>
+
+            <!-- Status-Nachricht (wird via JS gesetzt) -->
+            <p id="form-status" class="mt-5 hidden rounded-xl px-4 py-3 text-sm"></p>
+          </form>
+        </div>
+
+      </div>
+    </section>
+    <!-- =====================================================
+         DATENSCHUTZ
+         ===================================================== -->
+    <section id="datenschutz" class="relative py-16 sm:py-24 lg:py-32 bg-cream-100 scroll-mt-28">
+      <div class="mx-auto max-w-4xl px-5 sm:px-8">
+
+        <!-- Header -->
+        <div class="text-center reveal">
+          <p class="text-xs uppercase tracking-[0.25em] text-navy-700/70 font-medium">Datenschutz</p>
+          <h2 class="display mt-4 text-3xl sm:text-5xl leading-tight text-navy-700">
+            Datenschutzerklärung
+          </h2>
+          <p class="mt-6 text-lg leading-relaxed text-ink-700 max-w-2xl mx-auto">
+            Wir nehmen den Schutz Ihrer persönlichen Daten sehr ernst. Diese
+            Datenschutzerklärung informiert Sie darüber, wie Wind Partners GmbH
+            personenbezogene Daten erhebt, verarbeitet und schützt.
+          </p>
+        </div>
+
+        <!-- Inhalts-Karte -->
+        <div class="mt-14 rounded-3xl bg-white border border-navy-700/10 shadow-soft p-8 sm:p-12 reveal">
+
+          <!-- 01 -->
+          <article>
+            <div class="flex items-baseline gap-4">
+              <span class="display text-3xl text-navy-700/20 leading-none">01</span>
+              <h3 class="display text-xl sm:text-2xl text-navy-700">Verantwortliche Stelle</h3>
+            </div>
+            <p class="mt-4 leading-relaxed text-ink-700">
+              Wind Partners GmbH<br>
+              Musterstrasse 123<br>
+              3000 Bern<br>
+              Schweiz<br>
+              E-Mail: <a href="mailto:info@windpartners.ch" class="text-navy-700 underline underline-offset-2 hover:no-underline">info@windpartners.ch</a>
+            </p>
+          </article>
+
+          <hr class="my-10 border-navy-700/10">
+
+          <!-- 02 -->
+          <article>
+            <div class="flex items-baseline gap-4">
+              <span class="display text-3xl text-navy-700/20 leading-none">02</span>
+              <h3 class="display text-xl sm:text-2xl text-navy-700">Erhebung und Verarbeitung personenbezogener Daten</h3>
+            </div>
+            <p class="mt-4 leading-relaxed text-ink-700">
+              Wir erheben und verarbeiten Ihre Daten ausschliesslich im Rahmen
+              der Kontaktaufnahme und der Erbringung unserer Dienstleistungen.
+            </p>
+          </article>
+
+          <hr class="my-10 border-navy-700/10">
+
+          <!-- 03 -->
+          <article>
+            <div class="flex items-baseline gap-4">
+              <span class="display text-3xl text-navy-700/20 leading-none">03</span>
+              <h3 class="display text-xl sm:text-2xl text-navy-700">Weitergabe von Daten</h3>
+            </div>
+            <p class="mt-4 leading-relaxed text-ink-700">
+              Eine Weitergabe an Dritte erfolgt nur mit Ihrer Einwilligung oder
+              wenn wir gesetzlich verpflichtet sind.
+            </p>
+          </article>
+
+          <hr class="my-10 border-navy-700/10">
+
+          <!-- 04 -->
+          <article>
+            <div class="flex items-baseline gap-4">
+              <span class="display text-3xl text-navy-700/20 leading-none">04</span>
+              <h3 class="display text-xl sm:text-2xl text-navy-700">Ihre Rechte</h3>
+            </div>
+            <p class="mt-4 leading-relaxed text-ink-700">
+              Sie haben jederzeit das Recht auf Auskunft, Berichtigung, Löschung
+              sowie Widerruf Ihrer Einwilligung.
+            </p>
+          </article>
+
+        </div>
+
+        <p class="mt-6 text-sm text-ink-700/60 text-right">Stand: Mai 2026</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- =====================================================
+       FOOTER
+       ===================================================== -->
+  <footer class="bg-navy-800 text-cream-100">
+    <div class="mx-auto max-w-7xl px-5 sm:px-8 py-16">
+
+      <div class="grid md:grid-cols-12 gap-10">
+
+        <div class="md:col-span-5">
+          <a href="#top" class="flex items-center gap-2">
+            <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-cream-100 text-navy-700">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5">
+                <path d="M3 8h11a3 3 0 1 0-3-3"/>
+                <path d="M3 12h15a3 3 0 1 1-3 3"/>
+                <path d="M3 16h9"/>
+              </svg>
+            </span>
+            <span class="display text-xl">Wind Partners GmbH</span>
+          </a>
+          <p class="mt-5 max-w-md text-sm text-cream-100/70 leading-relaxed">
+            Spezialisierte Beratung für Backoffice, HR, Payroll und Administration —
+            Rückenwind für Startups und KMU im operativen Alltag.
+          </p>
+        </div>
+
+        <div class="md:col-span-3">
+          <h4 class="text-xs uppercase tracking-[0.2em] text-cream-100/60">Navigation</h4>
+          <ul class="mt-5 space-y-3 text-sm">
+            <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#top">Startseite</a></li>
+            <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#ueber-uns">Über uns</a></li>
+            <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#leistungen">Leistungen</a></li>
+            <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#so-arbeiten-wir">So arbeiten wir</a></li>
+            <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#team">Team</a></li>
+            <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#kontakt">Kontakt</a></li>
+          </ul>
+        </div>
+
+        <div class="md:col-span-4">
+          <h4 class="text-xs uppercase tracking-[0.2em] text-cream-100/60">Kontakt</h4>
+          <ul class="mt-5 space-y-3 text-sm">
+            <li><a href="mailto:info@windpartners.ch" class="text-cream-100/85 hover:text-cream-100 transition-colors">info@windpartners.ch</a></li>
+            <li><a href="tel:+41321234567" class="text-cream-100/85 hover:text-cream-100 transition-colors">+41 32 123 45 67</a></li>
+            <li class="text-cream-100/70">Bern — schweizweit tätig</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- =====================================================
+           IMPRESSUM (CH-pflichtig für GmbH)
+           ===================================================== -->
+      <section id="impressum" class="mt-14 pt-10 border-t border-cream-100/10">
+        <h3 class="display text-xl text-cream-100">Impressum</h3>
+        <div class="mt-5 grid md:grid-cols-3 gap-8 text-sm text-cream-100/75 leading-relaxed">
+
+          <div>
+            <p class="text-xs uppercase tracking-[0.2em] text-cream-100/50">Anbieterin</p>
+            <p class="mt-3">
+              <strong class="text-cream-100">Wind Partners GmbH</strong><br>
+              Musterstrasse 123<br>
+              3000 Bern<br>
+              Schweiz
+            </p>
+          </div>
+
+          <div>
+            <p class="text-xs uppercase tracking-[0.2em] text-cream-100/50">Register &amp; Steuern</p>
+            <p class="mt-3">
+              UID: CHE-123.456.789<br>
+              MWST-Nr.: CHE-123.456.789 MWST
+            </p>
+            <p class="mt-4 text-xs uppercase tracking-[0.2em] text-cream-100/50">Vertretungsberechtigte Person</p>
+            <p class="mt-3">
+              Vorname Nachname<br>
+              Geschäftsführerin
+            </p>
+          </div>
+
+          <div>
+            <p class="text-xs uppercase tracking-[0.2em] text-cream-100/50">Kontakt</p>
+            <p class="mt-3">
+              Telefon: <a href="tel:+41321234567" class="hover:text-cream-100">+41 32 123 45 67</a><br>
+              E-Mail: <a href="mailto:info@windpartners.ch" class="hover:text-cream-100">info@windpartners.ch</a>
+            </p>
+            <p class="mt-4 text-xs uppercase tracking-[0.2em] text-cream-100/50">Haftungsausschluss</p>
+            <p class="mt-3">
+              Trotz sorgfältiger inhaltlicher Kontrolle übernehmen wir keine Haftung für die Inhalte externer Links.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <div class="mt-12 pt-8 border-t border-cream-100/10 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-cream-100/60">
+        <p>© <span id="year"></span> Wind Partners GmbH. Alle Rechte vorbehalten.</p>
+        <ul class="flex items-center gap-6">
+          <li><a href="#impressum" class="hover:text-cream-100 transition-colors">Impressum</a></li>
+          <li><a href="#datenschutz" class="hover:text-cream-100 transition-colors">Datenschutz</a></li>
+        </ul>
+      </div>
+    </div>
+  </footer>
+
+  <!-- =====================================================
+       JAVASCRIPT — Interaktivität
+       ===================================================== -->
+  <script>
+    // ===== Sticky Navbar — Shadow ab Scroll =====
+    const navbar = document.getElementById('navbar');
+    const onScroll = () => {
+      if (window.scrollY > 12) {
+        navbar.querySelector('nav').classList.add('shadow-soft', 'border-white/70');
+      } else {
+        navbar.querySelector('nav').classList.remove('shadow-soft', 'border-white/70');
+      }
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+
+    // ===== Mobile Menu Toggle =====
+    const menuBtn   = document.getElementById('menu-toggle');
+    const menu      = document.getElementById('mobile-menu');
+    const iconOpen  = document.getElementById('icon-open');
+    const iconClose = document.getElementById('icon-close');
+    menuBtn.addEventListener('click', () => {
+      const isOpen = !menu.classList.contains('hidden');
+      menu.classList.toggle('hidden', isOpen);
+      iconOpen.classList.toggle('hidden', !isOpen);
+      iconClose.classList.toggle('hidden', isOpen);
+      menuBtn.setAttribute('aria-label', isOpen ? 'Menü öffnen' : 'Menü schliessen');
+    });
+    // Mobile-Menü schliessen bei Klick auf Link
+    menu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+      menu.classList.add('hidden');
+      iconOpen.classList.remove('hidden');
+      iconClose.classList.add('hidden');
+    }));
+
+    // ===== Scroll-Reveal via IntersectionObserver =====
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+
+    document.querySelectorAll('.reveal, .reveal-group').forEach(el => io.observe(el));
+
+    // ===== Active-Nav-Link beim Scrollen =====
+    const sections = ['top', 'ueber-uns', 'leistungen', 'so-arbeiten-wir', 'team', 'kontakt']
+      .map(id => document.getElementById(id)).filter(Boolean);
+    const navLinks = document.querySelectorAll('.nav-link');
+    const sectionObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const id = entry.target.id;
+          navLinks.forEach(link => {
+            link.classList.toggle('active', link.getAttribute('href') === '#' + id);
+          });
+        }
+      });
+    }, { threshold: 0.4 });
+    sections.forEach(s => sectionObserver.observe(s));
+
+    // ===== Footer-Jahr automatisch =====
+    document.getElementById('year').textContent = new Date().getFullYear();
+
+    // ===== Kontaktformular — AJAX-Submit an Formspree =====
+    // Sendet das Formular per fetch() ab und zeigt eine inline Erfolg-/Fehlermeldung.
+    // Funktioniert mit jeder Formspree-/Getform-URL, die JSON akzeptiert.
+    const form   = document.getElementById('contact-form');
+    const status = document.getElementById('form-status');
+
+    function setStatus(message, type) {
+      status.textContent = message;
+      status.className = 'mt-5 block rounded-xl px-4 py-3 text-sm ' + (
+        type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
+        type === 'error'   ? 'bg-red-50 text-red-800 border border-red-200' :
+                             'bg-cream-200 text-navy-700 border border-navy-700/10'
+      );
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      // Schutz: noch kein echtes Formspree-Ziel hinterlegt
+      if (form.action.includes('YOUR_FORMSPREE_ID')) {
+        setStatus('⚙️  Demo-Modus: Bitte im Quellcode die Formspree-ID eintragen, um Nachrichten tatsächlich zu versenden.', 'info');
+        return;
+      }
+
+      setStatus('Wird gesendet …', 'info');
+      const submitBtn = form.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      submitBtn.classList.add('opacity-70', 'cursor-not-allowed');
+
+      try {
+        const data = new FormData(form);
+        const res = await fetch(form.action, {
+          method: 'POST',
+          body: data,
+          headers: { 'Accept': 'application/json' }
+        });
+
+        if (res.ok) {
+          form.reset();
+          setStatus('✓ Vielen Dank! Wir haben Ihre Nachricht erhalten und melden uns innerhalb eines Werktages.', 'success');
+        } else {
+          const json = await res.json().catch(() => ({}));
+          const msg = (json && json.errors && json.errors.map(e => e.message).join(', ')) || 'Bitte später erneut versuchen.';
+          setStatus('Es ist ein Fehler aufgetreten: ' + msg, 'error');
+        }
+      } catch (err) {
+        setStatus('Netzwerkfehler — bitte prüfen Sie Ihre Verbindung und versuchen Sie es erneut.', 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('opacity-70', 'cursor-not-allowed');
+      }
+    });
+  </script>
+</body>
+</html>
