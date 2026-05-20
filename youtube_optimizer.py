@@ -59,7 +59,7 @@ Antworte AUSSCHLIESSLICH mit gültigem JSON, OHNE Markdown-Codeblock,
 in genau diesem Schema:
 
 {
-  "title": "...",            // max 70 Zeichen, klickstark, KEIN Clickbait der lügt
+  "title": "...",            // 60-70 Zeichen optimal (Mobile schneidet ab ~70), 100 absolutes Max
   "description": "...",       // 1-3 Absätze, mit Hook-Satz oben, dann Kontext, dann Call-to-action
   "tags": ["...", "..."],    // 8-15 Tags, klein­geschrieben, kein # davor
   "thumbnail_prompt": "..."  // 1-2 Sätze, beschreibt das Thumbnail-Bild für ein Vertical-Format (9:16)
@@ -113,6 +113,8 @@ def _parse_json_loose(text: str) -> dict | None:
 def _coerce_metadata(parsed: dict, topic: str, script: str) -> YouTubeMetadata:
     """Coerce a maybe-shaped dict into a clean YouTubeMetadata."""
     title = str(parsed.get("title") or topic or "Neuer Short").strip()
+    # YouTube's API rejects titles > 100 chars; clamp as a safety net even
+    # though we ask the LLM for ~70 (mobile starts truncating around there).
     if len(title) > 100:
         title = title[:97] + "..."
     desc_raw = parsed.get("description") or ""
