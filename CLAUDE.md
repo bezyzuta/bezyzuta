@@ -80,10 +80,27 @@ Drei große Features dazugebaut, ALLE opt-in über Job-Flags (Default-Verhalten 
 "log_level": "DEBUG"|"INFO"|"WARN"|"ERROR"
 "reframe_v2": bool              # smoothed v2 algorithm
 "reframe_samples_per_seg": int  # 1-7, default 3
+"speaker_detection": bool       # MAR-based active-speaker switching (needs reframe_v2)
 "youtube_metadata": bool        # generate sidecar
 "youtube_thumbnail": bool       # generate thumb image too
 "youtube_lang": "auto"|"de"|"en"
 ```
+
+### Follow-up fixes (after user-reported issues with multi-clip output)
+- **Dedupe**: 70% overlap threshold → 50% (was letting near-duplicate clips through)
+- **Auto-cap n_clips**: for sources < n_clips × 60s we cap to `int(src_dur / 60)` so
+  Gemini can't be asked for 5 distinct moments from a 60s video.
+- **2-pass hook generation**: after `_snap_and_dedupe_moments`, every moment's
+  hook/title/hashtags are regenerated via `_gemini_rewrite_hook` using ONLY the
+  exact post-snap range text — eliminates the "hook describes a different part
+  of the video" hallucination from single-pass Gemini.
+- **Speaker detection**: opt-in `job["speaker_detection"]` (needs reframe_v2 on).
+  Adds MediaPipe-FaceMesh per-frame MAR (mouth-aspect-ratio) measurement; multi-
+  face frames prefer the face with the noticeably highest MAR over the largest
+  face, so the crop chases whoever is currently talking.
+- **Gemini 2.5 Pro option**: new optional `Config.gemini_moments_model` field.
+  Defaults to `gemini_model`; set to `"gemini-2.5-pro"` in config.json to get
+  noticeably better viral-moment picks (uses more free-tier quota).
 
 ### Step-Constants (`state_manager.Step`)
 Single: download, script, voiceover, scene_pick, transcribe, captions,

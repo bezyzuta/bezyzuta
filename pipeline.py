@@ -45,6 +45,11 @@ class Config:
     ducking_db: float
     gemini_api_key: str
     gemini_model: str
+    # Optional override for the multi-clip moment-picker. Defaults to
+    # gemini_model when empty. Set to "gemini-2.5-pro" in config.json to get
+    # noticeably better viral-moment picks at the cost of more free-tier
+    # quota per run.
+    gemini_moments_model: str
     cloudflare_account_id: str
     cloudflare_api_token: str
     cloudflare_image_model: str
@@ -56,6 +61,7 @@ class Config:
         if not api_key:
             raise SystemExit("elevenlabs_api_key missing in config and ELEVENLABS_API_KEY not set")
         w, h = data.get("target_resolution", [1080, 1920])
+        default_gemini = data.get("gemini_model", "gemini-2.5-flash")
         return cls(
             output_dir=Path(data["output_dir"]).expanduser(),
             elevenlabs_api_key=api_key,
@@ -66,7 +72,8 @@ class Config:
             target_h=int(h),
             ducking_db=float(data.get("ducking_db", -18)),
             gemini_api_key=data.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", ""),
-            gemini_model=data.get("gemini_model", "gemini-2.5-flash"),
+            gemini_model=default_gemini,
+            gemini_moments_model=data.get("gemini_moments_model", default_gemini),
             cloudflare_account_id=data.get("cloudflare_account_id") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
             cloudflare_api_token=data.get("cloudflare_api_token") or os.environ.get("CLOUDFLARE_API_TOKEN", ""),
             cloudflare_image_model=data.get("cloudflare_image_model", "@cf/black-forest-labs/flux-1-schnell"),
@@ -2436,11 +2443,109 @@ def find_best_moments(segments: list, n_clips: int, target_duration: float,
                 log(f"        region {i+1} failed: {str(e)[:160]}")
         if not all_moments:
             raise RuntimeError("all transcript regions failed to yield moments")
-        return _snap_and_dedupe_moments(all_moments, segments, n_clips, target_duration, on_step=log)
+        finals = _snap_and_dedupe_moments(all_moments, segments, n_clips, target_duration, on_step=log)
+        return _regenerate_hooks_per_range(finals, segments, cfg, on_step=log)
 
     # Short video / few clips: single call as before
     ms = _find_moments_single_call(segments, n_clips, target_duration, cfg)
-    return _snap_and_dedupe_moments(ms, segments, n_clips, target_duration, on_step=log)
+    finals = _snap_and_dedupe_moments(ms, segments, n_clips, target_duration, on_step=log)
+    # 2-pass: regenerate hook/title/hashtags from the EXACT post-snap range text
+    # so they can't drift from the actual clip content. Gracefully no-ops on per-
+    # moment failures (keeps the original hook from the first pass).
+    return _regenerate_hooks_per_range(finals, segments, cfg, on_step=log)
+
+
+def _regenerate_hooks_per_range(moments: list, segments: list, cfg,
+                                 on_step=None) -> list:
+    """For each moment, ask Gemini to rewrite the hook/title/hashtags using
+    ONLY the transcript inside [start, end]. Eliminates the common failure
+    where the original single-pass hook describes something that isn't in
+    the actual clip — typical Gemini 2.5 Flash hallucination at high
+    n_clips. Falls back silently to the original values if the per-range
+    call fails."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+
+    if not getattr(cfg, "gemini_api_key", ""):
+        return moments
+    log(f"      regenerating hooks from per-range text (2-pass, {len(moments)} calls)")
+    for i, m in enumerate(moments, 1):
+        range_text = " ".join(
+            t for s, e, t in segments
+            if e > m["start"] and s < m["end"]
+        ).strip()
+        if not range_text:
+            continue
+        # Cap the snippet — full-minute clips can be huge and we don't need
+        # every word for hook generation.
+        snippet = range_text[:3500]
+        old_hook = m.get("hook", "")
+        try:
+            new = _gemini_rewrite_hook(snippet, m.get("title", ""), cfg)
+        except Exception as e:
+            log(f"        clip {i}: hook regen failed ({str(e)[:120]}); keeping original")
+            continue
+        if new.get("hook"):
+            m["hook"] = new["hook"][:80]
+        if new.get("title"):
+            m["title"] = new["title"][:120]
+        if new.get("hashtags"):
+            m["hashtags"] = [str(h).lstrip("#").strip()
+                             for h in new["hashtags"] if h][:6]
+        log(f"        clip {i}: '{old_hook[:40]}' → '{m['hook'][:40]}'")
+    return moments
+
+
+def _gemini_rewrite_hook(range_text: str, prior_title: str, cfg) -> dict:
+    """Single Gemini call: 'here's the EXACT clip text, write hook/title/tags
+    that describe THIS text specifically'. Returns a dict with hook/title/
+    hashtags keys (may be missing if the model omitted them)."""
+    prompt = (
+        f"Du schreibst Hook + Titel + Hashtags für EINEN konkreten YouTube-Short.\n\n"
+        f"=== EXAKTER CLIP-INHALT (das ist alles was im Video gesagt wird) ===\n"
+        f"{range_text}\n"
+        f"=== ENDE ===\n\n"
+        f"Wichtig: Hook und Titel müssen SICH DIREKT AUF DIESEN TEXT BEZIEHEN — "
+        f"nicht auf das große Thema des Podcasts, sondern auf das was in DIESEM "
+        f"30-60 Sekunden-Clip wirklich gesagt wird. KEINE Halluzination, KEINE "
+        f"erfundenen Details, KEINE allgemeinen Aussagen.\n\n"
+        f"Liefere als JSON-Objekt (kein Array, kein Codeblock):\n"
+        f"{{\n"
+        f'  "hook": "<max 60 Zeichen, knackiger Aufmacher der den Clip-Kern '
+        f'wiedergibt — z.B. eine zentrale Aussage daraus, eine Frage die der '
+        f'Clip beantwortet, oder eine schockierende Stelle daraus>",\n'
+        f'  "title": "<60-70 Zeichen YouTube-Titel mit Emoji am Ende>",\n'
+        f'  "hashtags": ["<3-5 deutsche Tags ohne #>"]\n'
+        f"}}\n\n"
+        f"Antworte NUR mit dem JSON-Objekt."
+    )
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.6,
+            "maxOutputTokens": 400,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{cfg.gemini_model}:generateContent")
+    data = _gemini_post(url, {"key": cfg.gemini_api_key}, body, retries=2)
+    candidate = data["candidates"][0]
+    parts = candidate.get("content", {}).get("parts", []) or []
+    text = "\n".join(p.get("text", "") for p in parts
+                     if not p.get("thought")).strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    s_idx, e_idx = text.find("{"), text.rfind("}")
+    if s_idx == -1 or e_idx <= s_idx:
+        raise RuntimeError(f"no JSON object in response: {text[:200]}")
+    return json.loads(text[s_idx:e_idx + 1])
 
 
 def _find_moments_single_call(segments: list, n_clips: int, target_duration: float,
@@ -2508,7 +2613,11 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
+    # Use the dedicated moments model (defaults to gemini_model). Allows
+    # setting gemini-2.5-pro in config.json for noticeably better picks
+    # without burning Pro quota on every other Gemini call.
+    moments_model = getattr(cfg, "gemini_moments_model", "") or cfg.gemini_model
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{moments_model}:generateContent"
     data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
     try:
         candidate = data["candidates"][0]
@@ -2630,7 +2739,7 @@ def _snap_and_dedupe_moments(cleaned: list, segments: list, n_clips: int,
             overlap = max(0.0, min(m["end"], prev["end"]) - max(m["start"], prev["start"]))
             m_dur = max(0.1, m["end"] - m["start"])
             p_dur = max(0.1, prev["end"] - prev["start"])
-            if overlap / min(m_dur, p_dur) > 0.7:
+            if overlap / min(m_dur, p_dur) > 0.50:
                 is_dup = True
                 if on_step:
                     try:
@@ -2723,6 +2832,16 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
             })
     src_dur = segments[-1][1] if segments else 0.0
     step(f"      transcript: {len(segments)} segments, source ≈ {src_dur:.0f}s")
+
+    # Auto-cap n_clips for short sources. A 60s video can't yield 5 distinct
+    # viral moments — Gemini will return overlapping picks that even dedupe
+    # can't fully separate. Floor the asked count at what the source can
+    # plausibly support: roughly one distinct clip per 60s of content.
+    capped = min(n_clips, max(1, int(src_dur // 60)))
+    if capped < n_clips:
+        step(f"      ⚠️  short source ({src_dur:.0f}s) — capping {n_clips} → {capped} clips")
+        step(f"      (under ~60s per clip Gemini just returns overlapping picks)")
+        n_clips = capped
 
     # [MULTI 3/4] Moments (cached in state metadata; small, structured)
     if state and state.is_done(Step.MULTI_MOMENTS):
@@ -3278,6 +3397,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 n_segments=clip_segments,
                 seg_duration=seg_dur,
                 samples_per_segment=int(job.get("reframe_samples_per_seg", 3)),
+                speaker_detection=bool(job.get("speaker_detection", False)),
                 on_step=step,
             )
             if clip_segments > 1:

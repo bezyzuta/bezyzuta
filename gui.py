@@ -89,6 +89,7 @@ def generate(
     auto_reframe: bool,
     reframe_v2: bool,
     reframe_samples_per_seg: int,
+    speaker_detection: bool,
     enable_voice: bool,
     voice_id: str,
     enable_music: bool,
@@ -153,6 +154,7 @@ def generate(
             "auto_reframe": bool(auto_reframe),
             "reframe_v2": bool(reframe_v2),
             "reframe_samples_per_seg": int(reframe_samples_per_seg),
+            "speaker_detection": bool(speaker_detection),
             "resume": bool(resume_enabled),
             "log_level": str(log_level or "INFO"),
             "youtube_metadata": bool(youtube_metadata),
@@ -384,6 +386,14 @@ def build_app() -> gr.Blocks:
                     label="Samples pro Segment (v2)",
                     info="Mehr Samples = stabiler, aber langsamer. 3 ist der Sweet Spot.",
                 )
+            speaker_detection = gr.Checkbox(
+                value=False,
+                label="🎤 Active Speaker Detection (Crop folgt wer gerade redet)",
+                info=("Für Podcasts mit ≥2 Personen: pro Segment wird per MediaPipe-FaceMesh "
+                      "die Mundöffnung jedes Gesichts gemessen — wer den Mund am offensten "
+                      "hat = aktiver Speaker, dorthin wird gecroppt. Wechselt automatisch "
+                      "wenn der andere zu reden anfängt. Braucht Reframe v2."),
+            )
             voice_id = gr.Dropdown(
                 choices=VOICES,
                 value=VOICES[0][1],
@@ -659,7 +669,7 @@ def build_app() -> gr.Blocks:
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, scene_pick_mode, manual_ranges, auto_reframe,
-                reframe_v2, reframe_samples_per_seg,
+                reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, voice_id,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,

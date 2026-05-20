@@ -55,6 +55,10 @@ class Detection:
     detector: str             # "yolo" | "insightface" | "mediapipe"
     n_faces: int = 1          # how many faces the detector found in the frame
     relative_top_face_area: float = 1.0  # largest / sum-of-all-faces, 0..1
+    # Mouth-Aspect-Ratio for active-speaker detection. NaN = not measured
+    # (speaker detection disabled or FaceMesh unavailable). Higher MAR
+    # roughly means the mouth is more open ≈ the person is likely speaking.
+    mouth_open: float = float("nan")
 
 
 @dataclass
@@ -70,8 +74,85 @@ class SegmentResult:
 
 # ────────────────── Detector adapters (thin wrappers) ──────────────────
 
+# Lazy-init holder for MediaPipe FaceMesh. False = tried and failed, None =
+# not tried yet, otherwise the loaded mesh instance.
+_FACE_MESH: object | None = None
 
-def _detect_faces_in_frame(thumb_path: Path) -> tuple[list[Detection], str]:
+
+def _get_face_mesh():
+    """Lazy-load MediaPipe FaceMesh for active-speaker detection via the
+    mouth-aspect-ratio of each detected face. Falls back to None on import
+    error or init failure; callers must handle 'no mesh available' gracefully."""
+    global _FACE_MESH
+    if _FACE_MESH is False:
+        return None
+    if _FACE_MESH is not None:
+        return _FACE_MESH
+    try:
+        import mediapipe as mp  # type: ignore
+    except Exception:
+        _FACE_MESH = False
+        return None
+    try:
+        _FACE_MESH = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=4,
+            refine_landmarks=False,
+            min_detection_confidence=0.3,
+        )
+    except Exception:
+        _FACE_MESH = False
+        return None
+    return _FACE_MESH
+
+
+# FaceMesh landmark indices for the inner lip + mouth corners. MAR is
+# computed as vertical_inner_lip_gap / horizontal_mouth_width. Empirically
+# MAR > ~0.05 means "mouth visibly open", > ~0.10 means "speaking strongly".
+_LIP_TOP_INNER    = 13
+_LIP_BOTTOM_INNER = 14
+_MOUTH_LEFT       = 61
+_MOUTH_RIGHT      = 291
+
+
+def _measure_mouths(img, boxes: list[tuple[float, float, float, float, float]]
+                    ) -> list[float]:
+    """For each (x1,y1,x2,y2,score) face box, return the MAR. NaN if FaceMesh
+    couldn't find a mesh that sits inside that box."""
+    mesh = _get_face_mesh()
+    if not mesh or not boxes:
+        return [float("nan")] * len(boxes)
+    try:
+        import cv2  # type: ignore
+    except Exception:
+        return [float("nan")] * len(boxes)
+    h, w = img.shape[:2]
+    mars: list[float] = [float("nan")] * len(boxes)
+    try:
+        results = mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    except Exception:
+        return mars
+    mfl = getattr(results, "multi_face_landmarks", None) or []
+    for landmarks in mfl:
+        lm = landmarks.landmark
+        # Use mesh center (avg of all landmarks) to find which face box this
+        # mesh belongs to. FaceMesh sometimes detects faces that our face
+        # detector missed and vice versa — we only attach MARs to boxes we
+        # already know about.
+        cx = sum(p.x for p in lm) / len(lm) * w
+        cy = sum(p.y for p in lm) / len(lm) * h
+        for bi, (x1, y1, x2, y2, _) in enumerate(boxes):
+            if x1 <= cx <= x2 and y1 <= cy <= y2:
+                vert = abs(lm[_LIP_TOP_INNER].y - lm[_LIP_BOTTOM_INNER].y) * h
+                horiz = max(1.0, abs(lm[_MOUTH_LEFT].x - lm[_MOUTH_RIGHT].x) * w)
+                mars[bi] = float(vert / horiz)
+                break
+    return mars
+
+
+def _detect_faces_in_frame(thumb_path: Path,
+                           measure_speaker: bool = False
+                           ) -> tuple[list[Detection], str]:
     """Run the full detector cascade against one frame, returning *all*
     detected faces (not just the largest) plus which detector handled it.
 
@@ -121,7 +202,8 @@ def _detect_faces_in_frame(thumb_path: Path) -> tuple[list[Detection], str]:
         except Exception:
             boxes = []
         if boxes:
-            return (_boxes_to_detections(boxes, w, "yolo"), "yolo")
+            mars = _measure_mouths(img, boxes) if measure_speaker else None
+            return (_boxes_to_detections(boxes, w, "yolo", mars), "yolo")
 
     # ── InsightFace (RetinaFace, highest accuracy when present) ──
     app = _get_insightface()
@@ -139,7 +221,8 @@ def _detect_faces_in_frame(thumb_path: Path) -> tuple[list[Detection], str]:
             except Exception:
                 continue
         if boxes:
-            return (_boxes_to_detections(boxes, w, "insightface"), "insightface")
+            mars = _measure_mouths(img, boxes) if measure_speaker else None
+            return (_boxes_to_detections(boxes, w, "insightface", mars), "insightface")
 
     # ── MediaPipe (CPU fallback, always present) ──
     fd = _get_mediapipe_detector()
@@ -162,7 +245,8 @@ def _detect_faces_in_frame(thumb_path: Path) -> tuple[list[Detection], str]:
             except Exception:
                 continue
         if boxes:
-            return (_boxes_to_detections(boxes, w, "mediapipe"), "mediapipe")
+            mars = _measure_mouths(img, boxes) if measure_speaker else None
+            return (_boxes_to_detections(boxes, w, "mediapipe", mars), "mediapipe")
         # Detector ran but found nothing — distinguishable from "no detector".
         return [], "mediapipe-empty"
 
@@ -174,16 +258,18 @@ def _boxes_to_detections(
     boxes: list[tuple[float, float, float, float, float]],
     frame_w: int,
     detector: str,
+    mars: list[float] | None = None,
 ) -> list[Detection]:
     """Convert (x1,y1,x2,y2,score) tuples into Detection objects with
-    normalized center_x and a derived confidence."""
+    normalized center_x and a derived confidence. `mars` is an optional
+    parallel list of mouth-aspect-ratios for active-speaker detection."""
     if not boxes:
         return []
     areas = [max(0.0, (b[2] - b[0]) * (b[3] - b[1])) for b in boxes]
     max_area = max(areas) or 1.0
     total_area = sum(areas) or 1.0
     out: list[Detection] = []
-    for (x1, _y1, x2, _y2, score), area in zip(boxes, areas):
+    for i, ((x1, _y1, x2, _y2, score), area) in enumerate(zip(boxes, areas)):
         center_x = (x1 + x2) / 2.0 / max(1, frame_w)
         # Confidence blends the detector's own score with relative size.
         # A 200px host face anchors crop position more than a 20px crowd face.
@@ -196,6 +282,7 @@ def _boxes_to_detections(
             detector=detector,
             n_faces=len(boxes),
             relative_top_face_area=area / total_area,
+            mouth_open=(mars[i] if mars and i < len(mars) else float("nan")),
         ))
     return out
 
@@ -216,6 +303,9 @@ def _extract_thumb(source: Path, t: float, out_path: Path, width: int = 640) -> 
         return False
 
 
+import math
+
+
 def _pick_subject_offset(detections: list[Detection], source_aspect: float) -> tuple[float, float, bool]:
     """Pick the offset from a list of detections in one frame.
 
@@ -224,12 +314,14 @@ def _pick_subject_offset(detections: list[Detection], source_aspect: float) -> t
     `multi_face=True` means there are >=2 comparable-size faces (likely
     a podcast/interview layout) and the caller should be conservative about
     chasing the largest one off-center.
+
+    When mouth-aspect-ratio data is present on multi-face frames, we prefer
+    the face that's actively speaking (mouth most open) over the largest
+    one. Falls back to the largest-face heuristic when MAR isn't available
+    or all faces have similar MAR (nobody clearly speaking).
     """
     if not detections:
         return (0.5, 0.0, False)
-
-    # Pick the strongest (largest * score) face as primary.
-    primary = max(detections, key=lambda d: d.confidence)
 
     # Multi-face heuristic: at least one other face with >= 60% of the
     # primary's relative area.
@@ -238,6 +330,25 @@ def _pick_subject_offset(detections: list[Detection], source_aspect: float) -> t
         sizes = sorted([d.relative_top_face_area for d in detections], reverse=True)
         if len(sizes) >= 2 and sizes[1] >= 0.6 * sizes[0]:
             multi = True
+
+    # Speaker-aware face pick (only meaningful when multi-face AND we have
+    # MAR data). If one face has noticeably higher MAR than the others by at
+    # least 0.03, that's the active speaker — pick them. Otherwise fall back
+    # to confidence (size × detector score).
+    primary = None
+    if multi:
+        mars = [(d.mouth_open, d) for d in detections
+                if not math.isnan(d.mouth_open)]
+        if len(mars) >= 2:
+            mars.sort(key=lambda t: t[0], reverse=True)
+            top_mar, top_face = mars[0]
+            runner_mar, _ = mars[1]
+            # Require a clear margin AND a minimum absolute openness, so
+            # closed mouths at MAR ~0.02 don't fight over millimeters.
+            if top_mar - runner_mar > 0.03 and top_mar > 0.05:
+                primary = top_face
+    if primary is None:
+        primary = max(detections, key=lambda d: d.confidence)
 
     # Convert face center in source frame to crop offset in 9:16 window.
     # r = visible width fraction of the source we keep after cropping to 9:16.
@@ -249,9 +360,13 @@ def _pick_subject_offset(detections: list[Detection], source_aspect: float) -> t
     raw = (primary.center_x - r / 2.0) / max(0.001, (1.0 - r))
     offset = max(0.0, min(1.0, raw))
 
-    # If multi-face, pull toward 0.5 a bit so we don't crop the other person
-    # entirely. The closer the primary is to the edge, the more we pull back.
-    if multi:
+    # If multi-face AND we did NOT pick via speaker detection, pull toward
+    # 0.5 a bit so the other person isn't cropped out entirely. When speaker
+    # detection picked a clear winner, don't damp — chase the speaker.
+    speaker_picked = (primary is not None
+                      and not math.isnan(primary.mouth_open)
+                      and primary.mouth_open > 0.05)
+    if multi and not speaker_picked:
         offset = 0.5 + 0.65 * (offset - 0.5)
 
     return (offset, primary.confidence, multi)
@@ -266,9 +381,12 @@ def _analyze_segment(
     *,
     n_samples: int,
     source_aspect: float,
+    speaker_detection: bool,
     log: Callable[[str], None],
 ) -> SegmentResult:
-    """Sample N frames across a segment, detect faces, pick a weighted offset."""
+    """Sample N frames across a segment, detect faces, pick a weighted offset.
+    When `speaker_detection=True`, additionally measure mouth-aspect-ratio
+    per face so multi-face frames can prefer whoever is actively speaking."""
     # Sample at evenly-spaced times within the segment, skipping the very
     # first/last 5% to avoid hard cuts.
     if n_samples <= 1:
@@ -289,7 +407,7 @@ def _analyze_segment(
         thumb = work_dir / f"reframe_v2_seg{seg_idx:02d}_s{j}.jpg"
         if not _extract_thumb(source, t, thumb, width=640):
             continue
-        dets, label = _detect_faces_in_frame(thumb)
+        dets, label = _detect_faces_in_frame(thumb, measure_speaker=speaker_detection)
         last_label = label
         if not dets:
             continue
@@ -399,6 +517,7 @@ def detect_crop_offsets_v2(
     n_segments: int = 1,
     seg_duration: float | None = None,
     samples_per_segment: int = 3,
+    speaker_detection: bool = False,
     on_step: Callable[[str], None] | None = None,
 ) -> list[tuple[float, float]]:
     """Run improved per-segment face tracking. Always returns a list of
@@ -446,6 +565,9 @@ def detect_crop_offsets_v2(
 
     samples_per_segment = max(1, min(int(samples_per_segment), 7))
 
+    if speaker_detection:
+        log_step(f"      reframe-v2: speaker-detection ON (MediaPipe FaceMesh)")
+
     results: list[SegmentResult] = []
     for i in range(n_segments):
         seg_start = i * seg_duration
@@ -453,6 +575,7 @@ def detect_crop_offsets_v2(
             clip, seg_start, seg_duration, work_dir, i,
             n_samples=samples_per_segment,
             source_aspect=source_aspect,
+            speaker_detection=speaker_detection,
             log=log_step,
         )
         results.append(r)

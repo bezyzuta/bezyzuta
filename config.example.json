@@ -5,6 +5,8 @@
   "elevenlabs_model": "eleven_multilingual_v2",
   "gemini_api_key": "AIza_replace_me_or_use_GEMINI_API_KEY_env",
   "gemini_model": "gemini-2.5-flash",
+  "gemini_moments_model": "gemini-2.5-flash",
+  "_comment_gemini_moments": "Set to 'gemini-2.5-pro' for noticeably better multi-clip moment picks at the cost of more free-tier quota per run. Defaults to gemini_model when empty.",
   "cloudflare_account_id": "leave_empty_or_paste_account_id_from_dash.cloudflare.com",
   "cloudflare_api_token": "leave_empty_or_paste_workers_ai_token",
   "cloudflare_image_model": "@cf/black-forest-labs/flux-1-schnell",
