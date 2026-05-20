@@ -230,6 +230,7 @@
           <li><a class="nav-link" href="#ueber-uns">Über uns</a></li>
           <li><a class="nav-link" href="#leistungen">Leistungen</a></li>
           <li><a class="nav-link" href="#so-arbeiten-wir">So arbeiten wir</a></li>
+          <li><a class="nav-link" href="#team">Team</a></li>
           <li><a class="nav-link" href="#kontakt">Kontakt</a></li>
         </ul>
 
@@ -258,6 +259,7 @@
           <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#ueber-uns">Über uns</a></li>
           <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#leistungen">Leistungen</a></li>
           <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#so-arbeiten-wir">So arbeiten wir</a></li>
+          <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#team">Team</a></li>
           <li><a class="block rounded-xl px-4 py-3 hover:bg-cream-200" href="#kontakt">Kontakt</a></li>
           <li class="pt-2">
             <a href="#kontakt" class="block w-full text-center rounded-full bg-navy-700 px-5 py-3 text-cream-100 hover:bg-navy-800 transition-colors">Kontakt aufnehmen</a>
@@ -1420,6 +1422,7 @@
             <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#ueber-uns">Über uns</a></li>
             <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#leistungen">Leistungen</a></li>
             <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#so-arbeiten-wir">So arbeiten wir</a></li>
+            <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#team">Team</a></li>
             <li><a class="text-cream-100/85 hover:text-cream-100 transition-colors" href="#kontakt">Kontakt</a></li>
           </ul>
         </div>
@@ -1536,7 +1539,7 @@
     document.querySelectorAll('.reveal, .reveal-group').forEach(el => io.observe(el));
 
     // ===== Active-Nav-Link beim Scrollen =====
-    const sections = ['top', 'ueber-uns', 'leistungen', 'so-arbeiten-wir', 'kontakt']
+    const sections = ['top', 'ueber-uns', 'leistungen', 'so-arbeiten-wir', 'team', 'kontakt']
       .map(id => document.getElementById(id)).filter(Boolean);
     const navLinks = document.querySelectorAll('.nav-link');
     const sectionObserver = new IntersectionObserver((entries) => {
