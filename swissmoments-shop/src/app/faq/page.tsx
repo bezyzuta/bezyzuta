@@ -30,7 +30,7 @@ const faqs = [
   },
   {
     q: "Kann ich das E-Book zurückgeben?",
-    a: "Bei digitalen Produkten ist eine klassische Rückgabe nicht möglich. Wenn du aber nach dem Lesen wirklich unzufrieden bist, melde dich innerhalb von 14 Tagen — wir finden eine faire Lösung, versprochen.",
+    a: "Mit dem Kauf eines digitalen Produkts verzichtest du auf das gesetzliche Rückgaberecht — die Datei ist nach dem Download sofort bei dir und kann nicht wirklich «zurückgegeben» werden. Solltest du trotzdem unzufrieden sein, melde dich innerhalb von 14 Tagen bei uns. Wir finden gemeinsam eine faire Lösung, versprochen.",
   },
   {
     q: "Ist das E-Book auf Schweizerdeutsch oder Hochdeutsch?",
