@@ -1,11 +1,14 @@
 import type { Product } from "@/types";
 
 /**
- * Startsortiment — 5 Beispiel-E-Books, die später aus Shopify gezogen werden.
+ * Startsortiment — der Produkt-Katalog ist file-based.
  *
- * Wenn Shopify als Datenquelle aktiviert ist (siehe `src/lib/shopify.ts`),
- * können diese Daten durch einen `await fetchProducts()` ersetzt werden.
- * Bis dahin sind sie statisch und werden zur Buildtime serviert.
+ * Vorteile: keine zusätzliche DB-Tabelle nötig, sofort SEO-fähig (statisch
+ * generiert), einfach via Git zu versionieren. Bei Änderungen einfach
+ * deployen.
+ *
+ * Die zugehörige PDF-Datei wird über `products_files.slug = <slug>` in der
+ * DB verknüpft (Admin-Upload), nicht hier hardcodiert.
  */
 export const products: Product[] = [
   {

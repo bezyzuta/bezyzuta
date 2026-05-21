@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { Menu, ShoppingBag, X } from "lucide-react";
 import { useCart } from "@/lib/cart-context";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,8 @@ const nav = [
 export function Header() {
   const { totalQuantity, openCart } = useCart();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const pathname = usePathname();
+  if (pathname?.startsWith("/admin")) return null;
 
   return (
     <header className="sticky top-0 z-40 border-b border-brand-ink/10 bg-brand-cream/85 backdrop-blur-md">

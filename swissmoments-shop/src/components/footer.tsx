@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Instagram, Mail } from "lucide-react";
 
 function TikTokIcon({ className }: { className?: string }) {
@@ -15,6 +18,8 @@ function TikTokIcon({ className }: { className?: string }) {
 }
 
 export function Footer() {
+  const pathname = usePathname();
+  if (pathname?.startsWith("/admin")) return null;
   return (
     <footer className="mt-24 border-t border-brand-ink/10 bg-brand-cream-dark/40">
       <div className="container py-14">

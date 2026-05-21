@@ -1,104 +1,120 @@
 # SwissMoments Shop
 
-Moderne, nostalgische E-Book-Shop-Website für **SwissMoments** – Schweizer
-Geschichten aus den 70ern, 80ern und 90ern.
+Komplette E-Commerce-Site für **SwissMoments** — nostalgische Schweizer E-Books
+der 70er, 80er und 90er. **Voll self-hosted**, kein Shopify nötig.
 
-Gebaut mit **Next.js 15 (App Router), TypeScript, Tailwind CSS, Radix UI,
-Framer Motion** und Lucide Icons. Bereit für eine 1-Klick-Anbindung an
-**Shopify** (Storefront API oder Buy Buttons).
+Stack: **Next.js 15** · TypeScript · Tailwind · Stripe Checkout · Supabase
+(DB + Storage) · Resend (E-Mail) · Radix UI · Framer Motion.
 
 ---
 
-## Schnellstart
+## Schnellstart (lokal)
 
 ```bash
 cd swissmoments-shop
+cp .env.example .env.local       # dann ausfüllen (siehe SELFHOST_SETUP.md)
 npm install
 npm run dev
 ```
 
-Öffne dann <http://localhost:3000>.
+→ <http://localhost:3000> für den Shop · <http://localhost:3000/admin> für
+das Backoffice.
 
-## Build & Deploy (Vercel)
+## Build & Deploy auf Vercel
 
 ```bash
 npm run build
-npm run start
 ```
 
-Für Vercel reicht:
-
-1. Repository auf <https://vercel.com/new> verbinden.
+Auf Vercel:
+1. Repo verbinden.
 2. **Root Directory** auf `swissmoments-shop` setzen (Monorepo-Subfolder).
-3. **Environment Variables** (optional, später für Shopify) hinzufügen — siehe
-   `.env.example`.
-4. Deploy klicken. Fertig.
+3. Alle Environment Variables aus `.env.example` setzen (Stripe, Supabase,
+   Resend, ADMIN_PASSWORD, SESSION_SECRET).
+4. Deploy klicken.
+5. Stripe-Webhook auf `https://<deine-domain>/api/webhook/stripe` setzen
+   (siehe `SELFHOST_SETUP.md`).
+
+## Was du bekommst
+
+### Shop
+- Homepage mit Hero, Featured-Produkten, About, Testimonials
+- `/shop` mit Filter (Jahrzehnt, Preis) — URL-synchronisiert
+- `/shop/[slug]` Produkt-Detail mit Cross-Sell + Schema.org `Book`-Markup
+- `/ueber-uns`, `/faq` (mit FAQPage-JSON-LD)
+- 404, `/sitemap.xml`, `/robots.txt`
+- Warenkorb mit `localStorage`-Persistenz + Mini-Cart-Sidebar
+- Mobile-First, Brand-Style: Rot/Creme/Gold, Playfair + Inter via `next/font`
+
+### Self-hosted Checkout
+- **Stripe Checkout** — Karten, TWINT, Apple/Google Pay (Locale `de`)
+- Webhook-basierte Order-Fulfillment in Supabase
+- Bestätigungs-Mail via **Resend** mit signierten Download-Links (7 Tage)
+- `/order/success` zeigt die Downloads direkt nach dem Kauf an
+- `/order/cancel` für abgebrochene Checkouts
+
+### Admin (eingebaut)
+- `/admin/login` — Passwort-basiertes Login (1 Operator)
+- `/admin` — Dashboard: Umsatz, Bestellungen, fehlende PDFs
+- `/admin/orders` — Letzte 100 Bestellungen mit "Email neu senden"-Button
+- `/admin/products` — Pro Produkt PDF hochladen / ersetzen
 
 ## Projekt-Struktur
 
 ```
-swissmoments-shop/
-├── src/
-│   ├── app/
-│   │   ├── page.tsx              # Homepage
-│   │   ├── shop/page.tsx         # Shop mit Filter
-│   │   ├── shop/[slug]/page.tsx  # Produkt-Detailseite
-│   │   ├── ueber-uns/page.tsx    # Über uns
-│   │   ├── faq/page.tsx          # FAQ mit Schema.org Markup
-│   │   ├── layout.tsx            # Globales Layout + SEO
-│   │   ├── sitemap.ts            # /sitemap.xml
-│   │   ├── robots.ts             # /robots.txt
-│   │   └── globals.css           # Tailwind + Brand-Variablen
-│   ├── components/
-│   │   ├── header.tsx / footer.tsx
-│   │   ├── hero.tsx / featured-products.tsx / about-section.tsx / testimonials.tsx
-│   │   ├── product-card.tsx
-│   │   ├── add-to-cart-button.tsx
-│   │   ├── cart-sidebar.tsx      # Mini-Cart (Radix Dialog)
-│   │   ├── shop-page-content.tsx # Client-Komponente mit Filtern
-│   │   └── ui/                   # button / accordion (shadcn-Style)
-│   ├── lib/
-│   │   ├── products.ts           # 6 Beispiel-E-Books (austauschbar)
-│   │   ├── shopify.ts            # Storefront-API-Adapter (Stub)
-│   │   ├── cart-context.tsx      # React Context + localStorage
-│   │   └── utils.ts              # cn() + CHF-Formatter
-│   └── types/index.ts
-├── public/
-├── tailwind.config.ts            # Brand-Farben (Rot #C8102E, Creme, Gold)
-├── next.config.ts
-└── SHOPIFY_INTEGRATION.md        # Schritt-für-Schritt-Anleitung
+src/
+├── app/
+│   ├── (public pages)/         # Home, shop, ueber-uns, faq
+│   ├── order/success|cancel/   # Post-Checkout
+│   ├── admin/
+│   │   ├── login/              # Login (kein Nav)
+│   │   └── (authed)/           # Geschützte Pages mit Nav
+│   └── api/
+│       ├── checkout/           # POST → Stripe Session
+│       ├── webhook/stripe/     # Fulfillment
+│       └── admin/{login,logout,upload,resend-email}
+├── components/
+│   ├── (shop UI)/
+│   ├── admin/
+│   └── ui/                     # button, accordion (shadcn-style)
+├── lib/
+│   ├── stripe.ts               # Server-only Stripe Client
+│   ├── supabase.ts             # Service-Role + signed download URLs
+│   ├── email.ts                # Resend wrapper (Bestätigungsmail)
+│   ├── admin-auth.ts           # Cookie-basierte Admin-Auth
+│   ├── checkout.ts             # Frontend → /api/checkout
+│   ├── products.ts             # File-based Katalog (6 E-Books)
+│   ├── cart-context.tsx        # localStorage Warenkorb
+│   └── utils.ts
+├── types/index.ts
+└── supabase/schema.sql         # DB-Setup (1x in Supabase laufen lassen)
 ```
 
-## Features
+## Datenfluss eines Verkaufs
 
-- ✅ Vollständig responsiv (Mobile-First für TikTok-Traffic)
-- ✅ Warenkorb mit `localStorage`-Persistenz und Mini-Cart-Sidebar
-- ✅ Filter nach Jahrzehnt (70er/80er/90er) und Preis
-- ✅ Produkt-Detailseite mit Cross-Sell ("Passende Produkte")
-- ✅ SEO: OpenGraph, Twitter Cards, JSON-LD (Organization, Book, FAQPage)
-- ✅ Sitemap & robots.txt automatisch generiert
-- ✅ Framer Motion-Animationen (sanft, nicht aufdringlich)
-- ✅ Playfair Display (Serif) + Inter (Sans) via `next/font` (kein CLS)
-- ✅ Next.js Image Optimization (Unsplash als Demo-CDN, Shopify CDN
-  vorkonfiguriert)
-- ✅ Shopify-Integration vorbereitet — siehe `SHOPIFY_INTEGRATION.md`
+```
+Kunde klickt "Sicher zur Kasse"
+  → POST /api/checkout (validiert Slug + Preis serverseitig)
+  → Stripe Checkout Session erstellt
+  → Kunde zahlt auf Stripe-Domain
+  → Stripe redirect /order/success?session_id=...
+  → Stripe POSTet /api/webhook/stripe (signature-verified)
+       → Order + order_items in Supabase
+       → Signierte Download-URLs aus Storage
+       → Bestätigungsmail via Resend
+```
 
-## Anpassung
+Die Success-Page zieht direkt von Stripe + Storage — falls der Webhook
+hinterherhinkt, sieht der Kunde trotzdem alles.
 
-**Produkte ändern:** `src/lib/products.ts` — füge / ändere die Einträge im
-`products`-Array. Sobald Shopify aktiv ist, kannst du dieses Array durch
-einen Storefront-API-Fetch ersetzen.
+## Setup
 
-**Farben & Fonts:** `tailwind.config.ts` (Sektion `colors.brand` und
-`fontFamily`) sowie die CSS-Variablen in `src/app/globals.css`.
+→ Detaillierte Schritt-für-Schritt-Anleitung in
+[`SELFHOST_SETUP.md`](./SELFHOST_SETUP.md).
 
-**Texte:** Direkt in den jeweiligen Page-Komponenten — Homepage in
-`src/app/page.tsx`, FAQ in `src/app/faq/page.tsx`, etc.
+## Anpassen
 
-## Nächste Schritte
-
-1. Lies `SHOPIFY_INTEGRATION.md` und verbinde deinen Shopify-Store.
-2. Ersetze die Unsplash-Cover durch deine echten E-Book-Cover (lege sie in
-   `public/covers/` und passe `cover` in `src/lib/products.ts` an).
-3. Trage deine echten Social-Media-Links in `src/components/footer.tsx` ein.
-4. Optional: Newsletter-Formular (z.B. Mailchimp / Brevo) hinzufügen.
+- **Produkte:** `src/lib/products.ts` (1 Eintrag pro E-Book)
+- **Brand-Farben/Fonts:** `tailwind.config.ts` + `src/app/globals.css`
+- **Texte:** in den jeweiligen Page-Dateien unter `src/app/`
+- **Email-Design:** `src/lib/email.ts` (inlined HTML, einfach editierbar)

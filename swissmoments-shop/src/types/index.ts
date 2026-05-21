@@ -18,12 +18,6 @@ export interface Product {
   cover: string;
   /** Anzahl Seiten / Format / etc. — kleine Meta-Liste auf Detailseite. */
   meta: { label: string; value: string }[];
-  /**
-   * Shopify Variant ID (z.B. "gid://shopify/ProductVariant/12345").
-   * Wird verwendet, sobald die Shopify-Integration aktiviert ist.
-   * Bis dahin leer lassen — der Checkout fällt dann auf einen Demo-Flow zurück.
-   */
-  shopifyVariantId?: string;
 }
 
 export interface CartItem {
@@ -32,5 +26,4 @@ export interface CartItem {
   cover: string;
   price: number;
   quantity: number;
-  shopifyVariantId?: string;
 }

@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useCart } from "@/lib/cart-context";
 import { Button } from "@/components/ui/button";
 import { formatPriceCHF } from "@/lib/utils";
-import { createShopifyCheckout, isShopifyEnabled } from "@/lib/shopify";
+import { startStripeCheckout } from "@/lib/checkout";
 
 export function CartSidebar() {
   const {
@@ -23,22 +23,15 @@ export function CartSidebar() {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   async function handleCheckout() {
+    if (items.length === 0) return;
     setCheckoutLoading(true);
     try {
-      // Wenn Shopify konfiguriert ist UND alle Items eine Variant ID haben,
-      // erstellen wir einen echten Shopify-Checkout und leiten weiter.
-      if (isShopifyEnabled()) {
-        const url = await createShopifyCheckout(items);
-        if (url) {
-          window.location.href = url;
-          return;
-        }
-      }
-
-      // Demo-Fallback solange Shopify nicht angebunden ist —
-      // einfacher Hinweis, statt einen halbfertigen Flow zu zeigen.
+      const url = await startStripeCheckout(items);
+      window.location.href = url;
+    } catch (err) {
+      console.error(err);
       alert(
-        "Demo-Modus: Sobald Shopify angebunden ist, geht es hier direkt zum sicheren Checkout. Siehe SHOPIFY_INTEGRATION.md.",
+        "Der Checkout konnte gerade nicht gestartet werden. Bitte versuche es in einem Moment nochmal.",
       );
     } finally {
       setCheckoutLoading(false);

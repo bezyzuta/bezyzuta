@@ -65,7 +65,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
           cover: product.cover,
           price: product.price,
           quantity: 1,
-          shopifyVariantId: product.shopifyVariantId,
         },
       ];
     });
