@@ -64,7 +64,7 @@ const organizationJsonLd = {
   url: siteUrl,
   description:
     "Nostalgische E-Books über die Schweiz der 70er, 80er und 90er Jahre.",
-  sameAs: ["https://www.tiktok.com/@swissmoments"],
+  sameAs: ["https://www.tiktok.com/@swissmomentsch"],
 };
 
 export default function RootLayout({

@@ -74,11 +74,11 @@ export default function AboutPage() {
         <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
           <Button asChild variant="gold" size="lg">
             <a
-              href="https://www.tiktok.com/@swissmoments"
+              href="https://www.tiktok.com/@swissmomentsch"
               target="_blank"
               rel="noreferrer noopener"
             >
-              @swissmoments auf TikTok
+              @swissmomentsch auf TikTok
             </a>
           </Button>
           <Button

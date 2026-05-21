@@ -38,7 +38,7 @@ export function Footer() {
             </p>
             <div className="mt-5 flex items-center gap-3">
               <a
-                href="https://www.tiktok.com/@swissmoments"
+                href="https://www.tiktok.com/@swissmomentsch"
                 target="_blank"
                 rel="noreferrer noopener"
                 aria-label="SwissMoments auf TikTok"
