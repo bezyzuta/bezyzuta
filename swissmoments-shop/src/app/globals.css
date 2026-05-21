@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light mode — warm cream paper */
+    --background: 38 60% 95%;          /* #F8F1E3 cream */
+    --foreground: 0 0% 17%;            /* #2C2C2C ink */
+    --muted: 38 30% 88%;
+    --muted-foreground: 0 0% 35%;
+    --border: 38 25% 82%;
+    --ring: 352 86% 42%;               /* brand red */
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 0 0% 10%;
+    --foreground: 38 40% 92%;
+    --muted: 0 0% 18%;
+    --muted-foreground: 38 20% 75%;
+    --border: 0 0% 22%;
+    --ring: 352 86% 55%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  /* Subtle paper texture overlay used on hero / about sections */
+  .paper-grain {
+    background-image: var(--tw-bg-image, radial-gradient(rgba(44, 44, 44, 0.04) 1px, transparent 1px));
+    background-size: 4px 4px;
+  }
+
+  /* Vintage divider — gold line with center dot */
+  .vintage-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: #C9A24B;
+  }
+  .vintage-divider::before,
+  .vintage-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: currentColor;
+    opacity: 0.5;
+  }
+}
