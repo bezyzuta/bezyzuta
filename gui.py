@@ -127,6 +127,25 @@ def generate(
         if n > 1:
             base_slug = f"{base_slug}-{run_i + 1}"
 
+        # When resume is OFF, the user wants a fresh render. Auto-suffix the
+        # slug if a folder or final mp4 with the same name already exists, so
+        # we never collide with a previous run's artifacts (which would
+        # otherwise overwrite/confuse). When resume IS on, the slug stays
+        # stable on purpose — that's how resume finds the cached state.
+        if not resume_enabled:
+            try:
+                out_root = Path(Config.load(Path(config_path)).output_dir).expanduser()
+                candidate = base_slug
+                counter = 2
+                while (out_root / candidate).exists() or (out_root / f"{candidate}.mp4").exists():
+                    candidate = f"{base_slug}-{counter}"
+                    counter += 1
+                base_slug = candidate
+            except Exception:
+                # If output_dir isn't resolvable yet, fall back to base_slug —
+                # pipeline.py will raise a clearer error downstream.
+                pass
+
         job = {
             "slug": base_slug,
             "topic": topic,
