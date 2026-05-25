@@ -42,36 +42,9 @@ def list_music_tracks(folder: str) -> list[str]:
     return [RANDOM_PICK] + tracks
 
 
-# (display label, voice short-name) — Microsoft Edge-TTS neural voices.
-# All free, no API key, no rate limits. Voice short-names match the
-# `edge-tts --list-voices` output. Empfehlung für Roblox-Shorts: Killian
-# (jung, energisch) auf Deutsch, AndrewMultilingual als Universalstimme.
-VOICES = [
-    # --- Deutsch: männlich, jung / energisch (Roblox-tauglich) ---
-    ("Killian — DE, jung, energisch (empfohlen für Roblox)", "de-DE-KillianNeural"),
-    ("Conrad — DE, jung, freundlich",                         "de-DE-ConradNeural"),
-    ("Kasper — DE, jung, sympathisch",                        "de-DE-KasperNeural"),
-    ("Florian Multilingual — DE/EN, vielseitig",              "de-DE-FlorianMultilingualNeural"),
-    # --- Deutsch: männlich, narrativ / tief ---
-    ("Klaus — DE, mittlere Stimme, narrativ",                 "de-DE-KlausNeural"),
-    ("Bernd — DE, ruhig, warm",                               "de-DE-BerndNeural"),
-    ("Ralf — DE, vertrauenswürdig",                           "de-DE-RalfNeural"),
-    ("Christoph — DE, business-tauglich",                     "de-DE-ChristophNeural"),
-    # --- Deutsch: weiblich, jung / energisch ---
-    ("Seraphina Multilingual — DE/EN, vielseitig",            "de-DE-SeraphinaMultilingualNeural"),
-    ("Katja — DE, jung, freundlich",                          "de-DE-KatjaNeural"),
-    ("Amala — DE, jung, expressiv",                           "de-DE-AmalaNeural"),
-    ("Louisa — DE, jung, sanft",                              "de-DE-LouisaNeural"),
-    # --- Deutsch: weiblich, mittel / reif ---
-    ("Maja — DE, warm, mütterlich",                           "de-DE-MajaNeural"),
-    ("Tanja — DE, selbstbewusst",                             "de-DE-TanjaNeural"),
-    ("Elke — DE, news, klar",                                 "de-DE-ElkeNeural"),
-    # --- Englisch (für englische Skripts) ---
-    ("Andrew — EN-US, jung, natürlich",                       "en-US-AndrewMultilingualNeural"),
-    ("Guy — EN-US, klassisch männlich",                       "en-US-GuyNeural"),
-    ("Jenny — EN-US, jung, freundlich",                       "en-US-JennyNeural"),
-    ("Emma Multilingual — EN-US, vielseitig",                 "en-US-EmmaMultilingualNeural"),
-]
+# Chatterbox TTS (Resemble AI) is voice-clone-based instead of fixed-voice.
+# No voice dropdown — either the user picks a reference audio file to clone,
+# or the model's built-in default voice is used.
 
 
 def slugify(text: str) -> str:
@@ -97,7 +70,9 @@ def generate(
     reframe_samples_per_seg: int,
     speaker_detection: bool,
     enable_voice: bool,
-    voice_id: str,
+    voice_ref_audio: str,
+    tts_exaggeration: float,
+    tts_cfg_weight: float,
     enable_music: bool,
     music_dir: str,
     music_track: str,
@@ -137,7 +112,9 @@ def generate(
     log = ""
     try:
         cfg = Config.load(Path(config_path))
-        cfg.tts_voice = voice_id
+        cfg.tts_reference_audio = (voice_ref_audio or "").strip()
+        cfg.tts_exaggeration = float(tts_exaggeration)
+        cfg.tts_cfg_weight = float(tts_cfg_weight)
     except Exception as e:
         yield f"Config-Fehler: {e}", None
         return
@@ -282,7 +259,7 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="Bezys Shorts Generator") as app:
         gr.Markdown("# 🎬 Bezys Shorts Generator")
         gr.Markdown("Automatischer Pipeline-Lauf: YouTube-Download → Gemini/Llama-Skript → "
-                    "Edge-TTS Voiceover → Cloudflare/Pollinations Bilder → 9:16 Schnitt mit Untertiteln.")
+                    "Chatterbox-TTS Voiceover → Cloudflare/Pollinations Bilder → 9:16 Schnitt mit Untertiteln.")
 
         with gr.Accordion("⚙️ Config-Datei", open=False):
             config_path = gr.Textbox(value="config.json", label="Pfad zur config.json")
@@ -321,7 +298,7 @@ def build_app() -> gr.Blocks:
                 value=True,
                 label="🎙️ Sprecher aktiv",
                 info=("Aus = kein Voiceover, keine TTS-Generierung, keine Untertitel. "
-                      "Video läuft nur mit Musik/SFX/Bildern. Skript-Thema und Stimme darunter werden ignoriert."),
+                      "Video läuft nur mit Musik/SFX/Bildern. Skript-Thema und TTS-Optionen darunter werden ignoriert."),
             )
             topic = gr.Textbox(
                 value="Krasser Moment, totaler Wahnsinn",
@@ -400,12 +377,28 @@ def build_app() -> gr.Blocks:
                       "hat = aktiver Speaker, dorthin wird gecroppt. Wechselt automatisch "
                       "wenn der andere zu reden anfängt. Braucht Reframe v2."),
             )
-            voice_id = gr.Dropdown(
-                choices=VOICES,
-                value=VOICES[0][1],
-                label="Edge-TTS Stimme",
-                info="Microsoft Edge Neural Voices — kostenlos, kein API-Key. Multilingual-Voices können DE und EN.",
+            gr.Markdown(
+                "**Chatterbox TTS** (lokal, Voice-Cloning). Erster Run lädt "
+                "~3GB Modell. Optional: Voice-Sample-Datei für eigene Stimme."
             )
+            voice_ref_audio = gr.Textbox(
+                value="",
+                label="🎤 Voice-Sample für Cloning (optional, .wav/.mp3)",
+                placeholder=r"z.B. C:\Users\bezy\Desktop\voices\meine_stimme.wav",
+                info=("5-10 Sekunden saubere Aufnahme der Stimme die geklont werden "
+                      "soll. Leer = Chatterbox' Default-Stimme."),
+            )
+            with gr.Row():
+                tts_exaggeration = gr.Slider(
+                    0.0, 1.0, value=0.5, step=0.05,
+                    label="Emotion / Exaggeration",
+                    info="0 = ruhig/flach, 0.5 = neutral, 1 = dramatisch. Für Shorts: 0.6-0.8 funktioniert gut.",
+                )
+                tts_cfg_weight = gr.Slider(
+                    0.0, 1.0, value=0.5, step=0.05,
+                    label="CFG Weight",
+                    info="Niedriger = natürlicheres Sprachtempo, höher = wörtlicher.",
+                )
 
         # ───────────── Audio (BGM + SFX) ─────────────
         with gr.Accordion("🎵 Audio (Musik + SFX)", open=False):
@@ -677,7 +670,7 @@ def build_app() -> gr.Blocks:
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
-                enable_voice, voice_id,
+                enable_voice, voice_ref_audio, tts_exaggeration, tts_cfg_weight,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,

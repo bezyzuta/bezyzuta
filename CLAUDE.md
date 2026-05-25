@@ -115,9 +115,11 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 - Source-File-Cache für Multi-Clip
 
 ### Skript & Stimme
-- **Edge-TTS** (Microsoft Neural Voices, kostenlos, kein API-Key) — ersetzt ElevenLabs
-  seit dem TTS-Swap-Commit. Voices: Killian/Conrad/Katja/Amala (DE), Andrew/Jenny (EN),
-  plus die Multilingual-Voices die DE+EN können.
+- **Chatterbox TTS** (Resemble AI, Apache 2.0, lokal auf GPU) — ersetzt
+  Edge-TTS nach User-Wunsch. Zero-shot voice cloning via reference audio
+  file (5-10s sample). Englisch ist primär trainiert, Deutsch funktioniert
+  aber Qualität variabel. ~3GB Model-Download bei first run, ~3-4GB VRAM
+  resident. Cache: `_CHATTERBOX_MODEL` module-level singleton in pipeline.py.
 - Gemini 2.5 Flash für Skript-Generierung aus Topic
 - Cloudflare Llama 3.1 8B als Skript-Fallback
 - Template-Skript als letzter Fallback
@@ -163,7 +165,7 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 ## Configs
 
 `config.json` (NICHT `config.example.json`!):
-- tts_voice / tts_rate / tts_pitch (Edge-TTS, kein API-Key nötig — alles gratis)
+- tts_reference_audio (optional path for voice cloning) / tts_exaggeration / tts_cfg_weight
 - gemini_api_key (frischer Free-Tier Account, 1500 RPD)
 - cloudflare_account_id + cloudflare_api_token
 - output_dir: `C:\Users\bezy\Desktop\Youtube`
@@ -175,7 +177,7 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 |---|---|---|
 | Skript-Generierung | Gemini 2.5 Flash | aktiv |
 | Bild-Prompts | Gemini → Cloudflare Llama 3.1 | aktiv |
-| TTS Voiceover | Edge-TTS (Microsoft Neural, gratis) | aktiv |
+| TTS Voiceover | Chatterbox TTS (Resemble AI, local GPU) | aktiv |
 | Vision (Scene-Picking) | Gemini Vision → Cloudflare Llama 3.2 11B Vision | aktiv |
 | Face Detection | YOLOv11-face (lokal) → MediaPipe | aktiv |
 | Image Generation | Cloudflare Flux Schnell | aktiv |
@@ -188,8 +190,9 @@ In `.venv` installiert:
 - `nvidia-cublas-cu12`, `nvidia-cudnn-cu12<10`, `nvidia-cuda-runtime-cu12`, `nvidia-cuda-nvrtc-cu12`
 - `faster-whisper`, `requests`, `yt-dlp`, `gradio`
 - Coqui-TTS / Ollama wurden früher installiert, dann wieder entfernt
-- ElevenLabs ersetzt durch `edge-tts` — Microsoft Edge Neural Voices, gratis, keine
-  Rate-Limits. Async-API, im sync-Kontext via `asyncio.run()` aufgerufen.
+- ElevenLabs → Edge-TTS → **Chatterbox TTS** (current). Chatterbox läuft
+  lokal auf der GPU, Voice-Cloning via reference audio, ~3-4GB VRAM, sync API.
+  Needs `chatterbox-tts` und `torchaudio` aus pip.
 
 ## Bekannte Limitationen / TODO
 

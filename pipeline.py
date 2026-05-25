@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Roblox Shorts autopilot: download gameplay -> Edge-TTS voice -> 9:16 short."""
+"""Roblox Shorts autopilot: download gameplay -> Chatterbox TTS -> 9:16 short."""
 
 import argparse
-import asyncio
 import json
 import os
 import random
@@ -15,6 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import requests
+
+
+# Module-level cache for the Chatterbox model. Loaded once, kept in VRAM for
+# the lifetime of the GUI process. ~3-4 GB VRAM. None=not tried, False=tried
+# and failed (no torch / no chatterbox-tts / OOM), otherwise the model.
+_CHATTERBOX_MODEL = None
 
 # Opt-in upgrades (resume, YT optimizer, reframe v2). The modules are
 # tolerant of missing optional deps and produce no behavior change unless
@@ -37,13 +42,13 @@ def _loads_lenient(text: str):
 @dataclass
 class Config:
     output_dir: Path
-    # Edge-TTS replaces the old ElevenLabs path. No API key needed — Microsoft
-    # Edge's neural voices are free via the `edge-tts` Python lib. `tts_voice`
-    # is a Microsoft voice short-name (e.g. "de-DE-ConradNeural"); the GUI
-    # picks from a vetted list of German + English voices.
-    tts_voice: str
-    tts_rate: str         # e.g. "+0%", "+10%" (slightly faster sounds more "shorts-energy")
-    tts_pitch: str        # e.g. "+0Hz", "-2Hz"
+    # Chatterbox TTS (Resemble AI, Apache 2.0). Runs locally on GPU, supports
+    # zero-shot voice cloning via a reference audio file. No API key needed.
+    # Primary training language is English; German output is achievable but
+    # quality varies.
+    tts_reference_audio: str   # optional path to a 5-10s voice sample for cloning
+    tts_exaggeration: float    # 0..1, default 0.5 (emotion dial; 0=flat, 1=dramatic)
+    tts_cfg_weight: float      # 0..1, default 0.5 (guidance weight; lower=more natural)
     whisper_model: str
     target_w: int
     target_h: int
@@ -66,9 +71,9 @@ class Config:
         default_gemini = data.get("gemini_model", "gemini-2.5-flash")
         return cls(
             output_dir=Path(data["output_dir"]).expanduser(),
-            tts_voice=data.get("tts_voice", "de-DE-ConradNeural"),
-            tts_rate=data.get("tts_rate", "+0%"),
-            tts_pitch=data.get("tts_pitch", "+0Hz"),
+            tts_reference_audio=data.get("tts_reference_audio", ""),
+            tts_exaggeration=float(data.get("tts_exaggeration", 0.5)),
+            tts_cfg_weight=float(data.get("tts_cfg_weight", 0.5)),
             whisper_model=data.get("whisper_model", "small"),
             target_w=int(w),
             target_h=int(h),
@@ -316,43 +321,96 @@ def make_silent_track(duration: float, out_path: Path) -> Path:
     return out_path
 
 
-def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
-    """Generate voiceover via Microsoft Edge-TTS (free, no API key).
-
-    Voice override: a job may set `job["tts_voice"]` to use a different
-    voice than the config default for this specific clip (useful for
-    per-clip personality, e.g. female narrator vs male narrator).
-    """
+def _get_chatterbox_model():
+    """Lazy-init Chatterbox TTS. ~3GB model download on first call, ~3-4GB
+    VRAM resident. Returns None if chatterbox-tts isn't installed, the
+    model download fails, or there's not enough VRAM. Cached at module
+    scope so subsequent voiceovers don't re-load."""
+    global _CHATTERBOX_MODEL
+    if _CHATTERBOX_MODEL is False:
+        return None
+    if _CHATTERBOX_MODEL is not None:
+        return _CHATTERBOX_MODEL
     try:
-        import edge_tts  # type: ignore
+        import torch  # type: ignore
+        from chatterbox.tts import ChatterboxTTS  # type: ignore
+    except Exception as e:
+        print(f"      Chatterbox TTS not installed: {e}")
+        _CHATTERBOX_MODEL = False
+        return None
+    try:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"      loading Chatterbox TTS on {device} (~3GB download first time)")
+        _CHATTERBOX_MODEL = ChatterboxTTS.from_pretrained(device=device)
+        print(f"      Chatterbox TTS ready (sr={_CHATTERBOX_MODEL.sr})")
+    except Exception as e:
+        print(f"      Chatterbox TTS load failed: {e}")
+        _CHATTERBOX_MODEL = False
+        return None
+    return _CHATTERBOX_MODEL
+
+
+def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
+    """Generate voiceover via Chatterbox TTS (Resemble AI, local on GPU).
+
+    If `cfg.tts_reference_audio` points to a valid audio file, the output
+    voice will mimic that speaker (zero-shot voice cloning, 3-10s sample
+    works best). Otherwise Chatterbox's built-in default voice is used.
+
+    `cfg.tts_exaggeration` controls emotion (0=flat, 1=dramatic).
+    `cfg.tts_cfg_weight` controls naturalness vs. text adherence
+    (lower=more natural speech rhythm).
+    """
+    model = _get_chatterbox_model()
+    if model is None:
+        raise RuntimeError(
+            "Chatterbox TTS not available. Install with:\n"
+            "  .venv\\Scripts\\python.exe -m pip install chatterbox-tts torchaudio"
+        )
+    try:
+        import torchaudio as ta  # type: ignore
     except ImportError as e:
         raise RuntimeError(
-            "edge-tts not installed. Run: .venv\\Scripts\\python.exe -m pip install edge-tts"
+            "torchaudio missing. Install with:\n"
+            "  .venv\\Scripts\\python.exe -m pip install torchaudio"
         ) from e
 
-    voice = cfg.tts_voice or "de-DE-ConradNeural"
-    rate = cfg.tts_rate or "+0%"
-    pitch = cfg.tts_pitch or "+0Hz"
-
-    async def _run():
-        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
-        await communicate.save(str(out_path))
+    kwargs: dict = {
+        "exaggeration": float(getattr(cfg, "tts_exaggeration", 0.5)),
+        "cfg_weight": float(getattr(cfg, "tts_cfg_weight", 0.5)),
+    }
+    ref_path_str = (getattr(cfg, "tts_reference_audio", "") or "").strip()
+    if ref_path_str:
+        ref_path = Path(ref_path_str).expanduser()
+        if ref_path.is_file():
+            kwargs["audio_prompt_path"] = str(ref_path)
+        else:
+            print(f"      WARN: voice reference audio not found: {ref_path} — using default voice")
 
     try:
-        asyncio.run(_run())
-    except RuntimeError as e:
-        # If we're already inside an event loop (some Gradio contexts),
-        # fall back to a fresh loop.
-        if "already running" in str(e).lower():
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(_run())
-            finally:
-                loop.close()
-        else:
-            raise
+        wav = model.generate(text, **kwargs)
+    except Exception as e:
+        raise RuntimeError(f"Chatterbox generation failed: {e}") from e
+
+    # Chatterbox returns a torch tensor at model.sr. Save WAV, then transcode
+    # to MP3 because the rest of the pipeline (ffmpeg mixers, captions
+    # alignment, etc.) standardized on MP3.
+    wav_path = out_path.with_suffix(".wav")
+    try:
+        ta.save(str(wav_path), wav, model.sr)
+    except Exception as e:
+        raise RuntimeError(f"Chatterbox WAV save failed: {e}") from e
+    run([
+        "ffmpeg", "-y", "-i", str(wav_path),
+        "-c:a", "libmp3lame", "-q:a", "2",
+        str(out_path),
+    ])
+    try:
+        wav_path.unlink()
+    except Exception:
+        pass
     if not out_path.is_file() or out_path.stat().st_size < 200:
-        raise RuntimeError(f"Edge-TTS produced empty/missing output: {out_path}")
+        raise RuntimeError(f"Chatterbox produced empty/missing output: {out_path}")
     return out_path
 
 
