@@ -42,29 +42,35 @@ def list_music_tracks(folder: str) -> list[str]:
     return [RANDOM_PICK] + tracks
 
 
-# (display label, voice_id) — only current ElevenLabs default voices that ship with every free account.
-# Legacy voices like Adam/Rachel/Domi are not guaranteed available for accounts created after their migration.
+# (display label, voice short-name) — Microsoft Edge-TTS neural voices.
+# All free, no API key, no rate limits. Voice short-names match the
+# `edge-tts --list-voices` output. Empfehlung für Roblox-Shorts: Killian
+# (jung, energisch) auf Deutsch, AndrewMultilingual als Universalstimme.
 VOICES = [
-    # --- Male: young / energetic (fit for Roblox shorts) ---
-    ("Liam — irisch, jung (empfohlen für Roblox)", "TX3LPaxmHKxFdv7VOQHJ"),
-    ("Charlie — australisch, jung",                 "IKne3meq5aSn9XLyUdCD"),
-    ("Will — jung, freundlich",                     "bIHbv24MWmeRgasZH58o"),
-    ("Roger — konfident, mittlere Stimme",          "CwhRBWXzGAHq8TQ4Fs17"),
-    # --- Male: deep / narrator ---
-    ("Brian — tief, narrativ",                      "nPczCjzI2devNBz1zQrb"),
-    ("Daniel — britisch, news",                     "onwK4e9ZLuTAKqWW03F9"),
-    ("George — britisch, warm",                     "JBFqnCBsd6RMkjVDRZzb"),
-    ("Bill — vertrauenswürdig",                     "pqHfZKP75CvOlQylNhV4"),
-    # --- Female: young / energetic ---
-    ("Aria — expressiv, vielseitig",                "9BWtsMINqrJLrRacOk9x"),
-    ("Sarah — jung, sanft",                         "EXAVITQu4vr4xnSDxMaL"),
-    ("Laura — jung, energisch",                     "FGY2WhTYpPnrIDTdsKH5"),
-    ("Jessica — jung, expressiv",                   "cgSgspJ2msm6clMCkdW9"),
-    ("Matilda — freundlich, jung",                  "XrExE9yKIg1WjnnlVkGX"),
-    # --- Female: deeper / mature ---
-    ("Charlotte — schwedisch, mystisch",            "XB0fDUnXU5powFXDhCwa"),
-    ("Alice — britisch, selbstbewusst",             "Xb7hH8MSUJpSbSDYk0k2"),
-    ("Lily — britisch, warm",                       "pFZP5JQG7iQjIQuC4Bku"),
+    # --- Deutsch: männlich, jung / energisch (Roblox-tauglich) ---
+    ("Killian — DE, jung, energisch (empfohlen für Roblox)", "de-DE-KillianNeural"),
+    ("Conrad — DE, jung, freundlich",                         "de-DE-ConradNeural"),
+    ("Kasper — DE, jung, sympathisch",                        "de-DE-KasperNeural"),
+    ("Florian Multilingual — DE/EN, vielseitig",              "de-DE-FlorianMultilingualNeural"),
+    # --- Deutsch: männlich, narrativ / tief ---
+    ("Klaus — DE, mittlere Stimme, narrativ",                 "de-DE-KlausNeural"),
+    ("Bernd — DE, ruhig, warm",                               "de-DE-BerndNeural"),
+    ("Ralf — DE, vertrauenswürdig",                           "de-DE-RalfNeural"),
+    ("Christoph — DE, business-tauglich",                     "de-DE-ChristophNeural"),
+    # --- Deutsch: weiblich, jung / energisch ---
+    ("Seraphina Multilingual — DE/EN, vielseitig",            "de-DE-SeraphinaMultilingualNeural"),
+    ("Katja — DE, jung, freundlich",                          "de-DE-KatjaNeural"),
+    ("Amala — DE, jung, expressiv",                           "de-DE-AmalaNeural"),
+    ("Louisa — DE, jung, sanft",                              "de-DE-LouisaNeural"),
+    # --- Deutsch: weiblich, mittel / reif ---
+    ("Maja — DE, warm, mütterlich",                           "de-DE-MajaNeural"),
+    ("Tanja — DE, selbstbewusst",                             "de-DE-TanjaNeural"),
+    ("Elke — DE, news, klar",                                 "de-DE-ElkeNeural"),
+    # --- Englisch (für englische Skripts) ---
+    ("Andrew — EN-US, jung, natürlich",                       "en-US-AndrewMultilingualNeural"),
+    ("Guy — EN-US, klassisch männlich",                       "en-US-GuyNeural"),
+    ("Jenny — EN-US, jung, freundlich",                       "en-US-JennyNeural"),
+    ("Emma Multilingual — EN-US, vielseitig",                 "en-US-EmmaMultilingualNeural"),
 ]
 
 
@@ -131,7 +137,7 @@ def generate(
     log = ""
     try:
         cfg = Config.load(Path(config_path))
-        cfg.elevenlabs_voice_id = voice_id
+        cfg.tts_voice = voice_id
     except Exception as e:
         yield f"Config-Fehler: {e}", None
         return
@@ -276,7 +282,7 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="Bezys Shorts Generator") as app:
         gr.Markdown("# 🎬 Bezys Shorts Generator")
         gr.Markdown("Automatischer Pipeline-Lauf: YouTube-Download → Gemini/Llama-Skript → "
-                    "ElevenLabs Voiceover → Cloudflare/Pollinations Bilder → 9:16 Schnitt mit Untertiteln.")
+                    "Edge-TTS Voiceover → Cloudflare/Pollinations Bilder → 9:16 Schnitt mit Untertiteln.")
 
         with gr.Accordion("⚙️ Config-Datei", open=False):
             config_path = gr.Textbox(value="config.json", label="Pfad zur config.json")
@@ -314,7 +320,7 @@ def build_app() -> gr.Blocks:
             enable_voice = gr.Checkbox(
                 value=True,
                 label="🎙️ Sprecher aktiv",
-                info=("Aus = kein Voiceover, keine ElevenLabs-API-Call, keine Untertitel. "
+                info=("Aus = kein Voiceover, keine TTS-Generierung, keine Untertitel. "
                       "Video läuft nur mit Musik/SFX/Bildern. Skript-Thema und Stimme darunter werden ignoriert."),
             )
             topic = gr.Textbox(
@@ -397,7 +403,8 @@ def build_app() -> gr.Blocks:
             voice_id = gr.Dropdown(
                 choices=VOICES,
                 value=VOICES[0][1],
-                label="ElevenLabs Stimme",
+                label="Edge-TTS Stimme",
+                info="Microsoft Edge Neural Voices — kostenlos, kein API-Key. Multilingual-Voices können DE und EN.",
             )
 
         # ───────────── Audio (BGM + SFX) ─────────────

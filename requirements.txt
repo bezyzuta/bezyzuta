@@ -2,6 +2,8 @@ requests>=2.31
 yt-dlp>=2024.5.27
 faster-whisper>=1.0.3
 gradio>=4.40
+# TTS via Microsoft Edge neural voices — free, no API key, no rate limits.
+edge-tts>=6.1.0
 # Local face detection for auto-reframe. Detector priority at runtime:
 #   YOLOv8/v11-face (ultralytics)  -> best on GPU, requires torch
 #   InsightFace (RetinaFace/SCRFD) -> highest accuracy, needs VC++ on Windows

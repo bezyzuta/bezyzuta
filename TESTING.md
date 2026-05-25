@@ -15,7 +15,7 @@
   - Setup: `config.json` → `output_dir` zeigt auf leeres Test-Verzeichnis (z.B. `C:\Users\bezy\Desktop\Youtube_TEST`).
   - Expected: GUI startet ohne Warnings, Verzeichnis ist leer.
 - [ ] **0.2 API-Keys konfigurieren**
-  - Setup: `config.json` enthält `elevenlabs_api_key`, `gemini_api_key`, `cloudflare_account_id`, `cloudflare_api_token`.
+  - Setup: `config.json` enthält `tts_voice` (z.B. "de-DE-KillianNeural"), `gemini_api_key`, `cloudflare_account_id`, `cloudflare_api_token`. (Edge-TTS braucht keinen API-Key.)
   - Expected: `gui.py` startet, "API-Status" im Header zeigt grüne Häkchen.
 - [ ] **0.3 Test-Video bookmarken**
   - Setup: Drei feste YouTube-URLs notieren — (a) Single-Speaker 60s+, (b) Podcast 2-Personen-Layout, (c) Gameplay-Video ohne Gesichter.
@@ -55,7 +55,7 @@
   - Setup: Lauf abbrechen nach "skript fertig", erneuter Run.
   - Expected: Resume-Zeile `resume: script cached (N chars)`. Voiceover wird neu erzeugt.
 - [ ] **2.1.3 Abbruch nach Voiceover**
-  - Setup: Abbruch direkt nach ElevenLabs-Call. Re-Run.
+  - Setup: Abbruch direkt nach Edge-TTS-Call. Re-Run.
   - Expected: `[2/5] resume: voice cached (voice.mp3, X.Xs)`. Scene-Pick startet.
 - [ ] **2.1.4 Abbruch nach Scene-Pick**
   - Setup: Abbruch nach Clip-Cut. Re-Run.

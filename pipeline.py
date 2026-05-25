@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Roblox Shorts autopilot: download gameplay -> ElevenLabs TTS -> 9:16 short."""
+"""Roblox Shorts autopilot: download gameplay -> Edge-TTS voice -> 9:16 short."""
 
 import argparse
+import asyncio
 import json
 import os
 import random
@@ -36,9 +37,13 @@ def _loads_lenient(text: str):
 @dataclass
 class Config:
     output_dir: Path
-    elevenlabs_api_key: str
-    elevenlabs_voice_id: str
-    elevenlabs_model: str
+    # Edge-TTS replaces the old ElevenLabs path. No API key needed — Microsoft
+    # Edge's neural voices are free via the `edge-tts` Python lib. `tts_voice`
+    # is a Microsoft voice short-name (e.g. "de-DE-ConradNeural"); the GUI
+    # picks from a vetted list of German + English voices.
+    tts_voice: str
+    tts_rate: str         # e.g. "+0%", "+10%" (slightly faster sounds more "shorts-energy")
+    tts_pitch: str        # e.g. "+0Hz", "-2Hz"
     whisper_model: str
     target_w: int
     target_h: int
@@ -57,16 +62,13 @@ class Config:
     @classmethod
     def load(cls, path: Path) -> "Config":
         data = _loads_lenient(path.read_text(encoding="utf-8"))
-        api_key = data.get("elevenlabs_api_key") or os.environ.get("ELEVENLABS_API_KEY", "")
-        if not api_key:
-            raise SystemExit("elevenlabs_api_key missing in config and ELEVENLABS_API_KEY not set")
         w, h = data.get("target_resolution", [1080, 1920])
         default_gemini = data.get("gemini_model", "gemini-2.5-flash")
         return cls(
             output_dir=Path(data["output_dir"]).expanduser(),
-            elevenlabs_api_key=api_key,
-            elevenlabs_voice_id=data["elevenlabs_voice_id"],
-            elevenlabs_model=data.get("elevenlabs_model", "eleven_multilingual_v2"),
+            tts_voice=data.get("tts_voice", "de-DE-ConradNeural"),
+            tts_rate=data.get("tts_rate", "+0%"),
+            tts_pitch=data.get("tts_pitch", "+0Hz"),
             whisper_model=data.get("whisper_model", "small"),
             target_w=int(w),
             target_h=int(h),
@@ -301,28 +303,49 @@ def make_silent_track(duration: float, out_path: Path) -> Path:
 
 
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{cfg.elevenlabs_voice_id}"
-    headers = {
-        "xi-api-key": cfg.elevenlabs_api_key,
-        "accept": "audio/mpeg",
-        "content-type": "application/json",
-    }
-    body = {
-        "text": text,
-        "model_id": cfg.elevenlabs_model,
-        "voice_settings": {"stability": 0.4, "similarity_boost": 0.85, "style": 0.55, "use_speaker_boost": True},
-    }
-    r = requests.post(url, headers=headers, json=body, timeout=180)
-    if r.status_code >= 400:
-        raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:300]}")
-    out_path.write_bytes(r.content)
+    """Generate voiceover via Microsoft Edge-TTS (free, no API key).
+
+    Voice override: a job may set `job["tts_voice"]` to use a different
+    voice than the config default for this specific clip (useful for
+    per-clip personality, e.g. female narrator vs male narrator).
+    """
+    try:
+        import edge_tts  # type: ignore
+    except ImportError as e:
+        raise RuntimeError(
+            "edge-tts not installed. Run: .venv\\Scripts\\python.exe -m pip install edge-tts"
+        ) from e
+
+    voice = cfg.tts_voice or "de-DE-ConradNeural"
+    rate = cfg.tts_rate or "+0%"
+    pitch = cfg.tts_pitch or "+0Hz"
+
+    async def _run():
+        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
+        await communicate.save(str(out_path))
+
+    try:
+        asyncio.run(_run())
+    except RuntimeError as e:
+        # If we're already inside an event loop (some Gradio contexts),
+        # fall back to a fresh loop.
+        if "already running" in str(e).lower():
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+        else:
+            raise
+    if not out_path.is_file() or out_path.stat().st_size < 200:
+        raise RuntimeError(f"Edge-TTS produced empty/missing output: {out_path}")
     return out_path
 
 
 def trim_leading_silence(in_path: Path, out_path: Path,
                          threshold_db: float = -45.0,
                          keep_seconds: float = 0.05) -> Path:
-    """Strip ElevenLabs' leading dead air so the voiceover starts at t~=0."""
+    """Strip the TTS engine's leading dead air so the voiceover starts at t~=0."""
     run([
         "ffmpeg", "-y", "-i", str(in_path),
         "-af", f"silenceremove=start_periods=1:start_silence={keep_seconds}:start_threshold={threshold_db}dB",

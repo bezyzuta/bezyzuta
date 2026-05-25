@@ -115,7 +115,9 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 - Source-File-Cache für Multi-Clip
 
 ### Skript & Stimme
-- ElevenLabs TTS (multilingual / flash / turbo Modelle)
+- **Edge-TTS** (Microsoft Neural Voices, kostenlos, kein API-Key) — ersetzt ElevenLabs
+  seit dem TTS-Swap-Commit. Voices: Killian/Conrad/Katja/Amala (DE), Andrew/Jenny (EN),
+  plus die Multilingual-Voices die DE+EN können.
 - Gemini 2.5 Flash für Skript-Generierung aus Topic
 - Cloudflare Llama 3.1 8B als Skript-Fallback
 - Template-Skript als letzter Fallback
@@ -161,7 +163,7 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 ## Configs
 
 `config.json` (NICHT `config.example.json`!):
-- elevenlabs_api_key (neuer Account, hat noch Credits)
+- tts_voice / tts_rate / tts_pitch (Edge-TTS, kein API-Key nötig — alles gratis)
 - gemini_api_key (frischer Free-Tier Account, 1500 RPD)
 - cloudflare_account_id + cloudflare_api_token
 - output_dir: `C:\Users\bezy\Desktop\Youtube`
@@ -173,7 +175,7 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 |---|---|---|
 | Skript-Generierung | Gemini 2.5 Flash | aktiv |
 | Bild-Prompts | Gemini → Cloudflare Llama 3.1 | aktiv |
-| TTS Voiceover | ElevenLabs | aktiv |
+| TTS Voiceover | Edge-TTS (Microsoft Neural, gratis) | aktiv |
 | Vision (Scene-Picking) | Gemini Vision → Cloudflare Llama 3.2 11B Vision | aktiv |
 | Face Detection | YOLOv11-face (lokal) → MediaPipe | aktiv |
 | Image Generation | Cloudflare Flux Schnell | aktiv |
@@ -185,7 +187,9 @@ In `.venv` installiert:
 - `mediapipe`, `ultralytics`, `torch+cu124`, `torchvision`, `torchaudio`
 - `nvidia-cublas-cu12`, `nvidia-cudnn-cu12<10`, `nvidia-cuda-runtime-cu12`, `nvidia-cuda-nvrtc-cu12`
 - `faster-whisper`, `requests`, `yt-dlp`, `gradio`
-- Coqui-TTS / Ollama wurden früher installiert, dann wieder entfernt — User bleibt bei ElevenLabs + Gemini
+- Coqui-TTS / Ollama wurden früher installiert, dann wieder entfernt
+- ElevenLabs ersetzt durch `edge-tts` — Microsoft Edge Neural Voices, gratis, keine
+  Rate-Limits. Async-API, im sync-Kontext via `asyncio.run()` aufgerufen.
 
 ## Bekannte Limitationen / TODO
 
