@@ -82,6 +82,20 @@ class Config:
         )
 
 
+def _release_gpu_memory() -> None:
+    """Best-effort release of CUDA VRAM held by the current process. Called
+    between heavy stages (Whisper / YOLO / FaceMesh) to keep VRAM from
+    creeping up across long multi-clip runs. No-op when torch isn't
+    installed or CUDA isn't available."""
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+
+
 def run(cmd: list, **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=True, **kw)
 
@@ -2844,6 +2858,7 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         step("[MULTI 2/4] full-video transcription (Whisper)")
         segments = transcribe_full_video(raw, cfg.whisper_model,
                                           device=whisper_device, on_step=step)
+        _release_gpu_memory()
         try:
             seg_cache.write_text(json.dumps(segments), encoding="utf-8")
         except Exception:
@@ -2948,6 +2963,10 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         outputs.append(out_mp4)
         if state:
             set_subclip_done(state, i, out_mp4, title=m.get("title", ""))
+        # Each sub-clip loads Whisper + YOLO + maybe FaceMesh; flush VRAM
+        # between clips so accumulated CUDA state can't OOM the machine
+        # halfway through a 5-clip render.
+        _release_gpu_memory()
 
     if state and len(outputs) == len(moments):
         state.mark_done(Step.MULTI_RENDER, {"clip_count": len(outputs)})
@@ -3160,8 +3179,16 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     elif enable_voice:
         whisper_device = str(job.get("whisper_device", "auto"))
         step(f"[4/5] transcribe + captions (device={whisper_device})")
-        words, used_dev = transcribe_words(vo, cfg.whisper_model, device=whisper_device)
+        # Always subprocess-isolate Whisper on GPU. The in-process call leaks
+        # CUDA state and can hard-freeze the whole machine after a few
+        # sequential runs (especially in multi-clip mode). The subprocess
+        # variant has lived in the codebase for the voice-disabled path
+        # already; now we use it universally.
+        words, used_dev = transcribe_words_subprocess(
+            vo, cfg.whisper_model, device=whisper_device, on_step=step,
+        )
         step(f"      whisper ran on {used_dev}")
+        _release_gpu_memory()
         try:
             words_cache.write_text(json.dumps(words), encoding="utf-8")
         except Exception:
@@ -3189,6 +3216,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 clip_audio, cfg.whisper_model, device=whisper_device, on_step=step,
             )
             step(f"      whisper ran on {used_dev} — {len(words)} words from source audio")
+            _release_gpu_memory()
             try:
                 words_cache.write_text(json.dumps(words), encoding="utf-8")
             except Exception:
@@ -3436,6 +3464,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         else:
             step("      auto-reframe: asking Cloudflare Vision where the subject is")
             crop_offset = detect_subject_x_position(clip, cfg, on_step=step)
+        _release_gpu_memory()
         if state:
             state.mark_done(Step.REFRAME, {"crop_offset": crop_offset})
 
