@@ -403,6 +403,42 @@ def _estimate_script_seconds(text: str, language: str) -> float:
     return len(text.split()) / max(wps, 0.1)
 
 
+def _clean_user_script(text: str) -> str:
+    """Strip the first line if it's an obvious LLM-assistant preamble. Users
+    sometimes copy-paste a whole chat response that starts with "Here is the
+    script you asked for:" — which Chatterbox then dutifully reads aloud.
+
+    Only strips when the first line is clearly meta (matches a well-known
+    intro pattern AND ends with a colon AND is short enough to be a header
+    not real content). Conservative on purpose: false-strip of legit
+    content would be worse than reading one extra sentence."""
+    text = (text or "").strip()
+    if not text:
+        return text
+    lines = text.split("\n", 1)
+    if len(lines) != 2:
+        return text
+    first = lines[0].strip()
+    rest = lines[1].strip()
+    if not rest:
+        return text
+    # Length guard. Lower bound at 20 chars (shortest plausible preamble:
+    # "Here's the script:"); upper at 400 (longer than that is real content).
+    if not (20 < len(first) < 400):
+        return text
+    if not first.endswith(":"):
+        return text
+    preamble_starters = re.compile(
+        r"^(Here\s+is|Here'?s|Below\s+is|This\s+is|Sure|Of\s+course|Certainly|"
+        r"Absolutely|Okay|Alright|I'?ve\s+written|I\s+have\s+written|"
+        r"As\s+requested|Hier\s+ist|Hier\s+hast\s+du|Klar|Natuerlich|Naturlich)\b",
+        re.IGNORECASE,
+    )
+    if preamble_starters.match(first):
+        return rest
+    return text
+
+
 def _gemini_continuation(previous: str, cfg: "Config", add_words: int,
                          language: str = "de") -> str:
     """Ask Gemini for a chunk that extends `previous` by ~add_words words.
@@ -3737,7 +3773,45 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     elif enable_voice:
         script = (job.get("script") or "").strip()
         if script:
-            step(f"      using user-provided script ({len(script)} chars)")
+            # Strip any LLM-assistant preamble ("Here is the script for X:")
+            # that often comes along when the user pastes a chat response.
+            cleaned = _clean_user_script(script)
+            if cleaned != script:
+                step(f"      stripped LLM preamble ({len(script) - len(cleaned)} chars removed)")
+                script = cleaned
+
+            # Quick duration estimate so the user sees BEFORE the long TTS
+            # render whether the script will hit the target_duration they set.
+            script_lang_hint = (getattr(cfg, "tts_language", "auto") or "auto").lower()
+            if script_lang_hint not in ("de", "en"):
+                script_lang_hint = _detect_language(script)
+            est_secs = _estimate_script_seconds(script, script_lang_hint)
+            step(f"      using user-provided script ({len(script)} chars, ~{est_secs:.0f}s estimated)")
+
+            # If the script is meaningfully shorter than the requested
+            # target, either auto-extend (opt-in toggle) or just warn loudly.
+            if target_duration >= 90 and est_secs < 0.7 * target_duration:
+                extend_on = bool(job.get("extend_script", False))
+                if extend_on and cfg.gemini_api_key:
+                    wps = _WPS_EN if script_lang_hint == "en" else _WPS_DE
+                    target_words = int(target_duration * wps)
+                    current_words = len(script.split())
+                    deficit = target_words - current_words
+                    if deficit > 50:
+                        step(f"      extending script via Gemini: +{deficit}w to hit ~{target_duration:.0f}s")
+                        try:
+                            addition = _gemini_continuation(script, cfg, deficit,
+                                                            language=script_lang_hint)
+                            script = script.rstrip() + " " + addition.lstrip()
+                            new_est = _estimate_script_seconds(script, script_lang_hint)
+                            step(f"      extended script: {len(script)} chars (~{new_est:.0f}s)")
+                        except Exception as e:
+                            step(f"      extend failed: {e} — keeping original")
+                else:
+                    step(f"      WARN: script is ~{est_secs:.0f}s but target is "
+                         f"{target_duration:.0f}s. Final video will be ~{est_secs:.0f}s "
+                         f"(clip follows voice). Enable '🪶 Skript per AI verlängern' "
+                         f"in the GUI if you want Gemini to extend it.")
         else:
             topic = (job.get("topic") or "").strip()
             if not topic:

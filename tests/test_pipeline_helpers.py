@@ -86,6 +86,62 @@ class TestSplitSentencesForTTS:
         assert len(joined) == 200
 
 
+# ───────────────────────── LLM-preamble stripper ─────────────────────────
+
+
+class TestCleanUserScript:
+    def test_empty(self):
+        assert pipeline._clean_user_script("") == ""
+        assert pipeline._clean_user_script("   ") == ""
+
+    def test_no_preamble_unchanged(self):
+        text = "Bro check this out!\n\nMore content here."
+        assert pipeline._clean_user_script(text) == text
+
+    def test_strips_real_user_failure_case(self):
+        """Exact failure mode reported by the user: pasted ChatGPT output
+        where the first line is the assistant's meta-intro."""
+        text = (
+            "Here is the high-energy English script for your 8-minute and "
+            "30-second gameplay video about Escape the Barber Obby:\n\n"
+            "Bro, get ready! This obby is INSANE!"
+        )
+        out = pipeline._clean_user_script(text)
+        assert "Here is the high-energy" not in out
+        assert out.startswith("Bro, get ready")
+
+    @pytest.mark.parametrize("header", [
+        "Here's a wild script for you:",
+        "Sure! Here is the script you asked for:",
+        "Absolutely! Below is the YouTube script for the gameplay:",
+        "I've written a high-energy script for your video about obby:",
+        "Hier ist das Skript fuer dein Roblox-Video:",
+        "Klar, hier hast du das Skript:",
+    ])
+    def test_strips_known_preamble_variants(self, header):
+        text = header + "\n\nBro schau dir das an!"
+        out = pipeline._clean_user_script(text)
+        assert header not in out
+        assert "Bro" in out
+
+    def test_keeps_legit_colon_content(self):
+        # "Player one says: this is wild" ends with colon but is real
+        # content, not a preamble. Must not be stripped.
+        text = "Player one says: this is wild\n\nMore content"
+        assert pipeline._clean_user_script(text) == text
+
+    def test_keeps_short_first_line(self):
+        # "Listen up:" is 10 chars — below the 20-char minimum.
+        text = "Listen up:\n\nReal script content."
+        assert pipeline._clean_user_script(text) == text
+
+    def test_no_blank_line_separator(self):
+        # If first line isn't followed by an empty line, it's probably
+        # not a preamble — leave it alone.
+        text = "Here is the script for you: bro look at this"
+        assert pipeline._clean_user_script(text) == text
+
+
 # ───────────────────────── script-length estimator ─────────────────────────
 
 

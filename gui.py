@@ -63,6 +63,7 @@ def generate(
     channel_scan_limit: int,
     topic: str,
     custom_script: str,
+    extend_script: bool,
     target_duration: float,
     clip_segments: int,
     playback_speed: float,
@@ -209,6 +210,7 @@ def generate(
         }
         if custom_script.strip():
             job["script"] = custom_script.strip()
+            job["extend_script"] = bool(extend_script)
         img_prompts = [p.strip() for p in custom_image_prompts.splitlines() if p.strip()]
         if img_prompts:
             job["image_prompts"] = img_prompts
@@ -362,7 +364,16 @@ def build_app() -> gr.Blocks:
                 value="",
                 label="Eigenes Skript (optional, überschreibt Thema)",
                 lines=5,
-                placeholder="Wenn ausgefüllt, wird das hier 1:1 als Sprechertext genommen — kein LLM-Call.",
+                placeholder=("Wenn ausgefüllt, wird das hier 1:1 als Sprechertext genommen — kein LLM-Call. "
+                             "Tipp: NICHT die Antwort eines Chatbots reinkopieren (Zeilen wie "
+                             "'Here is the script for you:' würden mitgesprochen) — nur den reinen Skript-Text."),
+            )
+            extend_script = gr.Checkbox(
+                value=False,
+                label="🪶 Skript per AI verlängern wenn zu kurz",
+                info=("Wenn dein eigenes Skript deutlich kürzer ist als Ziel-Länge: Gemini "
+                      "schreibt automatisch eine Fortsetzung im selben Stil. Standard AUS — "
+                      "dein Skript bleibt sonst exakt wie geschrieben."),
             )
             with gr.Row():
                 target_duration = gr.Slider(
@@ -752,7 +763,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 output_format,
                 config_path, source_mode, source_url, channel_url, title_filter,
-                channel_scan_limit, topic, custom_script, target_duration,
+                channel_scan_limit, topic, custom_script, extend_script, target_duration,
                 clip_segments, playback_speed, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
