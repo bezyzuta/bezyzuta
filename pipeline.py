@@ -293,6 +293,67 @@ Requirements:
 SCRIPT_PROMPT = SCRIPT_PROMPT_SHORT  # back-compat alias for any external callers
 
 
+# Continuation prompts for the top-up loop. Gemini-2.5-flash routinely
+# delivers ~75-80% of the requested length even when the prompt screams
+# "MUST". Top-up keeps asking for the rest until we're within 15% of
+# target or hit max_attempts.
+CONTINUATION_PROMPT_DE = """Schreibe NUR die Fortsetzung dieses YouTube-Skripts. Etwa {add_words} Woerter mehr. Selbe Energie und Stil, kein Recap, KEINE "Zum Schluss", "Zusammenfassend" oder "Abonniere fuer mehr" Phrasen — das Video geht einfach mittendrin weiter. Schreibe so, als waere es Satz fuer Satz die direkte Fortsetzung. Gib NUR den zusaetzlichen Sprechertext aus, sonst nichts.
+
+Bisheriges Skript (NICHT wiederholen, NICHT zitieren):
+---
+{previous}
+---"""
+
+
+CONTINUATION_PROMPT_EN = """Write ONLY the continuation of this YouTube script. About {add_words} more words. Same energy and style, no recap, NO "in summary", "to wrap up", or "subscribe for more" phrases — the video just keeps going mid-stream. Write as if it's the direct next sentence. Output ONLY the additional speaker text, nothing else.
+
+Existing script so far (do NOT repeat, do NOT quote back):
+---
+{previous}
+---"""
+
+
+# Words-per-second estimates for word-count → speech-duration math.
+# Empirically Chatterbox EN runs ~2.5 wps natural; Piper DE-Thorsten
+# ~2.4 wps. Used to decide if a script is short enough to top up.
+_WPS_EN = 2.5
+_WPS_DE = 2.4
+
+
+def _estimate_script_seconds(text: str, language: str) -> float:
+    """Estimate TTS speech duration in seconds from word count."""
+    wps = _WPS_EN if (language or "de").lower() == "en" else _WPS_DE
+    return len(text.split()) / max(wps, 0.1)
+
+
+def _gemini_continuation(previous: str, cfg: "Config", add_words: int,
+                         language: str = "de") -> str:
+    """Ask Gemini for a chunk that extends `previous` by ~add_words words.
+    Returns just the new text; caller concatenates."""
+    template = CONTINUATION_PROMPT_EN if (language or "de").lower() == "en" else CONTINUATION_PROMPT_DE
+    prompt_text = template.format(previous=previous.strip(), add_words=add_words)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
+    body = {
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            "temperature": 0.9,
+            "maxOutputTokens": 4096,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
+    try:
+        candidate = data["candidates"][0]
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Gemini continuation: no candidates ({e})")
+    parts = candidate.get("content", {}).get("parts", []) or []
+    text_parts = [p.get("text", "") for p in parts if not p.get("thought")]
+    text = "\n".join(text_parts).strip()
+    if not text:
+        raise RuntimeError("Gemini continuation returned empty text")
+    return text
+
+
 def _gemini_post(url: str, params: dict, body: dict, retries: int = 4,
                  backoff: tuple = (10, 30, 60, 60)) -> dict:
     """POST to Gemini with exponential backoff on 429/503."""
@@ -345,20 +406,55 @@ def fallback_template_script(topic: str) -> str:
 
 def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
                     on_step=None, language: str = "de") -> str:
-    """Top-level script generator. Just Gemini for now; falls through to the
-    template if Gemini isn't configured or rate-limits the caller. The
-    `language` arg picks the prompt template (de/en) so Gemini writes in
-    the same language the TTS engine expects."""
+    """Top-level script generator. Gemini-driven, with an auto top-up
+    loop for long-form: if Gemini's first draft is more than 15% short
+    of the requested duration, we ask it to keep writing (up to 3 extra
+    calls) until the script is long enough. Without this, asking for
+    500s typically yields ~380s and the user thinks the pipeline ignored
+    them — actually Gemini just stopped early."""
     def log(msg):
         if on_step:
             try: on_step(msg)
             except Exception: pass
         else:
             print(msg)
-    if cfg.gemini_api_key:
-        log(f"      script via Gemini ({cfg.gemini_model}, lang={language})")
-        return generate_script_via_gemini(topic, cfg, target_seconds, language=language)
-    raise RuntimeError("no script backend configured (gemini_api_key missing)")
+    if not cfg.gemini_api_key:
+        raise RuntimeError("no script backend configured (gemini_api_key missing)")
+    log(f"      script via Gemini ({cfg.gemini_model}, lang={language})")
+    script = generate_script_via_gemini(topic, cfg, target_seconds, language=language)
+
+    # Short jobs don't need top-up — Gemini reliably nails ≤60s targets.
+    if target_seconds < 90:
+        return script
+
+    wps = _WPS_EN if (language or "de").lower() == "en" else _WPS_DE
+    target_words = int(target_seconds * wps)
+    accept_words = int(target_words * 0.85)  # within 15% of target = good enough
+
+    max_topups = 3
+    for attempt in range(1, max_topups + 1):
+        current_words = len(script.split())
+        current_secs = current_words / wps
+        if current_words >= accept_words:
+            break
+        deficit_words = target_words - current_words
+        if deficit_words < 30:  # already extremely close
+            break
+        log(f"      script short: {current_words}w (~{current_secs:.0f}s), "
+            f"target {target_words}w (~{target_seconds:.0f}s) — "
+            f"top-up {attempt}/{max_topups}, requesting ~{deficit_words}w")
+        try:
+            addition = _gemini_continuation(script, cfg, deficit_words, language=language)
+        except Exception as e:
+            log(f"      top-up failed: {e} — keeping current script")
+            break
+        # Glue with a space; Gemini's continuation may or may not lead with one.
+        script = script.rstrip() + " " + addition.lstrip()
+
+    final_words = len(script.split())
+    final_secs = final_words / wps
+    log(f"      final script: {final_words}w (~{final_secs:.0f}s, target ~{target_seconds:.0f}s)")
+    return script
 
 
 def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0,
@@ -368,8 +464,15 @@ def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
     target_low = max(10, int(target_seconds - 3))
     target_high = int(target_seconds + 3)
-    words_low = int(target_seconds * 2.0)
-    words_high = int(target_seconds * 2.6)
+    # Word ranges aligned with actual TTS speech rate (DE ~2.4 wps,
+    # EN ~2.5 wps). The old 2.0-2.6 hardcode let Gemini hit the low
+    # bound (e.g. 1000 words for 500s) and stop, producing only 400s
+    # of speech. Bias the low bound to 95% of expected and the high
+    # bound to 115% so even Gemini's lazy "low-bound" output lands
+    # close to target.
+    wps = _WPS_EN if (language or "de").lower() == "en" else _WPS_DE
+    words_low = int(target_seconds * wps * 0.95)
+    words_high = int(target_seconds * wps * 1.15)
     # Pick template along two axes: language (de/en) and length (short
     # vs long-form). Long-form switches because "YouTube Short" in the
     # prompt makes Gemini silently cap output at ~60s. Language switches
