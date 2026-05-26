@@ -3,6 +3,7 @@
 import queue
 import re
 import socket
+import sys
 import threading
 import time
 import traceback
@@ -778,7 +779,35 @@ def build_app() -> gr.Blocks:
     return app
 
 
+def _preflight_config(config_path: str = "config.json") -> None:
+    """Validate config.json before launching the GUI. Errors abort startup
+    with a clear message; warnings print to stderr but the GUI still boots.
+    Caller has already been told this can fail — we just exit(1) on errors
+    so they're not chasing API-key crashes 5 minutes into a job."""
+    cp = Path(config_path)
+    if not cp.is_file():
+        print(f"\n  ERROR: config file {cp} not found.", file=sys.stderr)
+        print(f"  Copy config.example.json → config.json and fill in your keys.\n",
+              file=sys.stderr)
+        sys.exit(1)
+    try:
+        cfg = Config.load(cp)
+    except Exception as e:
+        print(f"\n  ERROR: config.json failed to parse: {e}\n", file=sys.stderr)
+        sys.exit(1)
+    errors, warnings = cfg.validate()
+    for w in warnings:
+        print(f"  WARN: {w}", file=sys.stderr)
+    if errors:
+        print("\n  Config errors prevent startup:", file=sys.stderr)
+        for e in errors:
+            print(f"    - {e}", file=sys.stderr)
+        print("", file=sys.stderr)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
+    _preflight_config()
     app = build_app()
     # Gradio 6 sandboxes file delivery; let it serve videos from the user's home
     allowed = [str(Path.home())]

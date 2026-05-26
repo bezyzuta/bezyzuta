@@ -31,8 +31,8 @@ in pipeline.py):
      who briefly turns away or gets occluded doesn't jitter the frame.)
 
 This module deliberately does NOT re-implement the detector adapters —
-it imports the existing `_get_yolo_face_detector`, `_get_insightface`,
-and `_get_mediapipe_detector` from pipeline.py so all CUDA / weight-cache /
+it imports the existing `get_yolo_face_detector`, `get_insightface`,
+and `get_mediapipe_detector` from pipeline.py so all CUDA / weight-cache /
 license-agreement plumbing keeps working unchanged.
 """
 
@@ -178,15 +178,15 @@ def _detect_faces_in_frame(thumb_path: Path,
     # double the bug surface for every detector quirk.
     try:
         from pipeline import (  # type: ignore
-            _get_yolo_face_detector,
-            _get_insightface,
-            _get_mediapipe_detector,
+            get_yolo_face_detector,
+            get_insightface,
+            get_mediapipe_detector,
         )
     except Exception:
         return [], "none"
 
     # ── YOLO (best on GPU, ~5ms/frame on RTX 3080) ──
-    yolo = _get_yolo_face_detector()
+    yolo = get_yolo_face_detector()
     if yolo:
         boxes: list[tuple[float, float, float, float, float]] = []
         try:
@@ -206,7 +206,7 @@ def _detect_faces_in_frame(thumb_path: Path,
             return (_boxes_to_detections(boxes, w, "yolo", mars), "yolo")
 
     # ── InsightFace (RetinaFace, highest accuracy when present) ──
-    app = _get_insightface()
+    app = get_insightface()
     if app:
         try:
             faces = app.get(img)
@@ -225,7 +225,7 @@ def _detect_faces_in_frame(thumb_path: Path,
             return (_boxes_to_detections(boxes, w, "insightface", mars), "insightface")
 
     # ── MediaPipe (CPU fallback, always present) ──
-    fd = _get_mediapipe_detector()
+    fd = get_mediapipe_detector()
     if fd:
         try:
             results = fd.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
@@ -294,11 +294,11 @@ def _extract_thumb(source: Path, t: float, out_path: Path, width: int = 640) -> 
     """Extract one JPEG at time t. Reuses pipeline.py's helper so we get the
     same ffmpeg flags / error handling."""
     try:
-        from pipeline import _extract_thumbnail  # type: ignore
+        from pipeline import extract_thumbnail  # type: ignore
     except Exception:
         return False
     try:
-        return bool(_extract_thumbnail(source, t, out_path, width=width))
+        return bool(extract_thumbnail(source, t, out_path, width=width))
     except Exception:
         return False
 

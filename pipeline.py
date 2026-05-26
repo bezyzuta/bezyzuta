@@ -128,6 +128,83 @@ class Config:
             cloudflare_image_model=data.get("cloudflare_image_model", "@cf/black-forest-labs/flux-1-schnell"),
         )
 
+    def validate(self) -> tuple[list[str], list[str]]:
+        """Run sanity checks on the loaded config. Returns (errors, warnings).
+        Errors block startup; warnings are surfaced to the user but the GUI
+        boots anyway. Called at GUI launch so the user gets clear feedback
+        before they wait through a download just to hit an "API key missing"
+        crash three minutes in."""
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        # output_dir must be creatable (we don't require it to exist yet —
+        # mkdir at first job is fine, but the parent has to be writable).
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            errors.append(f"output_dir {self.output_dir} can't be created/written: {e}")
+
+        # Gemini is the only required external service — script generation
+        # needs it. Cloudflare is optional (image overlays + LLM fallbacks).
+        if not self.gemini_api_key:
+            errors.append(
+                "gemini_api_key missing. Either set it in config.json or "
+                "export GEMINI_API_KEY in the environment. Free key at "
+                "https://aistudio.google.com/apikey"
+            )
+
+        if not self.cloudflare_account_id or not self.cloudflare_api_token:
+            warnings.append(
+                "cloudflare_account_id / cloudflare_api_token not set — "
+                "image overlays and Cloudflare LLM fallbacks will be unavailable. "
+                "Pipeline still runs without them."
+            )
+
+        # Resolution sanity. Catches typos like target_resolution: [108, 192]
+        # (which would technically work but produce a 108×192 thumbnail).
+        if self.target_w < 240 or self.target_h < 240:
+            errors.append(
+                f"target_resolution {self.target_w}×{self.target_h} is too "
+                "small. Use [1080, 1920] for shorts or [1920, 1080] for "
+                "landscape (the GUI's Output-Format toggle overrides this)."
+            )
+
+        # Whisper model. faster-whisper accepts a fixed enum; an unknown
+        # value would error 10 minutes into a job during transcription.
+        known_whisper = {"tiny", "tiny.en", "base", "base.en", "small",
+                         "small.en", "medium", "medium.en", "large",
+                         "large-v1", "large-v2", "large-v3", "distil-small.en",
+                         "distil-medium.en", "distil-large-v2", "distil-large-v3"}
+        if self.whisper_model not in known_whisper:
+            warnings.append(
+                f"whisper_model {self.whisper_model!r} not in the known list "
+                f"({sorted(known_whisper)}). Transcription may fail to load."
+            )
+
+        # TTS language must be one of the dispatcher's known values.
+        if self.tts_language not in ("auto", "de", "en"):
+            warnings.append(
+                f"tts_language {self.tts_language!r} unknown — falling back "
+                "to 'auto'. Valid: 'de', 'en', 'auto'."
+            )
+
+        # Chatterbox knobs bounded 0..1.
+        for name, val in [("tts_exaggeration", self.tts_exaggeration),
+                          ("tts_cfg_weight", self.tts_cfg_weight)]:
+            if not 0.0 <= val <= 1.0:
+                warnings.append(f"{name}={val} outside [0..1] range; Chatterbox may behave oddly")
+
+        # Voice-cloning reference audio path — only check existence if set.
+        if self.tts_reference_audio:
+            ref = Path(self.tts_reference_audio).expanduser()
+            if not ref.is_file():
+                warnings.append(
+                    f"tts_reference_audio {ref} not found — Chatterbox will fall "
+                    "back to its default voice instead of cloning."
+                )
+
+        return errors, warnings
+
 
 def _release_gpu_memory() -> None:
     """Best-effort release of CUDA VRAM held by the current process. Called
@@ -1357,7 +1434,7 @@ def pick_loud_multi_clips(source: Path, total_seconds: float, n_segments: int,
     return _extract_and_concat(source, segments, out_path)
 
 
-def _extract_thumbnail(source: Path, at_seconds: float, out_path: Path,
+def extract_thumbnail(source: Path, at_seconds: float, out_path: Path,
                        width: int = 480) -> bool:
     """Single ffmpeg seek+frame grab. Returns True on success."""
     try:
@@ -1423,7 +1500,7 @@ def detect_subject_x_position(source: Path, cfg, n_samples: int = 10,
     have_face_detector = _face_detector_available()
     for i, t in enumerate(sample_times):
         thumb = work / f"reframe_sample_{i}.jpg"
-        if not _extract_thumbnail(source, t, thumb, width=640):
+        if not extract_thumbnail(source, t, thumb, width=640):
             continue
         # Face detection first
         face_res = detect_face_crop_offset(thumb)
@@ -1534,7 +1611,7 @@ _YOLO_FACE_WEIGHTS_URL = (
 )
 
 
-def _get_yolo_face_detector():
+def get_yolo_face_detector():
     """Lazy-init Ultralytics YOLO face detector. Downloads yolov11n-face.pt
     (~6MB) to ~/.cache/yolo-face on first call. Returns None if ultralytics
     isn't installed or the download fails."""
@@ -1566,7 +1643,7 @@ def _get_yolo_face_detector():
     return _YOLO_FACE_MODEL
 
 
-def _get_insightface():
+def get_insightface():
     """Lazy-init InsightFace's FaceAnalysis (detection only, RetinaFace).
     Returns None if insightface / onnxruntime / model download fail."""
     global _IF_FACE_APP, _FACE_LOG_PRINTED
@@ -1605,7 +1682,7 @@ def _get_insightface():
     return _IF_FACE_APP
 
 
-def _get_mediapipe_detector():
+def get_mediapipe_detector():
     """Lazy-load MediaPipe's face detector as fallback."""
     global _MP_FACE_DETECTOR, _FACE_LOG_PRINTED
     if _MP_FACE_DETECTOR is False:
@@ -1642,7 +1719,7 @@ def _detect_face_center_x(thumb_path: Path):
         return None
 
     # YOLOv8-face path (best accuracy/speed on GPU, requires ultralytics)
-    yolo = _get_yolo_face_detector()
+    yolo = get_yolo_face_detector()
     if yolo:
         try:
             results = yolo(img, verbose=False, conf=0.35)
@@ -1663,7 +1740,7 @@ def _detect_face_center_x(thumb_path: Path):
             return (center_x_px / w, "yolo")
 
     # InsightFace path
-    app = _get_insightface()
+    app = get_insightface()
     if app:
         try:
             faces = app.get(img)
@@ -1679,7 +1756,7 @@ def _detect_face_center_x(thumb_path: Path):
             return (center_x_px / w, "insightface")
 
     # MediaPipe fallback
-    fd = _get_mediapipe_detector()
+    fd = get_mediapipe_detector()
     if fd:
         try:
             results = fd.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
@@ -1873,9 +1950,9 @@ def _face_detector_available() -> bool:
     we should stay centered instead of falling back to the vision LLM which
     has no way to say 'no people here' and just guesses a side."""
     return bool(
-        _get_yolo_face_detector()
-        or _get_insightface()
-        or _get_mediapipe_detector()
+        get_yolo_face_detector()
+        or get_insightface()
+        or get_mediapipe_detector()
     )
 
 
@@ -1891,7 +1968,7 @@ def _detect_subject_at_time(source: Path, at_time: float, cfg,
       3. Only if no face detector is installed at all do we ask the vision
          LLM as a last-resort guess.
     """
-    if not _extract_thumbnail(source, at_time, sample_path, width=640):
+    if not extract_thumbnail(source, at_time, sample_path, width=640):
         return (0.5, "centered")
 
     face_res = detect_face_crop_offset(sample_path)
@@ -2122,7 +2199,7 @@ def pick_ai_scenes(source: Path, total_seconds: float, n_segments: int,
     for i, s in enumerate(starts):
         thumb_t = s + seg_dur / 2
         thumb_path = work / f"ai_thumb_{i:02d}.jpg"
-        if _extract_thumbnail(source, thumb_t, thumb_path):
+        if extract_thumbnail(source, thumb_t, thumb_path):
             thumbs.append((s, thumb_path))
 
     if len(thumbs) < n_segments:
