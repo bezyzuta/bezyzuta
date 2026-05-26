@@ -232,7 +232,7 @@ def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 20
     return pick
 
 
-SCRIPT_PROMPT = """Schreibe ein energetisches, jugendliches Skript fuer einen YouTube Short ueber Roblox auf Deutsch.
+SCRIPT_PROMPT_SHORT = """Schreibe ein energetisches, jugendliches Skript fuer einen YouTube Short ueber Roblox auf Deutsch.
 
 Thema: {topic}
 
@@ -243,6 +243,25 @@ Anforderungen:
 - Call-to-Action am Ende ("Folg fuer mehr...", "Lass ein Like da...")
 - Kein Markdown, keine Anfuehrungszeichen, keine Regie-Anweisungen
 - Gib NUR den reinen Sprechertext aus, sonst nichts"""
+
+
+SCRIPT_PROMPT_LONG = """Schreibe ein vollstaendiges, energetisches Skript fuer ein YouTube-Video ueber Roblox auf Deutsch. Das ist KEIN Short — es soll ein langes, ausfuehrliches Video werden.
+
+Thema: {topic}
+
+Anforderungen:
+- ZWINGEND ca. {target_low}-{target_high} Sekunden Sprechzeit. Das sind etwa {words_low}-{words_high} deutsche Woerter — bitte WIRKLICH so viel schreiben. Nicht kuerzen!
+- Starker Hook in den ersten 10 Sekunden
+- Mehrere Action-Beats und Wendungen ueber den Verlauf
+- Detaillierte Story / Erzaehlung, keine Stichpunkte
+- Mehrere "Pattern Interrupts" mit "Aber Moment...", "Du wirst nicht glauben was als naechstes...", "Krass, oder?"
+- Call-to-Action am Ende ("Abonniere fuer mehr...", "Like wenn das wild war...")
+- Kein Markdown, keine Anfuehrungszeichen, keine Regie-Anweisungen, keine Kapitel-Ueberschriften
+- Gib NUR den reinen Sprechertext aus, sonst nichts
+- WICHTIG: Wenn dein erster Entwurf zu kurz ist, schreibe weiter bis die Wortanzahl stimmt"""
+
+
+SCRIPT_PROMPT = SCRIPT_PROMPT_SHORT  # back-compat alias for any external callers
 
 
 def _gemini_post(url: str, params: dict, body: dict, retries: int = 4,
@@ -319,15 +338,24 @@ def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 
     target_high = int(target_seconds + 3)
     words_low = int(target_seconds * 2.0)
     words_high = int(target_seconds * 2.6)
-    prompt_text = SCRIPT_PROMPT.format(
+    # Pick template: anything past 90s of speech needs the long-form prompt,
+    # otherwise Gemini sees "YouTube Short" and silently caps at ~60s of
+    # content no matter how big the word range we ask for.
+    is_long_form = target_seconds >= 90
+    prompt_template = SCRIPT_PROMPT_LONG if is_long_form else SCRIPT_PROMPT_SHORT
+    prompt_text = prompt_template.format(
         topic=topic, target_low=target_low, target_high=target_high,
         words_low=words_low, words_high=words_high,
     )
+    # Long scripts blow past the default 2048 token budget — at ~2.5 tokens
+    # per German word we need ~3.5k tokens for 1300 words. Give it 8192 so
+    # there's actual headroom for 15-minute videos.
+    max_tokens = 8192 if is_long_form else 2048
     body = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "temperature": 0.9,
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": max_tokens,
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
@@ -3535,8 +3563,14 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 "voice_path": vo, "voice_duration": vo_dur,
             })
 
-    # bias clip duration toward target_duration but never cut the voiceover
-    target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0, 150.0)
+    # Bias clip duration toward target_duration but never cut the voiceover.
+    # Lower bound: voiceover + 0.6s headroom, or target-5, or 15s minimum.
+    # Upper bound: target+12s of headroom. There used to be a hard 150s cap
+    # here for the shorts era — removed since long-form mode wants up to
+    # 900s. If the voiceover is shorter than the clip (user picked
+    # target_duration > script-implied length), the tail plays as silent
+    # gameplay over BGM, which is fine for long-form videos.
+    target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0)
     step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s (target {target_duration:.0f}s)")
 
     clip_segments = max(1, min(int(job.get("clip_segments", 1)), 24))
