@@ -261,6 +261,35 @@ Anforderungen:
 - WICHTIG: Wenn dein erster Entwurf zu kurz ist, schreibe weiter bis die Wortanzahl stimmt"""
 
 
+SCRIPT_PROMPT_SHORT_EN = """Write an energetic, youthful script for a YouTube Short about Roblox in English.
+
+Topic: {topic}
+
+Requirements:
+- Length: about {target_low}-{target_high} seconds of speech (around {words_low}-{words_high} English words)
+- Strong hook in the first 5 seconds (e.g. "Bro, look at this!", "99% of players can't do this...", "You won't believe...")
+- Hype action description in the middle, fast-paced and engaging
+- Call to action at the end ("Follow for more...", "Like if that was wild...")
+- No markdown, no quotes, no stage directions
+- Output ONLY the speaker text, nothing else"""
+
+
+SCRIPT_PROMPT_LONG_EN = """Write a complete, energetic script for a long-form YouTube video about Roblox in English. This is NOT a Short — it should be a long, detailed video.
+
+Topic: {topic}
+
+Requirements:
+- MUST be approximately {target_low}-{target_high} seconds of speech. That's {words_low}-{words_high} English words — please WRITE that much, do not cut short!
+- Strong hook in the first 10 seconds
+- Multiple action beats and twists throughout
+- Detailed story / narrative, no bullet points
+- Multiple pattern interrupts: "But wait...", "You won't believe what happens next...", "Crazy, right?"
+- Call to action at the end ("Subscribe for more...", "Like if that was wild...")
+- No markdown, no quotes, no stage directions, no chapter headings
+- Output ONLY the speaker text, nothing else
+- IMPORTANT: if your first draft is too short, keep writing until you hit the word count"""
+
+
 SCRIPT_PROMPT = SCRIPT_PROMPT_SHORT  # back-compat alias for any external callers
 
 
@@ -315,9 +344,11 @@ def fallback_template_script(topic: str) -> str:
 
 
 def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
-                    on_step=None) -> str:
+                    on_step=None, language: str = "de") -> str:
     """Top-level script generator. Just Gemini for now; falls through to the
-    template if Gemini isn't configured or rate-limits the caller."""
+    template if Gemini isn't configured or rate-limits the caller. The
+    `language` arg picks the prompt template (de/en) so Gemini writes in
+    the same language the TTS engine expects."""
     def log(msg):
         if on_step:
             try: on_step(msg)
@@ -325,12 +356,13 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
         else:
             print(msg)
     if cfg.gemini_api_key:
-        log(f"      script via Gemini ({cfg.gemini_model})")
-        return generate_script_via_gemini(topic, cfg, target_seconds)
+        log(f"      script via Gemini ({cfg.gemini_model}, lang={language})")
+        return generate_script_via_gemini(topic, cfg, target_seconds, language=language)
     raise RuntimeError("no script backend configured (gemini_api_key missing)")
 
 
-def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0) -> str:
+def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0,
+                               language: str = "de") -> str:
     if not cfg.gemini_api_key:
         raise RuntimeError("topic given but gemini_api_key missing in config (and GEMINI_API_KEY env not set)")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
@@ -338,11 +370,18 @@ def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 
     target_high = int(target_seconds + 3)
     words_low = int(target_seconds * 2.0)
     words_high = int(target_seconds * 2.6)
-    # Pick template: anything past 90s of speech needs the long-form prompt,
-    # otherwise Gemini sees "YouTube Short" and silently caps at ~60s of
-    # content no matter how big the word range we ask for.
+    # Pick template along two axes: language (de/en) and length (short
+    # vs long-form). Long-form switches because "YouTube Short" in the
+    # prompt makes Gemini silently cap output at ~60s. Language switches
+    # to honor the user's TTS-Sprache choice — the previous hardcoded
+    # German prompt meant English TTS jobs got German scripts that
+    # Chatterbox then tried to speak in an American accent.
     is_long_form = target_seconds >= 90
-    prompt_template = SCRIPT_PROMPT_LONG if is_long_form else SCRIPT_PROMPT_SHORT
+    lang = (language or "de").lower()
+    if lang == "en":
+        prompt_template = SCRIPT_PROMPT_LONG_EN if is_long_form else SCRIPT_PROMPT_SHORT_EN
+    else:
+        prompt_template = SCRIPT_PROMPT_LONG if is_long_form else SCRIPT_PROMPT_SHORT
     prompt_text = prompt_template.format(
         topic=topic, target_low=target_low, target_high=target_high,
         words_low=words_low, words_high=words_high,
@@ -656,6 +695,13 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
         print("      WARN: TTS set to English but text scans as German — "
               "overriding to Piper to avoid Chatterbox tokenizer crash.")
         lang = "de"
+    elif lang == "de" and detected == "en":
+        # Piper would speak the English text with German pronunciation
+        # rules (e.g. "the" → "te"), which sounds broken. Switch to
+        # Chatterbox so the English text is spoken correctly.
+        print("      WARN: TTS set to German but text scans as English — "
+              "overriding to Chatterbox so the pronunciation matches.")
+        lang = "en"
     if lang == "de":
         return _synthesize_voiceover_piper(text, cfg, out_path)
     return _synthesize_voiceover_chatterbox(text, cfg, out_path)
@@ -3517,8 +3563,16 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             if not topic:
                 raise RuntimeError(f"job {slug!r} has neither 'script' nor 'topic'")
             step(f"      generating script for topic: {topic!r} (target {target_duration:.0f}s)")
+            # Pick script language from the TTS language toggle so Gemini
+            # writes in the same language the voice engine will speak.
+            # "auto" defaults to German because that's this channel's
+            # primary content; users wanting English explicitly choose EN.
+            script_lang = (getattr(cfg, "tts_language", "auto") or "auto").lower()
+            if script_lang not in ("de", "en"):
+                script_lang = "de"
             try:
-                script = generate_script(topic, cfg, target_seconds=target_duration, on_step=step)
+                script = generate_script(topic, cfg, target_seconds=target_duration,
+                                         on_step=step, language=script_lang)
             except RuntimeError as e:
                 step(f"      WARN: script gen failed: {e}")
                 step(f"      using template fallback script (pipeline continues)")

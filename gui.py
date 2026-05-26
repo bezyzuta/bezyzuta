@@ -438,15 +438,17 @@ def build_app() -> gr.Blocks:
             )
             tts_language = gr.Dropdown(
                 choices=[
-                    ("Auto (aus Text erkennen)", "auto"),
-                    ("🇩🇪 Deutsch (Piper / Thorsten Voice)", "de"),
-                    ("🇬🇧 Englisch (Chatterbox, Voice-Cloning möglich)", "en"),
+                    ("Auto (Skript=DE, TTS aus Text erkennen)", "auto"),
+                    ("🇩🇪 Deutsch (Gemini schreibt DE → Piper TTS)", "de"),
+                    ("🇬🇧 Englisch (Gemini schreibt EN → Chatterbox TTS)", "en"),
                 ],
                 value="auto",
-                label="🌍 TTS Sprache",
-                info=("DE → Piper TTS (lokal, ~63 MB Modell, schnell, deutsche Native-Stimme). "
-                      "EN → Chatterbox TTS (lokal GPU, Voice-Cloning möglich). "
-                      "Auto = Heuristik auf den Skript-Text."),
+                label="🌍 Sprache (Skript + TTS)",
+                info=("Steuert sowohl den Gemini-Prompt als auch die TTS-Engine. "
+                      "DE → Gemini schreibt deutsch, Piper spricht (lokal, ~63 MB, schnell). "
+                      "EN → Gemini schreibt englisch, Chatterbox spricht (GPU, Voice-Cloning möglich). "
+                      "Sicherheits-Override: wenn dein Custom-Script in der anderen Sprache ist, "
+                      "wird die richtige Engine automatisch gewählt."),
             )
             tts_piper_model = gr.Dropdown(
                 choices=[
