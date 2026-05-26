@@ -405,6 +405,84 @@ def _download_piper_voice(model_name: str) -> Path:
     return onnx_path
 
 
+def _piper_synthesize_to_wav(voice, text: str, wav_path: Path) -> None:
+    """Write Piper synthesis of `text` to `wav_path`. Survives three known
+    piper-tts API shapes so we don't have to pin a specific version:
+
+      (A) piper-tts ≥1.3: `voice.synthesize_wav(text, wav_file)` — current.
+      (B) piper-tts ≤1.2: `voice.synthesize(text, wav_file)` — old.
+      (C) piper-tts ≥1.3 alt: `voice.synthesize(text)` returns an iterator
+          of AudioChunk objects we have to drain ourselves into the wav.
+
+    Without this dispatch, on a (A)-era install the old (B) call silently
+    produced a generator that nothing consumed → empty wav file, pipeline
+    hangs or fails downstream.
+    """
+    import wave
+
+    # Path (A): synthesize_wav writes a fully-formed WAV into the open
+    # wave.Wave_write handle. This is the canonical 1.3+ API.
+    syn_wav = getattr(voice, "synthesize_wav", None)
+    if callable(syn_wav):
+        with wave.open(str(wav_path), "wb") as wav_file:
+            syn_wav(text, wav_file)
+        return
+
+    # Path (B): old API took the wave handle as a second positional arg.
+    # Probe the signature first so we don't half-open a wave file that
+    # then can't be closed cleanly (wave.close() requires a header).
+    import inspect
+    try:
+        sig = inspect.signature(voice.synthesize)
+        accepts_two = len([p for p in sig.parameters.values()
+                           if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                         inspect.Parameter.POSITIONAL_OR_KEYWORD)]) >= 2
+    except (TypeError, ValueError):
+        accepts_two = False
+    if accepts_two:
+        wav_file = wave.open(str(wav_path), "wb")
+        try:
+            voice.synthesize(text, wav_file)
+        finally:
+            try:
+                wav_file.close()
+            except Exception:
+                pass
+        if wav_path.is_file() and wav_path.stat().st_size > 1024:
+            return
+        # File is empty/truncated → discard and try (C).
+        try: wav_path.unlink()
+        except Exception: pass
+
+    # Path (C): synthesize(text) returns an iterator of AudioChunk objects.
+    # Each chunk exposes audio_int16_bytes (raw PCM s16le), plus sample_rate
+    # / sample_width / sample_channels metadata. Drain into a fresh WAV.
+    audio_iter = voice.synthesize(text)
+    sample_rate = None
+    sample_width = 2
+    channels = 1
+    pcm_chunks: list[bytes] = []
+    for chunk in audio_iter:
+        if sample_rate is None:
+            sample_rate = int(getattr(chunk, "sample_rate", 22050))
+            sample_width = int(getattr(chunk, "sample_width", 2))
+            channels = int(getattr(chunk, "sample_channels", 1))
+        data = getattr(chunk, "audio_int16_bytes", None)
+        if data is None:
+            arr = getattr(chunk, "audio_int16_array", None)
+            if arr is not None:
+                data = arr.tobytes()
+        if data:
+            pcm_chunks.append(data)
+    if not pcm_chunks or sample_rate is None:
+        raise RuntimeError("Piper synthesize() returned no audio chunks")
+    with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(pcm_chunks))
+
+
 def _get_piper_voice(model_name: str):
     """Lazy-init the Piper voice. Returns None if piper-tts isn't installed
     or the download fails. Cached per model_name."""
@@ -501,8 +579,7 @@ def _synthesize_voiceover_piper(text: str, cfg: Config, out_path: Path) -> Path:
     import wave
     wav_path = out_path.with_suffix(".wav")
     try:
-        with wave.open(str(wav_path), "wb") as wav_file:
-            voice.synthesize(text, wav_file)
+        _piper_synthesize_to_wav(voice, text, wav_path)
     except Exception as e:
         raise RuntimeError(f"Piper generation failed: {e}") from e
     run([
