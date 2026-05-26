@@ -63,6 +63,7 @@ def generate(
     custom_script: str,
     target_duration: float,
     clip_segments: int,
+    playback_speed: float,
     scene_pick_mode: str,
     manual_ranges: str,
     auto_reframe: bool,
@@ -155,6 +156,7 @@ def generate(
             "topic": topic,
             "target_duration": float(target_duration),
             "clip_segments": int(clip_segments),
+            "playback_speed": float(playback_speed),
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "manual_ranges": str(manual_ranges or ""),
             "auto_reframe": bool(auto_reframe),
@@ -344,6 +346,13 @@ def build_app() -> gr.Blocks:
                     1, 24, value=1, step=1,
                     label="Anzahl Szenen-Cuts",
                     info="1 = ein Stück, mehr = Highlight-Reel",
+                )
+                playback_speed = gr.Slider(
+                    0.5, 1.5, value=1.0, step=0.05,
+                    label="🎚️ Wiedergabe-Geschwindigkeit",
+                    info=("Wird nach dem Compose über das fertige Video gelegt. "
+                          "1.0 = normal, 1.1 = 10% schneller, 1.25 = deutlich schneller, "
+                          "0.9 = leicht entschleunigt. Bild + Ton bleiben synchron."),
                 )
             scene_pick_mode = gr.Radio(
                 choices=[("Standard — gleichmäßig verteilt", "even"),
@@ -713,7 +722,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
-                clip_segments, scene_pick_mode, manual_ranges, auto_reframe,
+                clip_segments, playback_speed, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_exaggeration, tts_cfg_weight,

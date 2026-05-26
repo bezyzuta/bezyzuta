@@ -2429,6 +2429,33 @@ def _image_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
     )
 
 
+def apply_playback_speed(video_path: Path, speed: float) -> None:
+    """Re-time `video_path` in place: video and audio both sped up by
+    `speed` (1.0 = no-op, 1.1 = 10% faster, 0.9 = 10% slower).
+
+    Picture: setpts=PTS/speed compresses the presentation timestamps.
+    Audio: atempo=speed pitches-preserved tempo shift (single atempo
+    instance covers 0.5..2.0; we cap to that range so we never need
+    to chain filters).
+    """
+    speed = max(0.5, min(2.0, float(speed)))
+    if abs(speed - 1.0) < 0.01:
+        return
+    tmp = video_path.with_suffix(".speed.mp4")
+    run([
+        "ffmpeg", "-y", "-i", str(video_path),
+        "-filter_complex",
+        f"[0:v]setpts=PTS/{speed}[v];[0:a]atempo={speed}[a]",
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        str(tmp),
+    ])
+    tmp.replace(video_path)
+
+
 def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   cfg: Config, out_path: Path,
                   image_paths: list | None = None,
@@ -3788,6 +3815,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             progress_duration=vo_dur,
             crop_offset=crop_offset,
         )
+        speed = float(job.get("playback_speed", 1.0))
+        if abs(speed - 1.0) > 0.01:
+            step(f"      retiming final video to {speed:.2f}x playback speed")
+            apply_playback_speed(out, speed)
         if state:
             state.mark_done(Step.COMPOSE, {"out_path": out})
     step(f"      -> {out}")
