@@ -9,6 +9,10 @@ gradio>=4.40
 chatterbox-tts
 # Audio I/O for Chatterbox (writes WAV before ffmpeg transcodes to MP3).
 torchaudio
+# Piper TTS for German voiceovers — offline, CPU-friendly, ~63 MB Thorsten
+# voice model auto-downloaded on first use. ONNX runtime is pulled as a
+# transitive dep.
+piper-tts
 # Local face detection for auto-reframe. Detector priority at runtime:
 #   YOLOv8/v11-face (ultralytics)  -> best on GPU, requires torch
 #   InsightFace (RetinaFace/SCRFD) -> highest accuracy, needs VC++ on Windows

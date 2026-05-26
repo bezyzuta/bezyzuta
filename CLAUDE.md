@@ -115,11 +115,21 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 - Source-File-Cache für Multi-Clip
 
 ### Skript & Stimme
-- **Chatterbox TTS** (Resemble AI, Apache 2.0, lokal auf GPU) — ersetzt
-  Edge-TTS nach User-Wunsch. Zero-shot voice cloning via reference audio
-  file (5-10s sample). Englisch ist primär trainiert, Deutsch funktioniert
-  aber Qualität variabel. ~3GB Model-Download bei first run, ~3-4GB VRAM
-  resident. Cache: `_CHATTERBOX_MODEL` module-level singleton in pipeline.py.
+- **Dual-Engine TTS, sprach-gesteuert via `cfg.tts_language`** ("de" /
+  "en" / "auto"). `synthesize_voiceover()` dispatcht zwischen den beiden:
+  - **Englisch → Chatterbox TTS** (Resemble AI, Apache 2.0, lokal GPU).
+    Zero-shot voice cloning via reference audio file (5-10s sample).
+    ~3GB Model-Download bei first run, ~3-4GB VRAM resident.
+    Cache: `_CHATTERBOX_MODEL` module-level singleton.
+  - **Deutsch → Piper TTS** (rhasspy/piper, MIT, lokal CPU/GPU).
+    Default-Voice `de_DE-thorsten-medium` (Thorsten Müller, deutscher
+    Linguist, ~63 MB .onnx). Native deutsche Prosodie, real-time auf CPU,
+    kein VRAM-Bedarf, kein Voice-Cloning (feste Stimmen).
+    Cache: `_PIPER_VOICE` module-level + Files in `~/.cache/piper-voices/`.
+    Auto-Download via `_download_piper_voice()` aus huggingface
+    (rhasspy/piper-voices repo).
+  - **Auto-Mode**: `_detect_language()` Heuristik (Umlaute = DE, sonst
+    deutsche Stopword-Ratio > 10% = DE, sonst EN).
 - Gemini 2.5 Flash für Skript-Generierung aus Topic
 - Cloudflare Llama 3.1 8B als Skript-Fallback
 - Template-Skript als letzter Fallback
@@ -165,7 +175,8 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 ## Configs
 
 `config.json` (NICHT `config.example.json`!):
-- tts_reference_audio (optional path for voice cloning) / tts_exaggeration / tts_cfg_weight
+- tts_language ("de"/"en"/"auto") + tts_piper_model (default `de_DE-thorsten-medium`)
+- tts_reference_audio (optional path for voice cloning, EN only) / tts_exaggeration / tts_cfg_weight
 - gemini_api_key (frischer Free-Tier Account, 1500 RPD)
 - cloudflare_account_id + cloudflare_api_token
 - output_dir: `C:\Users\bezy\Desktop\Youtube`
@@ -177,7 +188,8 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 |---|---|---|
 | Skript-Generierung | Gemini 2.5 Flash | aktiv |
 | Bild-Prompts | Gemini → Cloudflare Llama 3.1 | aktiv |
-| TTS Voiceover | Chatterbox TTS (Resemble AI, local GPU) | aktiv |
+| TTS Voiceover (EN) | Chatterbox TTS (Resemble AI, local GPU) | aktiv |
+| TTS Voiceover (DE) | Piper TTS (rhasspy, lokal CPU, Thorsten Voice) | aktiv |
 | Vision (Scene-Picking) | Gemini Vision → Cloudflare Llama 3.2 11B Vision | aktiv |
 | Face Detection | YOLOv11-face (lokal) → MediaPipe | aktiv |
 | Image Generation | Cloudflare Flux Schnell | aktiv |

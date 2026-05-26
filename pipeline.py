@@ -21,6 +21,39 @@ import requests
 # and failed (no torch / no chatterbox-tts / OOM), otherwise the model.
 _CHATTERBOX_MODEL = None
 
+# Module-level cache for the Piper voice (German TTS). Piper is CPU-friendly
+# (~100 MB RAM, ~real-time on a modern CPU), so no VRAM impact. We cache per
+# voice name so switching voices at runtime re-loads cleanly.
+_PIPER_VOICE = None         # None=not tried, False=failed, else the voice
+_PIPER_VOICE_NAME = ""
+
+# Where Piper .onnx + .onnx.json files get cached on disk. Picked the same
+# spot Piper's own CLI uses by convention so future native installs share
+# the cache.
+_PIPER_CACHE_DIR = Path.home() / ".cache" / "piper-voices"
+
+# Curated set of German voices that work well for shorts. Keys are the
+# logical name we expose in config; values are the rhasspy/piper-voices
+# huggingface paths to the .onnx file (the .onnx.json sits next to it).
+_PIPER_MODEL_URLS = {
+    # Thorsten Müller — male, the de-facto German open-source TTS voice.
+    # "medium" is the sweet spot: ~63 MB, very natural prosody, near-real-time.
+    "de_DE-thorsten-medium": "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
+    # Higher quality, larger, slower (~115 MB).
+    "de_DE-thorsten-high":   "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx",
+    # Female alternative.
+    "de_DE-eva_k-x_low":     "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/eva_k/x_low/de_DE-eva_k-x_low.onnx",
+}
+
+# German stopwords used by the auto-detect fallback. Only need a handful —
+# any text with >10% of these is overwhelmingly German.
+_GERMAN_STOPWORDS = frozenset({
+    "der", "die", "das", "und", "ist", "nicht", "ein", "eine", "mit",
+    "auf", "für", "fuer", "von", "im", "wir", "du", "ich", "sie", "er",
+    "es", "den", "dem", "des", "zu", "zum", "zur", "auch", "wie", "so",
+    "noch", "nur", "schon", "aber", "oder", "mal", "doch", "ja",
+})
+
 # Opt-in upgrades (resume, YT optimizer, reframe v2). The modules are
 # tolerant of missing optional deps and produce no behavior change unless
 # the matching job flag is set.
@@ -46,9 +79,16 @@ class Config:
     # zero-shot voice cloning via a reference audio file. No API key needed.
     # Primary training language is English; German output is achievable but
     # quality varies.
-    tts_reference_audio: str   # optional path to a 5-10s voice sample for cloning
-    tts_exaggeration: float    # 0..1, default 0.5 (emotion dial; 0=flat, 1=dramatic)
-    tts_cfg_weight: float      # 0..1, default 0.5 (guidance weight; lower=more natural)
+    tts_reference_audio: str   # optional path to a 5-10s voice sample for cloning (Chatterbox/EN only)
+    tts_exaggeration: float    # 0..1, default 0.5 (Chatterbox emotion; 0=flat, 1=dramatic)
+    tts_cfg_weight: float      # 0..1, default 0.5 (Chatterbox guidance; lower=more natural)
+    # Language dispatcher: "de" → Piper (offline native German), "en" →
+    # Chatterbox (offline English w/ voice cloning), "auto" → heuristic
+    # on the voiceover text.
+    tts_language: str
+    # Piper voice model name; see _PIPER_MODEL_URLS in pipeline.py for the
+    # curated set. Empty = use the default (de_DE-thorsten-medium).
+    tts_piper_model: str
     whisper_model: str
     target_w: int
     target_h: int
@@ -74,6 +114,8 @@ class Config:
             tts_reference_audio=data.get("tts_reference_audio", ""),
             tts_exaggeration=float(data.get("tts_exaggeration", 0.5)),
             tts_cfg_weight=float(data.get("tts_cfg_weight", 0.5)),
+            tts_language=str(data.get("tts_language", "auto")).lower(),
+            tts_piper_model=str(data.get("tts_piper_model", "de_DE-thorsten-medium")),
             whisper_model=data.get("whisper_model", "small"),
             target_w=int(w),
             target_h=int(h),
@@ -321,6 +363,81 @@ def make_silent_track(duration: float, out_path: Path) -> Path:
     return out_path
 
 
+def _detect_language(text: str) -> str:
+    """Quick heuristic: 'de' or 'en' for a voiceover script. Two signals:
+    German-only chars (äöüß) → definitive German. Otherwise count common
+    German stopwords against total wordcount. >10% hit rate → German."""
+    t = (text or "").lower()
+    if any(c in t for c in "äöüß"):
+        return "de"
+    words = re.findall(r"\b\w+\b", t)
+    if not words:
+        return "en"
+    hits = sum(1 for w in words if w in _GERMAN_STOPWORDS)
+    return "de" if (hits / len(words)) > 0.10 else "en"
+
+
+def _download_piper_voice(model_name: str) -> Path:
+    """Ensure {model_name}.onnx and {model_name}.onnx.json are cached on disk,
+    download them if not. Returns the absolute path to the .onnx file."""
+    base_url = _PIPER_MODEL_URLS.get(model_name)
+    if not base_url:
+        raise RuntimeError(
+            f"Unknown Piper model {model_name!r}. Known: {sorted(_PIPER_MODEL_URLS)}"
+        )
+    model_dir = _PIPER_CACHE_DIR / model_name
+    model_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = model_dir / f"{model_name}.onnx"
+    json_path = model_dir / f"{model_name}.onnx.json"
+
+    for url, dest in [(base_url, onnx_path), (base_url + ".json", json_path)]:
+        if dest.is_file() and dest.stat().st_size > 1024:
+            continue
+        print(f"      downloading Piper voice file: {dest.name}")
+        with requests.get(url, stream=True, timeout=300) as r:
+            r.raise_for_status()
+            tmp = dest.with_suffix(dest.suffix + ".part")
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        f.write(chunk)
+            tmp.replace(dest)
+    return onnx_path
+
+
+def _get_piper_voice(model_name: str):
+    """Lazy-init the Piper voice. Returns None if piper-tts isn't installed
+    or the download fails. Cached per model_name."""
+    global _PIPER_VOICE, _PIPER_VOICE_NAME
+    if _PIPER_VOICE is False:
+        return None
+    if _PIPER_VOICE is not None and _PIPER_VOICE_NAME == model_name:
+        return _PIPER_VOICE
+    try:
+        from piper import PiperVoice  # type: ignore
+    except Exception as e:
+        print(f"      Piper TTS not installed: {e}")
+        _PIPER_VOICE = False
+        return None
+    try:
+        onnx_path = _download_piper_voice(model_name)
+        print(f"      loading Piper voice {model_name} (CPU)")
+        # Different piper-tts versions take different kwargs. Try the rich
+        # form first, fall back to the minimal one if older.
+        try:
+            voice = PiperVoice.load(str(onnx_path), config_path=str(onnx_path) + ".json")
+        except TypeError:
+            voice = PiperVoice.load(str(onnx_path))
+        _PIPER_VOICE = voice
+        _PIPER_VOICE_NAME = model_name
+        print("      Piper TTS ready")
+    except Exception as e:
+        print(f"      Piper TTS load failed: {e}")
+        _PIPER_VOICE = False
+        return None
+    return _PIPER_VOICE
+
+
 def _get_chatterbox_model():
     """Lazy-init Chatterbox TTS. ~3GB model download on first call, ~3-4GB
     VRAM resident. Returns None if chatterbox-tts isn't installed, the
@@ -351,7 +468,59 @@ def _get_chatterbox_model():
 
 
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
-    """Generate voiceover via Chatterbox TTS (Resemble AI, local on GPU).
+    """Dispatch to the right TTS engine based on `cfg.tts_language`:
+
+      - "de"   → Piper TTS (offline, native German voice, fast on CPU,
+                  no voice cloning)
+      - "en"   → Chatterbox TTS (offline GPU, zero-shot voice cloning,
+                  English-primary)
+      - "auto" → quick heuristic on `text` (German-only chars + stopword
+                  ratio); falls back to English when ambiguous.
+    """
+    lang = (getattr(cfg, "tts_language", "auto") or "auto").lower()
+    if lang == "auto":
+        lang = _detect_language(text)
+        print(f"      tts language auto-detected: {lang}")
+    if lang == "de":
+        return _synthesize_voiceover_piper(text, cfg, out_path)
+    return _synthesize_voiceover_chatterbox(text, cfg, out_path)
+
+
+def _synthesize_voiceover_piper(text: str, cfg: Config, out_path: Path) -> Path:
+    """German TTS via Piper. Default voice is `de_DE-thorsten-medium` —
+    the Thorsten Voice project, a native German linguist's open dataset.
+    Override with cfg.tts_piper_model to pick a different one (see
+    _PIPER_MODEL_URLS for the curated set)."""
+    model_name = (getattr(cfg, "tts_piper_model", "") or "de_DE-thorsten-medium").strip()
+    voice = _get_piper_voice(model_name)
+    if voice is None:
+        raise RuntimeError(
+            "Piper TTS not available. Install with:\n"
+            "  .venv\\Scripts\\python.exe -m pip install piper-tts"
+        )
+    import wave
+    wav_path = out_path.with_suffix(".wav")
+    try:
+        with wave.open(str(wav_path), "wb") as wav_file:
+            voice.synthesize(text, wav_file)
+    except Exception as e:
+        raise RuntimeError(f"Piper generation failed: {e}") from e
+    run([
+        "ffmpeg", "-y", "-i", str(wav_path),
+        "-c:a", "libmp3lame", "-q:a", "2",
+        str(out_path),
+    ])
+    try:
+        wav_path.unlink()
+    except Exception:
+        pass
+    if not out_path.is_file() or out_path.stat().st_size < 200:
+        raise RuntimeError(f"Piper produced empty/missing output: {out_path}")
+    return out_path
+
+
+def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path) -> Path:
+    """English TTS via Chatterbox (Resemble AI, local on GPU).
 
     If `cfg.tts_reference_audio` points to a valid audio file, the output
     voice will mimic that speaker (zero-shot voice cloning, 3-10s sample

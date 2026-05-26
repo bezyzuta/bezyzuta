@@ -70,6 +70,8 @@ def generate(
     reframe_samples_per_seg: int,
     speaker_detection: bool,
     enable_voice: bool,
+    tts_language: str,
+    tts_piper_model: str,
     voice_ref_audio: str,
     tts_exaggeration: float,
     tts_cfg_weight: float,
@@ -115,6 +117,8 @@ def generate(
         cfg.tts_reference_audio = (voice_ref_audio or "").strip()
         cfg.tts_exaggeration = float(tts_exaggeration)
         cfg.tts_cfg_weight = float(tts_cfg_weight)
+        cfg.tts_language = (tts_language or "auto").lower()
+        cfg.tts_piper_model = (tts_piper_model or "de_DE-thorsten-medium").strip()
     except Exception as e:
         yield f"Config-Fehler: {e}", None
         return
@@ -396,26 +400,48 @@ def build_app() -> gr.Blocks:
                       "hat = aktiver Speaker, dorthin wird gecroppt. Wechselt automatisch "
                       "wenn der andere zu reden anfängt. Braucht Reframe v2."),
             )
+            tts_language = gr.Dropdown(
+                choices=[
+                    ("Auto (aus Text erkennen)", "auto"),
+                    ("🇩🇪 Deutsch (Piper / Thorsten Voice)", "de"),
+                    ("🇬🇧 Englisch (Chatterbox, Voice-Cloning möglich)", "en"),
+                ],
+                value="auto",
+                label="🌍 TTS Sprache",
+                info=("DE → Piper TTS (lokal, ~63 MB Modell, schnell, deutsche Native-Stimme). "
+                      "EN → Chatterbox TTS (lokal GPU, Voice-Cloning möglich). "
+                      "Auto = Heuristik auf den Skript-Text."),
+            )
+            tts_piper_model = gr.Dropdown(
+                choices=[
+                    ("Thorsten — DE, männlich, medium (empfohlen)", "de_DE-thorsten-medium"),
+                    ("Thorsten — DE, männlich, high (langsamer, etwas besser)", "de_DE-thorsten-high"),
+                    ("Eva K. — DE, weiblich, x_low (klein, simpel)", "de_DE-eva_k-x_low"),
+                ],
+                value="de_DE-thorsten-medium",
+                label="Piper Voice (nur bei DE)",
+                info="Wird beim ersten Lauf automatisch aus huggingface gezogen und gecacht.",
+            )
             gr.Markdown(
-                "**Chatterbox TTS** (lokal, Voice-Cloning). Erster Run lädt "
-                "~3GB Modell. Optional: Voice-Sample-Datei für eigene Stimme."
+                "**Chatterbox TTS (Englisch):** erster Run lädt ~3GB Modell. "
+                "Optional: Voice-Sample-Datei für eigene Stimme klonen."
             )
             voice_ref_audio = gr.Textbox(
                 value="",
-                label="🎤 Voice-Sample für Cloning (optional, .wav/.mp3)",
+                label="🎤 Voice-Sample für Cloning (optional, .wav/.mp3 — nur EN)",
                 placeholder=r"z.B. C:\Users\bezy\Desktop\voices\meine_stimme.wav",
                 info=("5-10 Sekunden saubere Aufnahme der Stimme die geklont werden "
-                      "soll. Leer = Chatterbox' Default-Stimme."),
+                      "soll. Leer = Chatterbox' Default-Stimme. Wirkt nur bei englischen Skripts."),
             )
             with gr.Row():
                 tts_exaggeration = gr.Slider(
                     0.0, 1.0, value=0.5, step=0.05,
-                    label="Emotion / Exaggeration",
+                    label="Chatterbox Emotion (nur EN)",
                     info="0 = ruhig/flach, 0.5 = neutral, 1 = dramatisch. Für Shorts: 0.6-0.8 funktioniert gut.",
                 )
                 tts_cfg_weight = gr.Slider(
                     0.0, 1.0, value=0.5, step=0.05,
-                    label="CFG Weight",
+                    label="Chatterbox CFG Weight (nur EN)",
                     info="Niedriger = natürlicheres Sprachtempo, höher = wörtlicher.",
                 )
 
@@ -689,7 +715,8 @@ def build_app() -> gr.Blocks:
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
-                enable_voice, voice_ref_audio, tts_exaggeration, tts_cfg_weight,
+                enable_voice, tts_language, tts_piper_model,
+                voice_ref_audio, tts_exaggeration, tts_cfg_weight,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
