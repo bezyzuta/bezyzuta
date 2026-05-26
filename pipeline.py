@@ -2477,32 +2477,55 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         )
     cwd = ass_path.parent
 
-    # 9:16 crop window with optional horizontal offset(s).
-    # crop_offset can be a single float 0..1 or a list of (segment_start_seconds, offset)
-    # tuples for per-scene reframe. offset 0 = left edge, 0.5 = centered, 1 = right edge.
-    if isinstance(crop_offset, (list, tuple)) and crop_offset and isinstance(crop_offset[0], (list, tuple)):
-        offsets = [(float(t), max(0.0, min(1.0, float(o)))) for t, o in crop_offset]
-        offsets.sort(key=lambda x: x[0])
-    else:
-        try:
-            single = max(0.0, min(1.0, float(crop_offset)))
-        except (TypeError, ValueError):
-            single = 0.5
-        offsets = [(0.0, single)]
+    # Build the source→target visual chain. Two output orientations:
+    #
+    #   Portrait (target_h > target_w, i.e. 9:16 short): take a vertical
+    #     strip out of the source via `crop=ih*9/16:ih:x=...:y=0`. The
+    #     horizontal position is driven by `crop_offset` (auto-reframe).
+    #
+    #   Landscape (target_w >= target_h, i.e. 16:9 long video): source
+    #     is almost always 16:9 already, so we just scale-cover-crop to
+    #     target_w × target_h. `crop_offset` is ignored — there is no
+    #     "where to crop horizontally" decision when input and output
+    #     aspect match.
+    is_portrait = cfg.target_h > cfg.target_w
+    if is_portrait:
+        # 9:16 crop window with optional horizontal offset(s).
+        # crop_offset can be a single float 0..1 or a list of (segment_start_seconds, offset)
+        # tuples for per-scene reframe. offset 0 = left edge, 0.5 = centered, 1 = right edge.
+        if isinstance(crop_offset, (list, tuple)) and crop_offset and isinstance(crop_offset[0], (list, tuple)):
+            offsets = [(float(t), max(0.0, min(1.0, float(o)))) for t, o in crop_offset]
+            offsets.sort(key=lambda x: x[0])
+        else:
+            try:
+                single = max(0.0, min(1.0, float(crop_offset)))
+            except (TypeError, ValueError):
+                single = 0.5
+            offsets = [(0.0, single)]
 
-    if len(offsets) <= 1:
-        crop_x = f"(iw-ih*9/16)*{offsets[0][1]:.3f}"
+        if len(offsets) <= 1:
+            crop_x = f"(iw-ih*9/16)*{offsets[0][1]:.3f}"
+        else:
+            crop_x = f"(iw-ih*9/16)*{offsets[-1][1]:.3f}"
+            for i in range(len(offsets) - 2, -1, -1):
+                next_t = offsets[i + 1][0]
+                this_off = offsets[i][1]
+                crop_x = (
+                    f"if(lt(t\\,{next_t:.2f})\\,"
+                    f"(iw-ih*9/16)*{this_off:.3f}\\,{crop_x})"
+                )
+        cover_chain = (
+            f"crop=ih*9/16:ih:x='{crop_x}':y=0,"
+            f"scale={cfg.target_w}:{cfg.target_h}:flags=lanczos"
+        )
     else:
-        # Build nested if(lt(t, T_next), this_offset, ...) inside out.
-        crop_x = f"(iw-ih*9/16)*{offsets[-1][1]:.3f}"
-        for i in range(len(offsets) - 2, -1, -1):
-            next_t = offsets[i + 1][0]
-            this_off = offsets[i][1]
-            crop_x = (
-                f"if(lt(t\\,{next_t:.2f})\\,"
-                f"(iw-ih*9/16)*{this_off:.3f}\\,{crop_x})"
-            )
-    crop_expr = f"crop=ih*9/16:ih:x='{crop_x}':y=0"
+        # Landscape: scale-up enough to cover, then crop to exact target.
+        # `force_original_aspect_ratio=increase` keeps the smaller dimension
+        # >= target, so the subsequent crop never sees black bars.
+        cover_chain = (
+            f"scale={cfg.target_w}:{cfg.target_h}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={cfg.target_w}:{cfg.target_h}"
+        )
 
     use_bar = bool(progress_bar and progress_duration > 0.5)
     bar_h = max(8, int(cfg.target_h * 0.008)) if use_bar else 0
@@ -2520,7 +2543,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         schedule = _image_schedule(len(image_paths), duration or 25.0, image_duration)
 
         parts = [
-            f"[0:v]{crop_expr},scale={cfg.target_w}:{cfg.target_h}:flags=lanczos[bg0]"
+            f"[0:v]{cover_chain}[bg0]"
         ]
         cur = "bg0"
         for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
@@ -2537,10 +2560,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             cur = nxt
         parts.append(f"[{cur}]subtitles={ass_path.name}[{main_label}]")
     else:
-        vf = (
-            f"{crop_expr},scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,"
-            f"subtitles={ass_path.name}"
-        )
+        vf = f"{cover_chain},subtitles={ass_path.name}"
         parts = [f"[0:v]{vf}[{main_label}]"]
 
     if use_bar:
@@ -3769,6 +3789,12 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         elif cached is not None:
             crop_offset = float(cached)
         step(f"      resume: reframe offset cached")
+    elif cfg.target_w >= cfg.target_h:
+        # Landscape output uses scale-cover-crop instead of a 9:16 strip,
+        # so a horizontal crop offset would be ignored downstream — skip
+        # the face-detect work to save GPU time.
+        if bool(job.get("auto_reframe", False)):
+            step("      auto-reframe skipped: landscape output ignores horizontal crop offsets")
     elif bool(job.get("auto_reframe", False)):
         if use_reframe_v2:
             seg_dur = target / clip_segments if clip_segments > 0 else target

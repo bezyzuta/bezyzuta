@@ -53,6 +53,7 @@ def slugify(text: str) -> str:
 
 
 def generate(
+    output_format: str,
     config_path: str,
     source_mode: str,
     source_url: str,
@@ -120,6 +121,14 @@ def generate(
         cfg.tts_cfg_weight = float(tts_cfg_weight)
         cfg.tts_language = (tts_language or "auto").lower()
         cfg.tts_piper_model = (tts_piper_model or "de_DE-thorsten-medium").strip()
+        # Apply orientation toggle: override target_w/target_h on cfg so the
+        # whole pipeline (crop, scale, captions, overlays) follows. Config
+        # file values are ignored when this flag is set, which is the
+        # intended behavior — the GUI is the source of truth.
+        if (output_format or "portrait").lower() == "landscape":
+            cfg.target_w, cfg.target_h = 1920, 1080
+        else:
+            cfg.target_w, cfg.target_h = 1080, 1920
     except Exception as e:
         yield f"Config-Fehler: {e}", None
         return
@@ -284,7 +293,24 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="Bezys Shorts Generator") as app:
         gr.Markdown("# 🎬 Bezys Shorts Generator")
         gr.Markdown("Automatischer Pipeline-Lauf: YouTube-Download → Gemini/Llama-Skript → "
-                    "Chatterbox-TTS Voiceover → Cloudflare/Pollinations Bilder → 9:16 Schnitt mit Untertiteln.")
+                    "Chatterbox-TTS Voiceover → Cloudflare/Pollinations Bilder → Schnitt mit Untertiteln.")
+
+        # ───────────── Output-Format ─────────────
+        # First-class toggle at the top: the rest of the pipeline reads
+        # this from job["output_format"] and uses it to set cfg.target_w /
+        # cfg.target_h before run_one / run_multiclip dispatches. Long-mode
+        # additionally relaxes the duration cap and skips reframe work.
+        output_format = gr.Radio(
+            choices=[
+                ("📱 Short — 9:16 Hochformat (1080×1920)", "portrait"),
+                ("🎬 Lang-Video — 16:9 Querformat (1920×1080)", "landscape"),
+            ],
+            value="portrait",
+            label="🖼️ Output-Format",
+            info=("Hochformat = YouTube/TikTok-Short, schmaler vertikaler Crop, "
+                  "Auto-Reframe wirkt. Querformat = normales YouTube-Video, "
+                  "kein Crop, Auto-Reframe wird ignoriert."),
+        )
 
         with gr.Accordion("⚙️ Config-Datei", open=False):
             config_path = gr.Textbox(value="config.json", label="Pfad zur config.json")
@@ -339,8 +365,9 @@ def build_app() -> gr.Blocks:
             )
             with gr.Row():
                 target_duration = gr.Slider(
-                    15, 120, value=30, step=1,
+                    15, 900, value=30, step=1,
                     label="Ziel-Länge (Sekunden)",
+                    info="Shorts: 15-60s. Lang-Videos: bis 900s (15 min). Über 60s = kein YouTube-Short mehr.",
                 )
                 clip_segments = gr.Slider(
                     1, 24, value=1, step=1,
@@ -720,6 +747,7 @@ def build_app() -> gr.Blocks:
         generate_btn.click(
             generate,
             inputs=[
+                output_format,
                 config_path, source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, target_duration,
                 clip_segments, playback_speed, scene_pick_mode, manual_ranges, auto_reframe,
