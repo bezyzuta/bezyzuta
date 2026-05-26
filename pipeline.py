@@ -363,6 +363,64 @@ def make_silent_track(duration: float, out_path: Path) -> Path:
     return out_path
 
 
+# Chatterbox tokenizer has an undocumented context limit. Empirically ~300
+# characters works reliably; longer scripts hit a CUDA embedding-lookup
+# OOB ("srcIndex < srcSelectDimSize") that corrupts the CUDA context for
+# the rest of the process. So we always chunk Chatterbox input.
+_CHATTERBOX_MAX_CHARS = 280
+
+
+def _split_sentences_for_tts(text: str, max_chars: int = _CHATTERBOX_MAX_CHARS) -> list[str]:
+    """Greedy-pack sentences into chunks <= `max_chars`. Splits primarily on
+    sentence boundaries (.!?); a sentence longer than max_chars itself is
+    sub-split on commas, and as a last resort on whitespace."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    chunks: list[str] = []
+    cur = ""
+    def _flush():
+        nonlocal cur
+        if cur.strip():
+            chunks.append(cur.strip())
+        cur = ""
+    for sent in sentences:
+        if len(sent) <= max_chars:
+            if len(cur) + 1 + len(sent) <= max_chars:
+                cur = f"{cur} {sent}".strip() if cur else sent
+            else:
+                _flush()
+                cur = sent
+            continue
+        # Sentence alone exceeds budget: fall back to comma split, then to
+        # word-by-word packing. This loses some prosody but never overflows.
+        _flush()
+        sub_parts = re.split(r"(?<=,)\s+", sent)
+        tmp = ""
+        for part in sub_parts:
+            if len(part) > max_chars:
+                words = part.split()
+                for w in words:
+                    if len(tmp) + 1 + len(w) <= max_chars:
+                        tmp = f"{tmp} {w}".strip() if tmp else w
+                    else:
+                        if tmp:
+                            chunks.append(tmp)
+                        tmp = w
+            else:
+                if len(tmp) + 1 + len(part) <= max_chars:
+                    tmp = f"{tmp} {part}".strip() if tmp else part
+                else:
+                    if tmp:
+                        chunks.append(tmp)
+                    tmp = part
+        if tmp:
+            chunks.append(tmp)
+    _flush()
+    return chunks
+
+
 def _detect_language(text: str) -> str:
     """Quick heuristic: 'de' or 'en' for a voiceover script. Two signals:
     German-only chars (äöüß) → definitive German. Otherwise count common
@@ -549,16 +607,27 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     """Dispatch to the right TTS engine based on `cfg.tts_language`:
 
       - "de"   → Piper TTS (offline, native German voice, fast on CPU,
-                  no voice cloning)
+                  no voice cloning, no length limit)
       - "en"   → Chatterbox TTS (offline GPU, zero-shot voice cloning,
-                  English-primary)
+                  English-primary, chunked to dodge its ~300-char limit)
       - "auto" → quick heuristic on `text` (German-only chars + stopword
                   ratio); falls back to English when ambiguous.
+
+    Safety net: if the user explicitly chose EN but the text scans as
+    German, we override to Piper. Otherwise the German text would crash
+    Chatterbox's English-only tokenizer with a CUDA assertion that
+    poisons the whole process — and the user would have to restart the
+    GUI to recover.
     """
     lang = (getattr(cfg, "tts_language", "auto") or "auto").lower()
+    detected = _detect_language(text)
     if lang == "auto":
-        lang = _detect_language(text)
+        lang = detected
         print(f"      tts language auto-detected: {lang}")
+    elif lang == "en" and detected == "de":
+        print("      WARN: TTS set to English but text scans as German — "
+              "overriding to Piper to avoid Chatterbox tokenizer crash.")
+        lang = "de"
     if lang == "de":
         return _synthesize_voiceover_piper(text, cfg, out_path)
     return _synthesize_voiceover_chatterbox(text, cfg, out_path)
@@ -633,8 +702,26 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path) -> 
         else:
             print(f"      WARN: voice reference audio not found: {ref_path} — using default voice")
 
+    # Chunk to stay under Chatterbox's tokenizer limit. A single
+    # `model.generate()` call on a long script triggers a CUDA embedding
+    # OOB ("srcIndex < srcSelectDimSize") that poisons the process state.
+    # Chunking + concatenation produces identical-sounding output without
+    # the crash, at the cost of a couple of extra generate() calls.
+    chunks = _split_sentences_for_tts(text, max_chars=_CHATTERBOX_MAX_CHARS)
+    if not chunks:
+        raise RuntimeError("Chatterbox: empty text after chunking")
+    if len(chunks) > 1:
+        print(f"      chatterbox: splitting into {len(chunks)} chunk(s) "
+              f"to stay under tokenizer limit")
     try:
-        wav = model.generate(text, **kwargs)
+        import torch  # type: ignore
+        pieces = []
+        for i, chunk_text in enumerate(chunks, 1):
+            if len(chunks) > 1:
+                print(f"      chatterbox chunk {i}/{len(chunks)} ({len(chunk_text)} chars)")
+            piece = model.generate(chunk_text, **kwargs)
+            pieces.append(piece)
+        wav = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=-1)
     except Exception as e:
         raise RuntimeError(f"Chatterbox generation failed: {e}") from e
 
