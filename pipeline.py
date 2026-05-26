@@ -3563,14 +3563,13 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 "voice_path": vo, "voice_duration": vo_dur,
             })
 
-    # Bias clip duration toward target_duration but never cut the voiceover.
-    # Lower bound: voiceover + 0.6s headroom, or target-5, or 15s minimum.
-    # Upper bound: target+12s of headroom. There used to be a hard 150s cap
-    # here for the shorts era — removed since long-form mode wants up to
-    # 900s. If the voiceover is shorter than the clip (user picked
-    # target_duration > script-implied length), the tail plays as silent
-    # gameplay over BGM, which is fine for long-form videos.
-    target = min(max(vo_dur + 0.6, target_duration - 5.0, 15.0), target_duration + 12.0)
+    # Clip duration tracks the voiceover, not the requested target. If
+    # Gemini wrote a 174s script for a 500s request, we render ~180s of
+    # video — not 500s with 320s of silent gameplay. target_duration
+    # only acts as an upper bound (in case the script came out longer).
+    # Lower bound: vo_dur + 8s tail (room for outro / subscribe banner),
+    # or 15s absolute minimum. Upper bound: target_duration + 12s.
+    target = min(max(vo_dur + 8.0, 15.0), target_duration + 12.0)
     step(f"      voice {vo_dur:.1f}s -> clip {target:.1f}s (target {target_duration:.0f}s)")
 
     clip_segments = max(1, min(int(job.get("clip_segments", 1)), 24))
