@@ -1128,7 +1128,8 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path) -> 
             # autoprep can be disabled (cfg.tts_clone_autoprep=False) for a
             # sample that's already perfectly prepared.
             use_path = ref_path
-            if bool(getattr(cfg, "tts_clone_autoprep", True)) and ref_path.suffix.lower() != ".clone.wav":
+            already_prepared = ref_path.name.lower().endswith(".clone.wav")
+            if bool(getattr(cfg, "tts_clone_autoprep", True)) and not already_prepared:
                 prepared = ref_path.with_suffix(".clone.wav")
                 try:
                     if (not prepared.is_file()
