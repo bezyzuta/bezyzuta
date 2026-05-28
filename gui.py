@@ -128,7 +128,13 @@ def generate(
     log = ""
     try:
         cfg = Config.load(Path(config_path))
-        cfg.tts_reference_audio = (voice_ref_audio or "").strip()
+        # Only override the config's voice sample when the GUI field is
+        # filled — otherwise keep whatever tts_reference_audio is set in
+        # config.json, so a permanently-configured clone voice "just works"
+        # without re-typing the path every run.
+        _gui_voice = (voice_ref_audio or "").strip()
+        if _gui_voice:
+            cfg.tts_reference_audio = _gui_voice
         cfg.tts_exaggeration = float(tts_exaggeration)
         cfg.tts_cfg_weight = float(tts_cfg_weight)
         cfg.tts_language = (tts_language or "auto").lower()
