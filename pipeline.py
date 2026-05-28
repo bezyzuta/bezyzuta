@@ -1272,6 +1272,29 @@ def mix_voice_with_music(voice_path: Path, music_path: Path, volume_pct: float,
     return out_path
 
 
+def normalize_loudness(audio_path: Path, out_path: Path,
+                       target_lufs: float = -14.0,
+                       true_peak: float = -1.5) -> Path:
+    """EBU R128 loudness normalization via ffmpeg's loudnorm filter. Brings
+    the final mix up to a consistent broadcast-style loudness so our shorts
+    are as punchy and even as the reference clips (which sit around
+    -11..-14 LUFS with a tiny loudness range). Single-pass loudnorm — good
+    enough for spoken-word + music shorts, and never clips above true_peak.
+
+    target_lufs: integrated loudness target. -14 = YouTube/Spotify norm
+    (louder uploads get turned down anyway); go to -11 for TikTok punch.
+    """
+    run([
+        "ffmpeg", "-y", "-i", str(audio_path),
+        "-af", f"loudnorm=I={target_lufs}:TP={true_peak}:LRA=11",
+        "-c:a", "libmp3lame", "-q:a", "2",
+        str(out_path),
+    ])
+    if not out_path.is_file() or out_path.stat().st_size < 200:
+        raise RuntimeError(f"loudnorm produced empty output: {out_path}")
+    return out_path
+
+
 def list_sfx_files(sfx_dir: str) -> list[Path]:
     if not sfx_dir:
         return []
@@ -2577,6 +2600,37 @@ def _hex_to_ass_color(hex_color: str) -> str:
     return f"&H00{bb}{gg}{rr}".upper()
 
 
+# Keyword → emoji map for caption decoration. When a caption chunk contains
+# a trigger word, the matching emoji is placed on a line below it — exactly
+# the pattern top Roblox shorts use (😱 on shock, 💰 on money, ⚠️ on a
+# warning). Deterministic and cheap (no LLM call); only fires on a match, so
+# most captions stay clean like the reference. German + English triggers.
+# Order matters: first match wins, so put the most specific words first.
+_CAPTION_EMOJI_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
+    (("geld", "reich", "money", "rich", "robux", "millionen", "million", "cash", "diamant", "gems"), "💰"),
+    (("achtung", "warnung", "gefahr", "vorsicht", "warning", "danger", "verboten", "niemals", "never"), "⚠️"),
+    (("schock", "krass", "wahnsinn", "unglaublich", "shock", "insane", "crazy", "omg", "wtf", "was?"), "😱"),
+    (("angst", "gruselig", "creepy", "horror", "scary", "albtraum", "nightmare", "dunkel", "nacht", "night"), "😨"),
+    (("boss", "stark", "mächtig", "macht", "power", "strong", "king", "könig", "legende", "legend"), "🔥"),
+    (("gewonnen", "sieg", "win", "gewinn", "champion", "best", "beste", "nummer eins", "number one"), "🏆"),
+    (("lachen", "lustig", "funny", "lol", "haha", "witzig", "meme"), "😂"),
+    (("liebe", "love", "herz", "heart", "süß", "cute"), "❤️"),
+    (("geheim", "secret", "versteckt", "hidden", "trick", "hack", "cheat"), "🤫"),
+    (("freund", "friend", "teilen", "share", "schicken", "send"), "🤝"),
+    (("denken", "überleg", "think", "frage", "warum", "why", "wie", "how"), "🤔"),
+]
+
+
+def _emoji_for_caption(text: str) -> str:
+    """Return a single contextual emoji for a caption chunk, or '' if no
+    trigger word matches."""
+    low = text.lower()
+    for keywords, emoji in _CAPTION_EMOJI_KEYWORDS:
+        if any(k in low for k in keywords):
+            return emoji
+    return ""
+
+
 def write_ass(words, video_w: int, video_h: int, out_path: Path,
               font_name: str = "Impact",
               font_size: int | None = None,
@@ -2590,7 +2644,8 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               subscribe_text: str = "ABONNIEREN",
               total_duration: float = 0.0,
               enable_captions: bool = True,
-              long_form: bool = False) -> Path:
+              long_form: bool = False,
+              caption_emojis: bool = False) -> Path:
     """Bold center-bottom karaoke captions; styling exposed for the GUI.
     Optional hook_text shown big at the top for the first hook_duration seconds.
     pop_captions: every chunk pops in with a scale animation (TikTok-style).
@@ -2666,6 +2721,13 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
             # Shorts SHOUT in all-caps; long-form keeps Whisper's original
             # casing for comfortable reading over long durations.
             text = raw if long_form else raw.upper()
+            # Optional contextual emoji on its own line below the caption,
+            # mirroring the reference shorts. Only added when a trigger word
+            # matches, so most captions stay clean. \\N = ASS hard newline.
+            if caption_emojis:
+                emo = _emoji_for_caption(raw)
+                if emo:
+                    text = f"{text}\\N{emo}"
             lines.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Pop,,0,0,0,,"
                 f"{{{pop_tag}\\fad(80,80)}}{text}"
@@ -2684,27 +2746,39 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     return out_path
 
 
+# Mandatory style suffix appended to every image prompt. Tuned to match the
+# look of top-performing Roblox shorts: cinematic 3D character renders with
+# dramatic rim lighting and glowing FX on a dark atmospheric background —
+# NOT flat cartoon scenes. Flux/Pollinations respond well to these tokens.
+_IMAGE_STYLE_SUFFIX = (
+    "cinematic 3D render, Roblox blocky avatar character, single subject centered, "
+    "dramatic rim lighting, glowing volumetric effects, vibrant saturated colors, "
+    "dark atmospheric background, high detail, octane render, depth of field, "
+    "no text, no watermark, no logos"
+)
+
+
 def derive_image_prompt(seed_text: str) -> str:
-    return (
-        "vertical cartoon illustration, Roblox blocky aesthetic, vibrant saturated colors, "
-        "dramatic action scene, dynamic composition, bold lighting, no text, no logos, "
-        f"no real people, theme: {seed_text[:200]}"
-    )
+    return f"{seed_text[:200]}, {_IMAGE_STYLE_SUFFIX}"
 
 
-SCENE_PROMPT = """Du bekommst ein deutsches Voiceover-Skript fuer einen Roblox YouTube Short.
+SCENE_PROMPT = """Du bekommst ein Voiceover-Skript fuer einen Roblox YouTube Short.
 
-Teile das Skript gedanklich in {n} dramatische visuelle Schluesselmomente und schreibe pro Moment einen englischen Bild-Prompt fuer ein Text-zu-Bild-Modell.
+Finde die {n} staerksten visuellen Momente im Skript und schreibe pro Moment EINEN englischen Bild-Prompt. WICHTIG: Jeder Prompt muss zum konkret an dieser Stelle Gesagten passen — wenn das Skript ueber "der reichste Spieler" redet, zeige einen reichen Roblox-Charakter mit Krone, Geld, Diamanten; bei "maechtiger Boss" einen dunklen gepanzerten Charakter mit Feuer-Aura; usw. Das Bild soll den Moment ILLUSTRIEREN.
 
-Pflicht-Stil pro Prompt:
-"vertical cartoon illustration, Roblox blocky aesthetic, vibrant saturated colors, [DEINE SZENE IN ENGLISCH], dramatic lighting, no text, no logos, no real people"
+Beschreibe pro Prompt das HAUPTMOTIV konkret und bildhaft in Englisch (welcher Charakter, welche Pose, welche Objekte/FX rundherum, welche Stimmung). Schreibe NUR das Motiv — der einheitliche Render-Stil wird automatisch angehaengt, den musst du NICHT dazuschreiben.
+
+Beispiele fuer gute Motive:
+- "a Roblox avatar in a golden suit wearing a diamond crown, surrounded by stacks of gold coins and floating gems, triumphant pose"
+- "a dark armored Roblox character with glowing red eyes and a fiery aura, menacing stance, embers floating around"
+- "a scared Roblox avatar sitting at a glowing computer at night, blue screen light on his face, dark room"
 
 Skript:
 \"\"\"
 {script}
 \"\"\"
 
-Antworte NUR mit einem gueltigen JSON-Array von genau {n} Strings.
+Antworte NUR mit einem gueltigen JSON-Array von genau {n} Strings (nur die Motive).
 KEINE Markdown-Codeblocks, KEINE Kommentare, NUR das JSON-Array."""
 
 
@@ -2752,23 +2826,36 @@ def generate_scene_prompts_cloudflare(script: str, n: int, cfg: Config) -> list[
     return prompts[:n]
 
 
+def _finalize_scene_prompt(motif: str) -> str:
+    """Append the mandatory cinematic render style to an LLM-generated motif,
+    unless it's already there (e.g. the base fallback prompt)."""
+    motif = motif.strip()
+    if _IMAGE_STYLE_SUFFIX in motif:
+        return motif
+    return f"{motif}, {_IMAGE_STYLE_SUFFIX}"
+
+
 def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
     base = derive_image_prompt(script[:200])
+    raw: list[str] | None = None
     if cfg.gemini_api_key:
         try:
-            return _scene_prompts_gemini(script, n, cfg, base)
+            raw = _scene_prompts_gemini(script, n, cfg, base)
         except _SceneGenError as e:
             print(f"      WARN: Gemini scene gen failed ({e})")
-    if cfg.cloudflare_account_id and cfg.cloudflare_api_token:
+    if raw is None and cfg.cloudflare_account_id and cfg.cloudflare_api_token:
         try:
             print(f"      trying Cloudflare Llama for {n} scene prompts")
-            prompts = generate_scene_prompts_cloudflare(script, n, cfg)
-            while len(prompts) < n:
-                prompts.append(base)
-            return prompts[:n]
+            raw = generate_scene_prompts_cloudflare(script, n, cfg)
         except Exception as e:
             print(f"      WARN: Cloudflare scene gen failed ({e}); falling back to single prompt")
-    return [base] * n
+    if raw is None:
+        raw = [base] * n
+    # Apply the uniform render style and pad/trim to exactly n.
+    prompts = [_finalize_scene_prompt(p) for p in raw if p.strip()]
+    while len(prompts) < n:
+        prompts.append(base)
+    return prompts[:n]
 
 
 class _SceneGenError(RuntimeError):
@@ -2983,7 +3070,8 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   progress_bar: bool = False,
                   progress_color: str = "red",
                   progress_duration: float = 0.0,
-                  crop_offset: float = 0.5) -> Path:
+                  crop_offset: float = 0.5,
+                  image_tilt: bool = True) -> Path:
     image_paths = list(image_paths or [])
     if mute_source_audio:
         # ignore gameplay audio; output is just the voice/music track
@@ -3065,7 +3153,9 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         ]
         cur = "bg0"
         for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
-            angle = _TILT_ANGLES_DEG[i % len(_TILT_ANGLES_DEG)]
+            # Straight (0°) images match the reference shorts; tilt adds
+            # playful dynamism. Toggleable via image_tilt.
+            angle = _TILT_ANGLES_DEG[i % len(_TILT_ANGLES_DEG)] if image_tilt else 0.0
             parts.append(_image_chain(
                 idx_input=2 + i, image_idx=i,
                 image_dur=end - start, start=start,
@@ -4173,6 +4263,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             # Landscape output = the GUI's "Lang-Video" format → readable
             # subtitle styling instead of TikTok karaoke pops.
             long_form=(cfg.target_w >= cfg.target_h),
+            caption_emojis=bool(job.get("caption_emojis", False)),
         )
         if state:
             state.mark_done(Step.CAPTIONS, {"ass_path": ass})
@@ -4351,6 +4442,21 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             )
             using_bgm = True
 
+    # Loudness-normalize the finished mix so output loudness is consistent
+    # and punchy (reference shorts sit ~-11..-14 LUFS). Opt-out via
+    # job["normalize_audio"]=False. Never fails the job — on error we keep
+    # the un-normalized mix.
+    if bool(job.get("normalize_audio", True)) and enable_voice:
+        try:
+            target_lufs = float(job.get("target_lufs", -14.0))
+            step(f"      normalizing loudness to {target_lufs:.0f} LUFS")
+            audio_for_compose = normalize_loudness(
+                audio_for_compose, work / "audio_normalized.mp3",
+                target_lufs=target_lufs,
+            )
+        except Exception as e:
+            log.warn(f"loudness normalization failed (using un-normalized mix): {e}")
+
     crop_offset = 0.5
     if state and state.is_done(Step.REFRAME):
         cached = state.get_artifact(Step.REFRAME, "crop_offset")
@@ -4410,6 +4516,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             progress_color=str(job.get("progress_color", "red")),
             progress_duration=vo_dur,
             crop_offset=crop_offset,
+            image_tilt=bool(job.get("image_tilt", True)),
         )
         speed = float(job.get("playback_speed", 1.0))
         if abs(speed - 1.0) > 0.01:

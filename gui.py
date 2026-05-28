@@ -86,6 +86,8 @@ def generate(
     music_track: str,
     music_volume_pct: int,
     smart_music_start: bool,
+    normalize_audio: bool,
+    target_lufs: float,
     enable_sfx: bool,
     sfx_dir: str,
     sfx_track: str,
@@ -96,6 +98,7 @@ def generate(
     custom_image_prompts: str,
     uploaded_images,
     skip_images: bool,
+    image_tilt: bool,
     caption_font: str,
     caption_color: str,
     caption_stroke_color: str,
@@ -103,6 +106,7 @@ def generate(
     hook_text: str,
     hook_duration: float,
     pop_captions: bool,
+    caption_emojis: bool,
     progress_bar: bool,
     subscribe_overlay: bool,
     subscribe_sting_file: str,
@@ -189,6 +193,7 @@ def generate(
             "image_count": int(image_count),
             "image_duration": float(image_duration),
             "no_image": bool(skip_images),
+            "image_tilt": bool(image_tilt),
             "caption_font": str(caption_font or "Impact"),
             "caption_font_size": int(caption_font_size),
             "caption_color": str(caption_color or "#FFFFFF"),
@@ -196,6 +201,7 @@ def generate(
             "hook_text": str(hook_text or "").strip(),
             "hook_duration": float(hook_duration),
             "pop_captions": bool(pop_captions),
+            "caption_emojis": bool(caption_emojis),
             "progress_bar": bool(progress_bar),
             "subscribe_overlay": bool(subscribe_overlay),
             "subscribe_sting_file": str(subscribe_sting_file or "").strip(),
@@ -208,6 +214,8 @@ def generate(
             "music_volume_pct": float(music_volume_pct),
             "music_track": "" if not music_track or music_track == RANDOM_PICK else str(music_track),
             "smart_music_start": bool(smart_music_start),
+            "normalize_audio": bool(normalize_audio),
+            "target_lufs": float(target_lufs),
             "enable_sfx": bool(enable_sfx),
             "enable_captions": bool(enable_captions),
             "sfx_dir": str(sfx_dir or ""),
@@ -560,6 +568,16 @@ def build_app() -> gr.Blocks:
                     label="🎯 Smart Music Start (lauteste Stelle / Drop finden)",
                     info="Analysiert den Track und startet nicht zwingend bei 0:00, sondern wo es richtig losgeht. +2–5s pro Track.",
                 )
+                normalize_audio = gr.Checkbox(
+                    value=True,
+                    label="🔊 Lautheit normalisieren (laut + konsistent wie die Profis)",
+                    info="EBU-R128 loudnorm auf den fertigen Mix — so laut und gleichmäßig wie virale Shorts. Empfohlen AN.",
+                )
+                target_lufs = gr.Slider(
+                    -16, -9, value=-14, step=1,
+                    label="Ziel-Lautheit (LUFS)",
+                    info="-14 = YouTube-Norm (sicher). -11 = TikTok-Punch (lauter). Niedriger = leiser.",
+                )
             with gr.Tab("💥 Sound-Effects"):
                 enable_sfx = gr.Checkbox(
                     value=True,
@@ -622,6 +640,13 @@ def build_app() -> gr.Blocks:
                 label="Eigene Bilder hochladen (überschreibt Auto-Generierung komplett)",
             )
             skip_images = gr.Checkbox(value=False, label="Bilder komplett überspringen")
+            image_tilt = gr.Checkbox(
+                value=False,
+                label="↪️ Bilder leicht schräg kippen (Tilt)",
+                info=("An = verspielter Tilt-Look. Aus = gerade Rechtecke wie bei den "
+                      "Top-Roblox-Shorts (empfohlen). Bild-Stil ist jetzt cinematischer "
+                      "3D-Roblox-Render statt flacher Cartoon."),
+            )
 
         # ───────────── Engagement-Effekte ─────────────
         with gr.Accordion("✨ Engagement-Effekte", open=True):
@@ -629,6 +654,13 @@ def build_app() -> gr.Blocks:
                 value=False,
                 label="🔍 Auto-Zoom auf Untertitel (TikTok-Style)",
                 info="Jedes Caption-Chunk poppt von 125% auf 100% rein — wirkt dynamischer.",
+            )
+            caption_emojis = gr.Checkbox(
+                value=True,
+                label="😱 Kontext-Emojis unter den Untertiteln",
+                info=("Wie bei viralen Roblox-Shorts: passendes Emoji unter der Caption "
+                      "wenn ein Schlüsselwort auftaucht (💰 bei Geld, ⚠️ bei Warnung, "
+                      "😱 bei Schock). Nur bei Treffer, nicht bei jeder Zeile."),
             )
             progress_bar = gr.Checkbox(
                 value=False,
@@ -803,14 +835,14 @@ def build_app() -> gr.Blocks:
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_exaggeration, tts_cfg_weight,
                 enable_music, music_dir, music_track, music_volume_pct,
-                smart_music_start,
+                smart_music_start, normalize_audio, target_lufs,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
                 enable_captions,
                 image_count, image_duration, custom_image_prompts, uploaded_images,
-                skip_images,
+                skip_images, image_tilt,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 hook_text, hook_duration,
-                pop_captions, progress_bar, subscribe_overlay,
+                pop_captions, caption_emojis, progress_bar, subscribe_overlay,
                 subscribe_sting_file, subscribe_sting_volume,
                 whisper_device,
                 multiclip_enabled, multiclip_count,

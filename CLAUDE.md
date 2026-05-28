@@ -171,13 +171,20 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 
 ### Visual / Audio Effekte
 - Hintergrundmusik mit Smart-Start (lauteste Stelle finden via astats)
+- **Loudness-Normalisierung** (`normalize_loudness`, EBU R128 loudnorm) auf den
+  fertigen Mix, Default-Ziel −14 LUFS. Job-Flags `normalize_audio` / `target_lufs`.
 - Sound-Effects pro Bild-Pop-In + pro Scene-Cut
 - Subscribe-Sting (Sound bei Subscribe-Banner)
 - Hook-Overlay (großer Text oben am Anfang, manuell)
 - Pop-Captions (TikTok-Style Karaoke)
+- **Kontext-Emojis unter Captions** (`caption_emojis`, Keyword→Emoji-Heuristik
+  `_CAPTION_EMOJI_KEYWORDS`, DE+EN, nur bei Treffer — wie virale Roblox-Shorts)
 - Progress-Bar unten via color+scale+overlay
 - Subscribe-Button am Ende
-- Image-Overlays (Cloudflare Flux + Pollinations Fallback)
+- **Image-Overlays — cinematischer 3D-Roblox-Render-Stil** (`_IMAGE_STYLE_SUFFIX`,
+  charakter-fokussiert, dramatisches Licht) statt flacher Cartoons. Scene-Prompts
+  (`SCENE_PROMPT`) sind an den gesprochenen Beat gekoppelt. Tilt optional
+  (`image_tilt`, Default gerade/aus). Cloudflare Flux + Pollinations Fallback.
 
 ### Whisper
 - faster-whisper auf CUDA (RTX 3080) mit subprocess-Isolation für lange Runs
