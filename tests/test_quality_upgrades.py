@@ -201,9 +201,10 @@ class TestEmojiOverlay:
         ]
         events = pipeline.compute_caption_emoji_events(words)
         assert len(events) == 1
-        s, e, emo = events[0]
+        s, e, emo, text = events[0]
         assert emo == "💰"
         assert s == 2.0 and e == 3.4
+        assert "geld" in text
 
 
 class TestContinuousImages:

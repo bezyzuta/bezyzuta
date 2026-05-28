@@ -2743,17 +2743,18 @@ def get_emoji_png(emoji: str, font_path: str = "", px: int = 160) -> Path | None
     return dest if dest.is_file() and dest.stat().st_size > 200 else None
 
 
-def compute_caption_emoji_events(words, long_form: bool = False) -> list[tuple[float, float, str]]:
-    """Replicate write_ass's chunking and return [(start, end, emoji), ...]
-    for chunks whose text triggers an emoji. Used to schedule color PNG
-    overlays with timing that lines up exactly with the caption chunks."""
+def compute_caption_emoji_events(words, long_form: bool = False) -> list[tuple[float, float, str, str]]:
+    """Replicate write_ass's chunking and return
+    [(start, end, emoji, chunk_text), ...] for chunks whose text triggers an
+    emoji. The chunk_text lets the caller estimate how many lines the caption
+    wraps to, so the emoji can be placed tightly below it."""
     chunk_size = 8 if long_form else 3
-    events: list[tuple[float, float, str]] = []
+    events: list[tuple[float, float, str, str]] = []
     for ch in _chunk_words(words, chunk_size):
         raw = " ".join(w[2] for w in ch)
         emo = _emoji_for_caption(raw)
         if emo:
-            events.append((ch[0][0], ch[-1][1], emo))
+            events.append((ch[0][0], ch[-1][1], emo, raw))
     return events
 
 
@@ -3578,8 +3579,8 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
     for img in image_paths:
         cmd += ["-loop", "1", "-i", str(img)]
     emoji_base_idx = 2 + len(image_paths)
-    for (_s, _e, png) in emoji_events:
-        cmd += ["-loop", "1", "-i", str(png)]
+    for ev in emoji_events:
+        cmd += ["-loop", "1", "-i", str(ev[2])]  # ev = (start, end, png[, y])
 
     # ── background + centered image overlays → captioned base ──
     parts: list[str] = []
@@ -3612,13 +3613,18 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
     if emoji_events:
         emoji_w = max(48, int(cfg.target_w * 0.085))
         pos = (caption_position or "bottom").lower()
+        # Fallback y if an event doesn't carry its own (older 3-tuples).
         if pos == "top":
-            emoji_y = int(cfg.target_h * 0.245)
+            default_y = int(cfg.target_h * 0.21)
         elif pos == "center":
-            emoji_y = int(cfg.target_h * 0.58)
+            default_y = int(cfg.target_h * 0.56)
         else:
-            emoji_y = int(cfg.target_h * 0.80)
-        for j, (e_start, e_end, _png) in enumerate(emoji_events):
+            default_y = int(cfg.target_h * 0.80)
+        for j, ev in enumerate(emoji_events):
+            e_start, e_end = ev[0], ev[1]
+            # 4th element = per-caption y computed in run_one (tight under the
+            # actual 1- or 2-line caption); else the position-based default.
+            emoji_y = int(ev[3]) if len(ev) > 3 else default_y
             in_idx = emoji_base_idx + j
             parts.append(f"[{in_idx}:v]scale={emoji_w}:-1[emo{j}]")
             nxt = f"emv{j}"
@@ -4716,10 +4722,27 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     want_emojis = bool(job.get("caption_emojis", False)) and is_portrait_out and words
     if want_emojis:
         try:
-            for (e_s, e_e, emo) in compute_caption_emoji_events(words, long_form=False):
+            # Resolve the caption font size the same way write_ass does, so we
+            # can place each emoji tightly under its caption (1 vs 2 lines)
+            # instead of a fixed offset that leaves a big gap on 1-line chunks.
+            resolved_fs = int(job.get("caption_font_size", 0)) or max(56, int(cfg.target_h * 0.048))
+            line_h = resolved_fs * 1.15
+            usable_w = max(200, cfg.target_w - 160)         # MarginL/R = 80 each
+            per_line_chars = max(6, int(usable_w / (resolved_fs * 0.55)))
+            if cap_pos == "top":
+                cap_top = cfg.target_h * 0.13
+            elif cap_pos == "center":
+                cap_top = cfg.target_h * 0.42
+            else:
+                cap_top = cfg.target_h * 0.72
+            gap = int(resolved_fs * 0.22)                   # small gap under text
+            for (e_s, e_e, emo, text) in compute_caption_emoji_events(words, long_form=False):
                 png = get_emoji_png(emo, font_path=getattr(cfg, "emoji_font_path", ""))
-                if png:
-                    emoji_png_events.append((e_s, e_e, png))
+                if not png:
+                    continue
+                n_lines = 1 + (len(text) > per_line_chars)  # 1 or 2 lines
+                y = int(cap_top + n_lines * line_h + gap)
+                emoji_png_events.append((e_s, e_e, png, y))
             if emoji_png_events:
                 step(f"      caption emojis: {len(emoji_png_events)} color overlay(s)")
         except Exception as e:
@@ -4878,7 +4901,13 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
     if enable_sfx and sfx_dir and sfx_pct > 0:
         if image_paths:
-            schedule = _image_schedule(len(image_paths), target, image_duration)
+            # MUST use the SAME schedule (incl. continuous flag) that
+            # compose_short uses for the image overlays — otherwise the SFX
+            # fires at the old gapped-schedule times and lands ~1s after the
+            # image actually changes.
+            sfx_continuous = bool(job.get("images_continuous", False)) and is_portrait_out
+            schedule = _image_schedule(len(image_paths), target, image_duration,
+                                       continuous=sfx_continuous)
             for start, _end in schedule:
                 picked = pick_sfx_track(sfx_dir, sfx_track)
                 if picked is not None:
