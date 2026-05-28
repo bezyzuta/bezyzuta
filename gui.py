@@ -830,7 +830,7 @@ def build_app() -> gr.Blocks:
                 caption_color = gr.ColorPicker(value="#FFFFFF", label="Textfarbe")
                 caption_stroke_color = gr.ColorPicker(value="#000000", label="Randfarbe (Stroke)")
             caption_font_size = gr.Slider(
-                30, 90, value=60, step=1,
+                30, 90, value=80, step=1,
                 label="Schriftgröße",
             )
 
