@@ -322,7 +322,24 @@ def generate(
     yield log, last_video
 
 
+def _config_defaults(config_path: str = "config.json") -> dict:
+    """Read a few fields from config.json at GUI-build time so form fields
+    can be pre-filled (e.g. the clone-voice path). Best-effort: returns {}
+    if the file is missing or unreadable."""
+    try:
+        cfg = Config.load(Path(config_path))
+        return {
+            "tts_reference_audio": getattr(cfg, "tts_reference_audio", "") or "",
+            "tts_exaggeration": getattr(cfg, "tts_exaggeration", 0.5),
+            "tts_cfg_weight": getattr(cfg, "tts_cfg_weight", 0.5),
+            "tts_language": getattr(cfg, "tts_language", "auto") or "auto",
+        }
+    except Exception:
+        return {}
+
+
 def build_app() -> gr.Blocks:
+    _defaults = _config_defaults()
     with gr.Blocks(title="Bezys Shorts Generator") as app:
         gr.Markdown("# 🎬 Bezys Shorts Generator")
         gr.Markdown("Automatischer Pipeline-Lauf: YouTube-Download → Gemini/Llama-Skript → "
@@ -450,32 +467,33 @@ def build_app() -> gr.Blocks:
                           "1.0 = normal, 1.1 = 10% schneller, 1.25 = deutlich schneller, "
                           "0.9 = leicht entschleunigt. Bild + Ton bleiben synchron."),
                 )
-            scene_pick_mode = gr.Radio(
-                choices=[("Standard — gleichmäßig verteilt", "even"),
-                         ("🔊 Laute Stellen — Audio-Peaks (~+10s)", "loud"),
-                         ("🤖 KI-Auswahl — Gemini Vision wählt spannendste Szenen (~+15s)", "ai"),
-                         ("✂️ Manuell — Zeiten selber angeben", "manual")],
-                value="even",
-                label="Szenen-Auswahl",
-                info="KI-Modus extrahiert Thumbnails und lässt Gemini die action-geladensten picken. "
-                     "Manuell: du gibst exakte Zeit-Bereiche vor.",
-            )
-            manual_ranges = gr.Textbox(
-                value="",
-                label="Manuelle Zeit-Bereiche (eine Zeile pro Szene)",
-                lines=6,
-                placeholder=(
-                    "Format: START-END pro Zeile (MM:SS oder HH:MM:SS oder Sekunden)\n\n"
-                    "1:18-1:25\n"
-                    "2:35-2:45\n"
-                    "5:10-5:22\n"
-                    "12:30-12:45"
-                ),
-                info='Beispiele: "1:18-1:25" (M:SS), "0:01:30-0:01:45" (H:MM:SS), "78-85" (Sekunden). '
-                     'Die ausgewählten Bereiche werden in der Reihenfolge zusammen­geschnitten. '
-                     'Ziel-Länge und Anzahl Szenen-Cuts werden ignoriert wenn dieser Modus aktiv ist.',
-                visible=False,
-            )
+            with gr.Accordion("🎬 Szenen-Auswahl", open=False):
+                scene_pick_mode = gr.Radio(
+                    choices=[("Standard — gleichmäßig verteilt", "even"),
+                             ("🔊 Laute Stellen — Audio-Peaks (~+10s)", "loud"),
+                             ("🤖 KI-Auswahl — Gemini Vision wählt spannendste Szenen (~+15s)", "ai"),
+                             ("✂️ Manuell — Zeiten selber angeben", "manual")],
+                    value="even",
+                    label="Szenen-Auswahl",
+                    info="KI-Modus extrahiert Thumbnails und lässt Gemini die action-geladensten picken. "
+                         "Manuell: du gibst exakte Zeit-Bereiche vor.",
+                )
+                manual_ranges = gr.Textbox(
+                    value="",
+                    label="Manuelle Zeit-Bereiche (eine Zeile pro Szene)",
+                    lines=6,
+                    placeholder=(
+                        "Format: START-END pro Zeile (MM:SS oder HH:MM:SS oder Sekunden)\n\n"
+                        "1:18-1:25\n"
+                        "2:35-2:45\n"
+                        "5:10-5:22\n"
+                        "12:30-12:45"
+                    ),
+                    info='Beispiele: "1:18-1:25" (M:SS), "0:01:30-0:01:45" (H:MM:SS), "78-85" (Sekunden). '
+                         'Die ausgewählten Bereiche werden in der Reihenfolge zusammen­geschnitten. '
+                         'Ziel-Länge und Anzahl Szenen-Cuts werden ignoriert wenn dieser Modus aktiv ist.',
+                    visible=False,
+                )
             auto_reframe = gr.Checkbox(
                 value=False,
                 label="🎯 Auto-Reframe (KI findet wo Menschen/Gesichter sind)",
@@ -511,7 +529,7 @@ def build_app() -> gr.Blocks:
                     ("🇩🇪 Deutsch (Gemini schreibt DE → Piper TTS)", "de"),
                     ("🇬🇧 Englisch (Gemini schreibt EN → Chatterbox TTS)", "en"),
                 ],
-                value="auto",
+                value=_defaults.get("tts_language", "auto"),
                 label="🌍 Sprache (Skript + TTS)",
                 info=("Steuert sowohl den Gemini-Prompt als auch die TTS-Engine. "
                       "DE → Gemini schreibt deutsch, Piper spricht (lokal, ~63 MB, schnell). "
@@ -541,20 +559,21 @@ def build_app() -> gr.Blocks:
                 "4. **Sprache auf Englisch** stellen (Cloning wirkt nur über Chatterbox)."
             )
             voice_ref_audio = gr.Textbox(
-                value="",
+                value=_defaults.get("tts_reference_audio", ""),
                 label="🎤 Deine Stimm-Aufnahme zum Klonen (Pfad, optional — nur EN)",
                 placeholder=r"z.B. C:\Users\bezy\Desktop\voices\meine_stimme.m4a",
                 info=("Beliebige Aufnahme deiner Stimme — wird automatisch fürs Cloning "
-                      "aufbereitet. Leer = Chatterbox' Default-Stimme."),
+                      "aufbereitet. Vorbefüllt aus config.json (tts_reference_audio). "
+                      "Leer = Chatterbox' Default-Stimme."),
             )
             with gr.Row():
                 tts_exaggeration = gr.Slider(
-                    0.0, 1.0, value=0.5, step=0.05,
+                    0.0, 1.0, value=_defaults.get("tts_exaggeration", 0.5), step=0.05,
                     label="Chatterbox Emotion (nur EN)",
                     info="0 = ruhig/flach, 0.5 = neutral, 1 = dramatisch. Für Shorts: 0.6-0.8 funktioniert gut.",
                 )
                 tts_cfg_weight = gr.Slider(
-                    0.0, 1.0, value=0.5, step=0.05,
+                    0.0, 1.0, value=_defaults.get("tts_cfg_weight", 0.5), step=0.05,
                     label="Chatterbox CFG Weight (nur EN)",
                     info="Niedriger = natürlicheres Sprachtempo, höher = wörtlicher.",
                 )
