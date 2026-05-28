@@ -74,6 +74,203 @@ Wichtig:
   helles Licht, knallige Farben — wirkt am besten für Shorts-Thumbnails)."""
 
 
+_PROMPT_INSTRUCTIONS_LONG_PORTRAIT = """Du bist YouTube-Optimierer fuer Lang-Videos (>1 min, Hochformat).
+Bereite eine SEO-starke Veroeffentlichung vor — kein Shorts-Stil.
+
+Antworte AUSSCHLIESSLICH mit gueltigem JSON, OHNE Markdown-Codeblock,
+in genau diesem Schema:
+
+{
+  "title": "...",            // 50-70 Zeichen, informativ + suchbar (KEIN Clickbait-Spam)
+  "description": "...",       // 3-6 Absaetze: Hook → Kontext → Was passiert im Video → CTA → Hashtags
+  "tags": ["...", "..."],    // 10-15 Tags, kleingeschrieben, kein # davor
+  "thumbnail_prompt": "..."  // 1-2 Saetze, fuer 9:16 Hochformat
+}
+
+Wichtig:
+- Sprache: deutsch wenn Skript deutsch ist, sonst englisch.
+- KEIN '#Shorts' — das ist ein langes Video.
+- Description soll YouTube-SEO bedienen: relevante Keywords im ersten Absatz,
+  dann ausfuehrlichere Beschreibung, am Ende 3-5 Hashtags + Abonnier-CTA.
+- thumbnail_prompt fuer 9:16, dramatische Beleuchtung, klare Subjekt-Trennung."""
+
+
+_PROMPT_INSTRUCTIONS_LONG_LANDSCAPE = """Du bist YouTube-Optimierer fuer normale Lang-Videos (Querformat).
+Bereite eine SEO-starke Veroeffentlichung vor.
+
+Antworte AUSSCHLIESSLICH mit gueltigem JSON, OHNE Markdown-Codeblock,
+in genau diesem Schema:
+
+{
+  "title": "...",            // 50-70 Zeichen, informativ + suchbar (KEIN Clickbait-Spam)
+  "description": "...",       // 3-6 Absaetze: Hook → Kontext → Was passiert im Video → CTA → Hashtags
+  "tags": ["...", "..."],    // 10-15 Tags, kleingeschrieben, kein # davor
+  "thumbnail_prompt": "..."  // 1-2 Saetze, fuer 16:9 Querformat-Thumbnail
+}
+
+Wichtig:
+- Sprache: deutsch wenn Skript deutsch ist, sonst englisch.
+- KEIN '#Shorts' — das ist ein langes Video im Querformat.
+- Description soll YouTube-SEO bedienen: relevante Keywords im ersten Absatz,
+  dann ausfuehrlichere Beschreibung, am Ende 3-5 Hashtags + Abonnier-CTA.
+- thumbnail_prompt fuer 16:9, kinematische Beleuchtung, klare Hauptperson/Action,
+  knallige Farben, im Stil von Roblox-/Gaming-Lang-Video-Thumbnails."""
+
+
+_CHAPTER_PROMPT_DE = """Teile dieses YouTube-Skript in 4-8 Kapitel auf. Antworte AUSSCHLIESSLICH mit gueltigem JSON, OHNE Markdown:
+
+[
+  {{"title": "Intro", "position": 0.0}},
+  {{"title": "Erstes Highlight", "position": 0.12}},
+  ...
+]
+
+Regeln:
+- Das erste Kapitel MUSS position=0.0 haben.
+- position ist ein Wert 0.0..1.0, der Anteil am Skript wo das Kapitel beginnt.
+- Kapitel-Titel: 2-5 Woerter, knackig, kein Punkt am Ende.
+- Jedes Kapitel sollte deutlich vom naechsten getrennt sein (mind. ~30 Sekunden Abstand).
+- Output: NUR der JSON-Array, sonst nichts.
+
+Skript:
+---
+{script}
+---"""
+
+
+_CHAPTER_PROMPT_EN = """Split this YouTube script into 4-8 chapters. Reply ONLY with valid JSON, NO markdown:
+
+[
+  {{"title": "Intro", "position": 0.0}},
+  {{"title": "First highlight", "position": 0.12}},
+  ...
+]
+
+Rules:
+- The first chapter MUST have position=0.0.
+- position is a value 0.0..1.0 — the fraction of the script where the chapter starts.
+- Chapter titles: 2-5 words, punchy, no trailing period.
+- Each chapter should be well separated from the next (at least ~30 seconds apart).
+- Output: ONLY the JSON array, nothing else.
+
+Script:
+---
+{script}
+---"""
+
+
+def _format_chapter_timestamp(seconds: float) -> str:
+    """Format a chapter timestamp the way YouTube expects: M:SS for <1h,
+    H:MM:SS for ≥1h. YouTube refuses chapters where the first stamp isn't
+    exactly '0:00' so always emit the minute-second form there."""
+    secs = max(0, int(seconds))
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def generate_chapters(script: str, total_seconds: float, cfg,
+                      target_lang: str = "auto",
+                      on_step: Callable[[str], None] | None = None) -> str:
+    """Ask Gemini for 4-8 chapter markers, return them as a YouTube-ready
+    block ('0:00 Intro\\n1:30 ...'). Empty string on any failure — chapters
+    are nice-to-have, the pipeline shouldn't fail without them.
+
+    YouTube chapter rules: first stamp must be 0:00, ≥3 stamps, each
+    chapter ≥10s long, ascending order. We post-process the model's
+    output to enforce all of these."""
+    def log(msg: str) -> None:
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+
+    if not script.strip() or total_seconds < 90 or not getattr(cfg, "gemini_api_key", ""):
+        return ""
+
+    try:
+        from pipeline import _gemini_post  # type: ignore
+    except Exception:
+        return ""
+
+    # Pick prompt language from the same auto/de/en knob the metadata uses.
+    lang = (target_lang or "auto").lower()
+    if lang == "auto":
+        # Cheap detection: umlauts → DE.
+        lang = "de" if any(c in script.lower() for c in "äöüß") else "en"
+    template = _CHAPTER_PROMPT_DE if lang == "de" else _CHAPTER_PROMPT_EN
+    prompt_text = template.format(script=script[:8000])  # cap to fit context
+
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{cfg.gemini_model}:generateContent")
+    body = {
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 1024,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    try:
+        data = _gemini_post(url, {"key": cfg.gemini_api_key}, body, retries=2)
+    except Exception as e:
+        log(f"      chapters: gemini failed ({str(e)[:120]})")
+        return ""
+
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+    # Loose JSON parse — Gemini sometimes wraps in ```json ... ```.
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```\s*$", "", raw)
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        log(f"      chapters: JSON parse failed, skipping")
+        return ""
+    if not isinstance(parsed, list) or len(parsed) < 3:
+        return ""
+
+    # Convert position → seconds → timestamp, enforce YouTube's rules.
+    rows: list[tuple[float, str]] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title", "")).strip().rstrip(".").rstrip(":")
+        try:
+            pos = float(entry.get("position", -1))
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 <= pos <= 1.0) or not title:
+            continue
+        rows.append((pos * total_seconds, title[:80]))
+
+    if len(rows) < 3:
+        return ""
+    rows.sort(key=lambda x: x[0])
+    # First chapter must be 0:00 exactly.
+    rows[0] = (0.0, rows[0][1])
+    # Enforce ≥10s gap between chapters; drop too-close ones.
+    cleaned: list[tuple[float, str]] = []
+    for ts, title in rows:
+        if cleaned and ts - cleaned[-1][0] < 10:
+            continue
+        cleaned.append((ts, title))
+    if len(cleaned) < 3:
+        return ""
+
+    block = "\n".join(f"{_format_chapter_timestamp(ts)} {title}" for ts, title in cleaned)
+    log(f"      chapters: {len(cleaned)} markers")
+    return block
+
+
 def _build_user_prompt(topic: str, script: str, target_lang: str = "auto") -> str:
     lang_hint = ""
     if target_lang and target_lang != "auto":
@@ -156,8 +353,21 @@ def _coerce_metadata(parsed: dict, topic: str, script: str) -> YouTubeMetadata:
 # ── Provider implementations ──
 
 
+def _pick_instructions(target_seconds: float, orientation: str) -> str:
+    """Choose the right system prompt for this video's format. Long-form
+    gets a SEO-heavier instruction set with no '#Shorts'; orientation
+    decides whether the thumbnail prompt should aim 9:16 or 16:9."""
+    if target_seconds >= 90:
+        if (orientation or "portrait").lower() == "landscape":
+            return _PROMPT_INSTRUCTIONS_LONG_LANDSCAPE
+        return _PROMPT_INSTRUCTIONS_LONG_PORTRAIT
+    return _PROMPT_INSTRUCTIONS
+
+
 def _try_gemini(topic: str, script: str, target_lang: str, cfg,
-                log: Callable[[str], None]) -> dict | None:
+                log: Callable[[str], None],
+                target_seconds: float = 0.0,
+                orientation: str = "portrait") -> dict | None:
     if not getattr(cfg, "gemini_api_key", ""):
         return None
     # Imported lazily so the module is importable even if pipeline.py changes.
@@ -170,14 +380,15 @@ def _try_gemini(topic: str, script: str, target_lang: str, cfg,
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{cfg.gemini_model}:generateContent"
     )
+    instructions = _pick_instructions(target_seconds, orientation)
     body = {
         "contents": [{"parts": [
-            {"text": _PROMPT_INSTRUCTIONS + "\n\n" +
+            {"text": instructions + "\n\n" +
                      _build_user_prompt(topic, script, target_lang)},
         ]}],
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 800,
+            "maxOutputTokens": 1200 if target_seconds >= 90 else 800,
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
@@ -198,7 +409,9 @@ def _try_gemini(topic: str, script: str, target_lang: str, cfg,
 
 
 def _try_cloudflare(topic: str, script: str, target_lang: str, cfg,
-                     log: Callable[[str], None]) -> dict | None:
+                     log: Callable[[str], None],
+                     target_seconds: float = 0.0,
+                     orientation: str = "portrait") -> dict | None:
     if not (getattr(cfg, "cloudflare_account_id", "") and
             getattr(cfg, "cloudflare_api_token", "")):
         return None
@@ -208,12 +421,13 @@ def _try_cloudflare(topic: str, script: str, target_lang: str, cfg,
         f"{cfg.cloudflare_account_id}/ai/run/@cf/meta/llama-3.1-8b-instruct"
     )
     headers = {"Authorization": f"Bearer {cfg.cloudflare_api_token}"}
+    instructions = _pick_instructions(target_seconds, orientation)
     body = {
         "messages": [
-            {"role": "system", "content": _PROMPT_INSTRUCTIONS},
+            {"role": "system", "content": instructions},
             {"role": "user",   "content": _build_user_prompt(topic, script, target_lang)},
         ],
-        "max_tokens": 700,
+        "max_tokens": 1000 if target_seconds >= 90 else 700,
         "temperature": 0.7,
     }
     try:
@@ -274,9 +488,15 @@ def generate_youtube_metadata(
     cfg,
     *,
     target_lang: str = "auto",
+    target_seconds: float = 0.0,
+    orientation: str = "portrait",
     on_step: Callable[[str], None] | None = None,
 ) -> YouTubeMetadata:
-    """Generate title / description / tags / thumbnail prompt for a short.
+    """Generate title / description / tags / thumbnail prompt.
+
+    `target_seconds` ≥90 → long-form prompts (no '#Shorts', SEO-heavier
+    description), and chapter markers get prepended to the description.
+    `orientation` switches the thumbnail prompt between 9:16 and 16:9.
 
     Always returns a populated `YouTubeMetadata` — falls back to a template
     if both Gemini and Cloudflare are unavailable so the pipeline never
@@ -292,17 +512,30 @@ def generate_youtube_metadata(
     topic = (topic or "").strip()
     script = (script or "").strip()
 
+    meta: YouTubeMetadata | None = None
     for provider_name, fn in (
         ("gemini",     _try_gemini),
         ("cloudflare", _try_cloudflare),
     ):
-        parsed = fn(topic, script, target_lang, cfg, log)
+        parsed = fn(topic, script, target_lang, cfg, log,
+                    target_seconds=target_seconds, orientation=orientation)
         if parsed:
             log(f"      youtube_optimizer: metadata via {provider_name}")
-            return _coerce_metadata(parsed, topic, script)
+            meta = _coerce_metadata(parsed, topic, script)
+            break
+    if meta is None:
+        log("      youtube_optimizer: no LLM available, using template")
+        meta = _template_metadata(topic, script)
 
-    log("      youtube_optimizer: no LLM available, using template")
-    return _template_metadata(topic, script)
+    # Chapter markers: long-form videos (≥90s) get a YouTube-parseable
+    # timestamp block prepended to the description. The chapter call is
+    # opt-in/no-op for short videos and silently no-ops on any error.
+    if target_seconds >= 90:
+        chapters = generate_chapters(script, target_seconds, cfg,
+                                     target_lang=target_lang, on_step=on_step)
+        if chapters:
+            meta.description = chapters + "\n\n" + meta.description
+    return meta
 
 
 # ────────────────── Thumbnail generation ──────────────────

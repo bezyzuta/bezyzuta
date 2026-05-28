@@ -4289,6 +4289,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                     script=script,
                     cfg=cfg,
                     target_lang=str(job.get("youtube_lang", "auto")),
+                    target_seconds=float(target),
+                    orientation=("landscape" if cfg.target_w >= cfg.target_h
+                                 else "portrait"),
                     on_step=step,
                 )
                 if bool(job.get("youtube_thumbnail", True)):
