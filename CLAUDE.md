@@ -183,8 +183,13 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
   `_CAPTION_EMOJI_KEYWORDS`, DE+EN, nur bei Treffer). **Farbig** als PNG-Overlay
   (`get_emoji_png` rendert via Pillow + System-Emoji-Font lokal, kein Netz;
   libass würde nur s/w rendern → deshalb `emoji_overlay`-Pfad in `compose_short`).
-- **Durchgehende Mittel-Bilder** (`images_continuous`, `_image_schedule(continuous=True)`
-  reiht Bilder lückenlos aneinander statt Pop-mit-Lücke — nur Hochformat)
+- **Durchgehend wechselnde Mittel-Bilder** (`images_continuous`): pro Sprech-Beat
+  ein eigenes Bild, wechselt alle `image_change_secs` (~3.5s), Anzahl auto aus
+  Voice-Länge. `_image_schedule(continuous=True)` reiht lückenlos. Nur Hochformat.
+- **Bild-Quellen-Mix** (`generate_scene_plan`): LLM (Claude/Gemini) plant pro Beat
+  `source=ai|photo`. AI → Flux/Pollinations (cinematischer Roblox-Render).
+  photo → `fetch_free_photo` = Openverse → Wikimedia Commons (free, kein Key,
+  thematisch passend), AI als Fallback. Toggle `image_allow_photos`.
 - Progress-Bar unten via color+scale+overlay
 - Subscribe-Button am Ende
 - **Image-Overlays — cinematischer 3D-Roblox-Render-Stil** (`_IMAGE_STYLE_SUFFIX`,

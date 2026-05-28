@@ -2993,6 +2993,100 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
     return prompts[:n]
 
 
+_SCENE_PLAN_PROMPT = """Du bist Editor fuer virale Roblox-YouTube-Shorts. Plane die Bilder in der Mitte des Videos.
+
+Teile dieses Skript in {n} chronologische Beats (Reihenfolge = Erzaehl-Reihenfolge). Fuer JEDEN Beat entscheide, welche Art Bild den gerade gesprochenen Satz am besten illustriert:
+
+- "ai"    = ein cinematischer 3D-Roblox-Render (fuer Roblox-Charaktere, Items, Szenen: reicher Spieler mit Krone, Feuer-Boss, Nacht-Setup, usw.)
+- "photo" = ein echtes Foto / Reaktionsbild das zum Thema passt (fuer Emotionen/Reaktionen/Alltag: geschockte Person, Geldstapel, Pokal, gruseliges Zimmer, Handschlag, usw.)
+
+Mische die beiden sinnvoll — wie echte virale Shorts (Roblox-Renders fuer Spiel-Momente, echte Fotos/Memes fuer Reaktionen).
+
+Fuer jeden Beat liefere:
+- "source": "ai" oder "photo"
+- "motif": bei source=ai ein englischer Bild-Prompt (NUR das Motiv, ohne Stil — Charakter, Pose, Objekte, FX, Stimmung). Bei source=photo leer lassen.
+- "query": bei source=photo 2-4 englische Such-Stichworte fuer eine Foto-Suche (z.B. "shocked person face", "stack of gold coins", "golden trophy"). Bei source=ai leer lassen.
+
+Skript:
+\"\"\"
+{script}
+\"\"\"
+
+Antworte NUR mit einem gueltigen JSON-Array von genau {n} Objekten. KEINE Markdown-Codebloecke, KEINE Kommentare."""
+
+
+def generate_scene_plan(script: str, n: int, cfg: "Config",
+                        allow_photos: bool = True, on_step=None) -> list[dict]:
+    """Plan n chronological image beats, each tagged source=ai|photo with a
+    motif (AI) or query (photo). Falls back to all-AI motifs from
+    generate_scene_prompts if the structured call fails. Returns a list of
+    dicts: {"source", "motif", "query"}."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+
+    def _fallback_ai() -> list[dict]:
+        return [{"source": "ai", "motif": "", "query": "",
+                 "prompt": p} for p in generate_scene_prompts(script, n, cfg)]
+
+    if not (getattr(cfg, "use_claude_cli", False) or cfg.gemini_api_key):
+        return _fallback_ai()
+
+    prompt_text = _SCENE_PLAN_PROMPT.format(n=n, script=script)
+    body = {
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            "temperature": 0.7, "maxOutputTokens": 2048,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    try:
+        text = _complete_text(prompt_text, cfg, prefer_claude=True, gemini_body=body)
+    except Exception as e:
+        log(f"      scene-plan LLM failed ({str(e)[:120]}), all-AI fallback")
+        return _fallback_ai()
+
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```\s*$", "", raw)
+    s_idx, e_idx = raw.find("["), raw.rfind("]")
+    if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+        raw = raw[s_idx:e_idx + 1]
+    try:
+        plan = json.loads(raw)
+        assert isinstance(plan, list)
+    except Exception as e:
+        log(f"      scene-plan parse failed ({str(e)[:100]}), all-AI fallback")
+        return _fallback_ai()
+
+    out: list[dict] = []
+    for beat in plan:
+        if not isinstance(beat, dict):
+            continue
+        source = str(beat.get("source", "ai")).lower()
+        if source == "photo" and not allow_photos:
+            source = "ai"
+        motif = str(beat.get("motif", "")).strip()
+        query = str(beat.get("query", "")).strip()
+        if source == "photo" and query:
+            out.append({"source": "photo", "motif": "", "query": query, "prompt": ""})
+        else:
+            # AI beat (or photo with no query → treat as AI). Build full prompt.
+            full = _finalize_scene_prompt(motif or script[:120])
+            out.append({"source": "ai", "motif": motif, "query": "", "prompt": full})
+    if not out:
+        return _fallback_ai()
+    # pad/trim to n
+    while len(out) < n:
+        out.append({"source": "ai", "motif": "", "query": "",
+                    "prompt": derive_image_prompt(script[:120])})
+    return out[:n]
+
+
 class _SceneGenError(RuntimeError):
     pass
 
@@ -3124,6 +3218,138 @@ def fetch_image_from_pollinations(prompt: str, out_path: Path,
             print(f"      Pollinations all endpoints failed, retrying in {wait}s")
             time.sleep(wait)
     raise RuntimeError(last_err or "Pollinations failed (unknown)")
+
+
+def fetch_image_from_openverse(query: str, out_path: Path,
+                               max_results: int = 8) -> Path:
+    """Fetch a free, openly-licensed real photo matching `query` from the
+    Openverse API (openverse.org). No API key required. Used for beats that
+    a real photo fits better than an AI render (e.g. a shocked face, money,
+    a trophy) — the "free images that match the topic" the reference shorts
+    mix in alongside AI renders.
+
+    Downloads the first result that actually decodes as an image, normalizes
+    it to an RGBA PNG (max 1024px) so the compose overlay treats it like any
+    other image. Raises on failure so the caller can fall back to AI."""
+    q = (query or "").strip()
+    if not q:
+        raise RuntimeError("openverse: empty query")
+    api = "https://api.openverse.org/v1/images/"
+    params = {
+        "q": q,
+        "license_type": "all",
+        "mature": "false",
+        "page_size": max_results,
+        # Prefer larger images; aspect handled on our side via crop.
+        "size": "large",
+    }
+    headers = {"User-Agent": "bezyzuta-shorts/1.0 (personal use)"}
+    try:
+        r = requests.get(api, params=params, headers=headers, timeout=30)
+        r.raise_for_status()
+        results = (r.json() or {}).get("results") or []
+    except Exception as e:
+        raise RuntimeError(f"openverse search failed: {str(e)[:160]}") from e
+    if not results:
+        raise RuntimeError(f"openverse: no results for {q!r}")
+
+    last_err = None
+    for res in results:
+        img_url = res.get("url") or res.get("thumbnail")
+        if not img_url:
+            continue
+        try:
+            ir = requests.get(img_url, headers=headers, timeout=30)
+            ir.raise_for_status()
+            data = ir.content
+            if not data or len(data) < 1024:
+                continue
+            # Normalize via Pillow so odd formats / huge sizes don't break
+            # the ffmpeg overlay. Square-ish center crop for the middle slot.
+            from PIL import Image
+            import io
+            im = Image.open(io.BytesIO(data)).convert("RGBA")
+            w, h = im.size
+            side = min(w, h)
+            im = im.crop(((w - side) // 2, (h - side) // 2,
+                          (w - side) // 2 + side, (h - side) // 2 + side))
+            if side > 1024:
+                im = im.resize((1024, 1024), Image.LANCZOS)
+            im.save(out_path)
+            if out_path.is_file() and out_path.stat().st_size > 512:
+                return out_path
+        except Exception as e:
+            last_err = str(e)[:160]
+            continue
+    raise RuntimeError(f"openverse: no usable image for {q!r} ({last_err})")
+
+
+def fetch_image_from_wikimedia(query: str, out_path: Path,
+                               max_results: int = 10) -> Path:
+    """Fallback free-image source: Wikimedia Commons (no API key). Less
+    meme-y than Openverse but huge and very reliable. Same normalize +
+    center-crop as the Openverse fetcher."""
+    q = (query or "").strip()
+    if not q:
+        raise RuntimeError("wikimedia: empty query")
+    api = "https://commons.wikimedia.org/w/api.php"
+    params = {
+        "action": "query", "format": "json",
+        "generator": "search", "gsrsearch": f"{q} filetype:bitmap",
+        "gsrnamespace": "6", "gsrlimit": str(max_results),
+        "prop": "imageinfo", "iiprop": "url", "iiurlwidth": "1024",
+    }
+    headers = {"User-Agent": "bezyzuta-shorts/1.0 (personal use)"}
+    try:
+        r = requests.get(api, params=params, headers=headers, timeout=30)
+        r.raise_for_status()
+        pages = ((r.json() or {}).get("query") or {}).get("pages") or {}
+    except Exception as e:
+        raise RuntimeError(f"wikimedia search failed: {str(e)[:160]}") from e
+    if not pages:
+        raise RuntimeError(f"wikimedia: no results for {q!r}")
+
+    last_err = None
+    for page in pages.values():
+        info = (page.get("imageinfo") or [{}])[0]
+        img_url = info.get("thumburl") or info.get("url")
+        if not img_url:
+            continue
+        try:
+            ir = requests.get(img_url, headers=headers, timeout=30)
+            ir.raise_for_status()
+            data = ir.content
+            if not data or len(data) < 1024:
+                continue
+            from PIL import Image
+            import io
+            im = Image.open(io.BytesIO(data)).convert("RGBA")
+            w, h = im.size
+            side = min(w, h)
+            im = im.crop(((w - side) // 2, (h - side) // 2,
+                          (w - side) // 2 + side, (h - side) // 2 + side))
+            if side > 1024:
+                im = im.resize((1024, 1024), Image.LANCZOS)
+            im.save(out_path)
+            if out_path.is_file() and out_path.stat().st_size > 512:
+                return out_path
+        except Exception as e:
+            last_err = str(e)[:160]
+            continue
+    raise RuntimeError(f"wikimedia: no usable image for {q!r} ({last_err})")
+
+
+def fetch_free_photo(query: str, out_path: Path) -> Path:
+    """Try the free, no-key photo sources in order (Openverse → Wikimedia).
+    Raises only if all of them fail, so the caller can fall back to AI."""
+    errors = []
+    for name, fn in (("openverse", fetch_image_from_openverse),
+                     ("wikimedia", fetch_image_from_wikimedia)):
+        try:
+            return fn(query, out_path)
+        except Exception as e:
+            errors.append(f"{name}: {str(e)[:100]}")
+    raise RuntimeError("; ".join(errors))
 
 
 def _image_schedule(n: int, duration: float, image_dur: float,
@@ -4491,27 +4717,54 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 raise RuntimeError(f"image_path does not exist: {single}")
             image_paths = [single]
         else:
-            n_images = max(1, min(int(job.get("image_count", 3)), 5))
             user_prompts = [p.strip() for p in (job.get("image_prompts") or []) if p and p.strip()]
+            # Continuous mode (portrait): auto-derive the image count from the
+            # voiceover length so a fresh image lands every ~image_change_secs,
+            # like the reference (images change every 2-4s). Otherwise honor
+            # the GUI's fixed count.
+            continuous = bool(job.get("images_continuous", False)) and is_portrait_out
+            if continuous and not user_prompts:
+                change_secs = max(2.0, float(job.get("image_change_secs", 3.5)))
+                n_images = max(4, min(int(round((vo_dur or 25.0) / change_secs)), 14))
+            else:
+                n_images = max(1, min(int(job.get("image_count", 3)), 14))
+
+            allow_photos = bool(job.get("image_allow_photos", True))
             if user_prompts:
                 step(f"      using {len(user_prompts)} user-provided image prompt(s)")
-                prompts = user_prompts[:n_images]
-                if len(prompts) < n_images:
-                    step(f"      filling remaining {n_images - len(prompts)} prompt(s) via Gemini")
-                    auto = generate_scene_prompts(script, n_images - len(prompts), cfg)
-                    prompts.extend(auto)
+                plan = [{"source": "ai", "prompt": p, "query": ""} for p in user_prompts[:n_images]]
+                if len(plan) < n_images:
+                    step(f"      filling remaining {n_images - len(plan)} beat(s) via LLM")
+                    plan.extend(generate_scene_plan(script, n_images - len(plan), cfg,
+                                                    allow_photos=allow_photos, on_step=step))
             else:
-                step(f"      generating {n_images} scene prompts via Gemini")
-                prompts = generate_scene_prompts(script, n_images, cfg)
+                step(f"      planning {n_images} image beats (AI + free photos) via LLM")
+                plan = generate_scene_plan(script, n_images, cfg,
+                                           allow_photos=allow_photos, on_step=step)
+
             consecutive_failures = 0
             cloudflare_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
-            for i, prompt in enumerate(prompts, 1):
-                step(f"      [{i}/{n_images}] image: {prompt[:80]}")
+            for i, beat in enumerate(plan, 1):
+                source = beat.get("source", "ai")
+                prompt = beat.get("prompt", "") or derive_image_prompt(script[:120])
+                query = beat.get("query", "")
                 target_path = work / f"image_{i}.png"
+                label = f"photo:{query}" if source == "photo" else prompt
+                step(f"      [{i}/{len(plan)}] {source}: {label[:74]}")
                 ok = False
                 primary_err: str | None = None
 
-                if cloudflare_ready:
+                # Photo beats → free stock/photo sources first, AI fallback.
+                if source == "photo" and query:
+                    try:
+                        fetch_free_photo(query, target_path)
+                        image_paths.append(target_path)
+                        ok = True
+                    except Exception as e:
+                        primary_err = f"FreePhoto: {e}"
+                        step(f"      free-photo miss, falling back to AI render")
+
+                if not ok and cloudflare_ready:
                     try:
                         fetch_image_from_cloudflare(
                             prompt, target_path, cfg,
@@ -4520,7 +4773,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                         image_paths.append(target_path)
                         ok = True
                     except Exception as e:
-                        primary_err = f"Cloudflare: {e}"
+                        primary_err = f"{primary_err}; Cloudflare: {e}" if primary_err else f"Cloudflare: {e}"
                         step(f"      Cloudflare failed, falling back to Pollinations")
 
                 if not ok:
@@ -4540,10 +4793,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                     consecutive_failures += 1
                     err_summary = primary_err or "unknown"
                     step(f"      WARN: image {i} failed: {err_summary[:200]}")
-                    if consecutive_failures >= 2 and i < n_images:
+                    if consecutive_failures >= 2 and i < len(plan):
                         step(
-                            f"      image generators seem down, skipping remaining "
-                            f"{n_images - i} image(s); pipeline continues without them"
+                            f"      image sources seem down, skipping remaining "
+                            f"{len(plan) - i} image(s); pipeline continues without them"
                         )
                         break
 

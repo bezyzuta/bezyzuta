@@ -100,6 +100,8 @@ def generate(
     skip_images: bool,
     image_tilt: bool,
     images_continuous: bool,
+    image_change_secs: float,
+    image_allow_photos: bool,
     caption_font: str,
     caption_color: str,
     caption_stroke_color: str,
@@ -197,6 +199,8 @@ def generate(
             "no_image": bool(skip_images),
             "image_tilt": bool(image_tilt),
             "images_continuous": bool(images_continuous),
+            "image_change_secs": float(image_change_secs),
+            "image_allow_photos": bool(image_allow_photos),
             "caption_font": str(caption_font or "Impact"),
             "caption_font_size": int(caption_font_size),
             "caption_color": str(caption_color or "#FFFFFF"),
@@ -653,10 +657,22 @@ def build_app() -> gr.Blocks:
             )
             images_continuous = gr.Checkbox(
                 value=True,
-                label="🖼️ Durchgehend Bilder in der Mitte (wie im Referenz-Video)",
-                info=("An = die Bilder werden lückenlos aneinandergereiht, sodass fast "
-                      "immer eins in der Mitte ist (mehr Bilder = mehr Abwechslung). "
-                      "Aus = Bilder poppen kurz auf und verschwinden wieder. Nur Hochformat."),
+                label="🖼️ Durchgehend wechselnde Bilder in der Mitte (wie im Referenz-Video)",
+                info=("An = pro gesprochenem Beat ein eigenes, passendes Bild — wechselt "
+                      "alle paar Sekunden, lückenlos. Anzahl wird automatisch aus der Länge "
+                      "berechnet (Bild-Anzahl-Slider wird dann ignoriert). Nur Hochformat."),
+            )
+            image_change_secs = gr.Slider(
+                2.0, 6.0, value=3.5, step=0.5,
+                label="⏱️ Sekunden pro Bild (bei durchgehend)",
+                info="Wie oft das Mittelbild wechselt. 3-4s wie im Referenz-Video.",
+            )
+            image_allow_photos = gr.Checkbox(
+                value=True,
+                label="📷 Auch echte Fotos verwenden (free via Openverse, kein KI)",
+                info=("An = Mix aus KI-Roblox-Renders UND echten lizenzfreien Fotos, die zum "
+                      "Text passen (geschockte Person, Geldstapel, Pokal …) — wie virale Shorts. "
+                      "Die KI entscheidet pro Beat was besser passt. Aus = nur KI-Bilder."),
             )
 
         # ───────────── Engagement-Effekte ─────────────
@@ -861,6 +877,7 @@ def build_app() -> gr.Blocks:
                 enable_captions,
                 image_count, image_duration, custom_image_prompts, uploaded_images,
                 skip_images, image_tilt, images_continuous,
+                image_change_secs, image_allow_photos,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 caption_position,
                 hook_text, hook_duration,
