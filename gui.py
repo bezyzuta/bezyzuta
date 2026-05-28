@@ -56,6 +56,8 @@ def slugify(text: str) -> str:
 def generate(
     output_format: str,
     config_path: str,
+    use_claude_cli: bool,
+    claude_cli_model: str,
     source_mode: str,
     source_url: str,
     channel_url: str,
@@ -131,6 +133,10 @@ def generate(
             cfg.target_w, cfg.target_h = 1920, 1080
         else:
             cfg.target_w, cfg.target_h = 1080, 1920
+        # Claude-CLI provider toggle (overrides config.json for this run).
+        cfg.use_claude_cli = bool(use_claude_cli)
+        if claude_cli_model is not None:
+            cfg.claude_cli_model = str(claude_cli_model).strip()
     except Exception as e:
         yield f"Config-Fehler: {e}", None
         return
@@ -317,6 +323,33 @@ def build_app() -> gr.Blocks:
 
         with gr.Accordion("⚙️ Config-Datei", open=False):
             config_path = gr.Textbox(value="config.json", label="Pfad zur config.json")
+
+        # ───────────── KI-Modell (lokale Claude CLI) ─────────────
+        with gr.Accordion("🧠 KI-Modell — Claude statt Gemini (lokal, Abo)", open=False):
+            gr.Markdown(
+                "Nutzt die lokal installierte **Claude Code CLI** (dein Abo, kein API-Key, "
+                "keine Extra-Kosten) statt Gemini für die Text-Aufgaben — vor allem das "
+                "**Moment-Picking** (dein größter Qualitäts-Schmerzpunkt). "
+                "Langsamer als Gemini und zählt gegen deine Abo-Limits. "
+                "Bei Fehler/CLI-fehlt → automatischer Fallback auf Gemini. "
+                "Nur für lokalen Privatgebrauch gedacht."
+            )
+            use_claude_cli = gr.Checkbox(
+                value=False,
+                label="🧠 Claude CLI für Text-Aufgaben nutzen (Moment-Picking, Skript, Metadaten)",
+                info="Voraussetzung: 'claude' CLI installiert und eingeloggt (claude login).",
+            )
+            claude_cli_model = gr.Dropdown(
+                choices=[
+                    ("Standard (was die CLI gerade nutzt)", ""),
+                    ("Sonnet — schnell + sehr gut (empfohlen)", "sonnet"),
+                    ("Opus — beste Qualität, mehr Abo-Verbrauch", "opus"),
+                    ("Haiku — am schnellsten, schwächer", "haiku"),
+                ],
+                value="sonnet",
+                label="Claude-Modell",
+                info="Für Moment-Picking lohnt sich Sonnet oder Opus — beide deutlich besser als Gemini Flash.",
+            )
 
         # ───────────── Video-Quelle ─────────────
         with gr.Accordion("📺 Video-Quelle", open=True):
@@ -762,7 +795,8 @@ def build_app() -> gr.Blocks:
             generate,
             inputs=[
                 output_format,
-                config_path, source_mode, source_url, channel_url, title_filter,
+                config_path, use_claude_cli, claude_cli_model,
+                source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, extend_script, target_duration,
                 clip_segments, playback_speed, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,

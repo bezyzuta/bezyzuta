@@ -114,6 +114,17 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 - Direkt-URL (yt-dlp) ODER Channel-Scrape mit Title-Filter
 - Source-File-Cache für Multi-Clip
 
+### LLM-Provider (Text-Aufgaben)
+- Standard: Gemini 2.5 Flash (Skript, Moment-Picking, Metadaten).
+- **Opt-in: lokale Claude Code CLI** via `cfg.use_claude_cli` (GUI-Toggle
+  "🧠 KI-Modell" + config.json). `claude_cli_complete()` ruft `claude -p
+  --output-format json` per subprocess, Prompt über **stdin** (Windows
+  argv-Limit!). Nutzt Abo-Auth, kein API-Key. `_complete_text()` ist der
+  Dispatcher: Claude-first wenn aktiv, sonst Gemini; bei jedem CLI-Fehler
+  automatischer Gemini-Fallback. Verdrahtet in Moment-Picking (Hauptgewinn),
+  Skript-Generierung und Continuation. `claude_cli_model` → `--model`
+  (sonnet/opus/haiku). Nur für lokalen Gebrauch — Web-App braucht echte API.
+
 ### Skript & Stimme
 - **Dual-Engine TTS, sprach-gesteuert via `cfg.tts_language`** ("de" /
   "en" / "auto"). `synthesize_voiceover()` dispatcht zwischen den beiden:

@@ -103,6 +103,15 @@ class Config:
     cloudflare_account_id: str
     cloudflare_api_token: str
     cloudflare_image_model: str
+    # Local Claude Code CLI as an LLM provider for the text tasks (moment-
+    # picking, script, metadata). Uses the logged-in `claude` CLI and its
+    # subscription auth — no API key, no per-call cost. Opt-in because it's
+    # slower than Gemini and only makes sense for personal/local use.
+    # `claude_cli_model` is passed to `claude --model` (e.g. "sonnet",
+    # "opus"); empty = the CLI's default.
+    use_claude_cli: bool
+    claude_cli_model: str
+    claude_cli_path: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -126,6 +135,9 @@ class Config:
             cloudflare_account_id=data.get("cloudflare_account_id") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
             cloudflare_api_token=data.get("cloudflare_api_token") or os.environ.get("CLOUDFLARE_API_TOKEN", ""),
             cloudflare_image_model=data.get("cloudflare_image_model", "@cf/black-forest-labs/flux-1-schnell"),
+            use_claude_cli=bool(data.get("use_claude_cli", False)),
+            claude_cli_model=str(data.get("claude_cli_model", "")),
+            claude_cli_path=str(data.get("claude_cli_path", "claude")),
         )
 
     def validate(self) -> tuple[list[str], list[str]]:
@@ -144,14 +156,22 @@ class Config:
         except OSError as e:
             errors.append(f"output_dir {self.output_dir} can't be created/written: {e}")
 
-        # Gemini is the only required external service — script generation
-        # needs it. Cloudflare is optional (image overlays + LLM fallbacks).
+        # Gemini is normally the required text backend — script generation
+        # needs it. But if the local Claude CLI is enabled it can serve as
+        # the text backend instead, so Gemini becomes optional then.
         if not self.gemini_api_key:
-            errors.append(
-                "gemini_api_key missing. Either set it in config.json or "
-                "export GEMINI_API_KEY in the environment. Free key at "
-                "https://aistudio.google.com/apikey"
-            )
+            if self.use_claude_cli:
+                warnings.append(
+                    "gemini_api_key not set, but use_claude_cli is on — "
+                    "text tasks will go through the local Claude CLI. Note "
+                    "there's no Gemini fallback if the CLI is unavailable."
+                )
+            else:
+                errors.append(
+                    "gemini_api_key missing. Either set it in config.json or "
+                    "export GEMINI_API_KEY in the environment. Free key at "
+                    "https://aistudio.google.com/apikey"
+                )
 
         if not self.cloudflare_account_id or not self.cloudflare_api_token:
             warnings.append(
@@ -445,7 +465,6 @@ def _gemini_continuation(previous: str, cfg: "Config", add_words: int,
     Returns just the new text; caller concatenates."""
     template = CONTINUATION_PROMPT_EN if (language or "de").lower() == "en" else CONTINUATION_PROMPT_DE
     prompt_text = template.format(previous=previous.strip(), add_words=add_words)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
     body = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -454,16 +473,9 @@ def _gemini_continuation(previous: str, cfg: "Config", add_words: int,
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
-    try:
-        candidate = data["candidates"][0]
-    except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Gemini continuation: no candidates ({e})")
-    parts = candidate.get("content", {}).get("parts", []) or []
-    text_parts = [p.get("text", "") for p in parts if not p.get("thought")]
-    text = "\n".join(text_parts).strip()
+    text = _complete_text(prompt_text, cfg, prefer_claude=True, gemini_body=body)
     if not text:
-        raise RuntimeError("Gemini continuation returned empty text")
+        raise RuntimeError("continuation returned empty text")
     return text
 
 
@@ -492,6 +504,124 @@ def _gemini_post(url: str, params: dict, body: dict, retries: int = 4,
             continue
         break
     raise RuntimeError(last_err)
+
+
+# Cache the result of "is the claude CLI present and runnable" so we don't
+# spawn a probe subprocess on every single call. None=untested.
+_CLAUDE_CLI_OK: bool | None = None
+
+
+def _claude_cli_available(claude_path: str = "claude") -> bool:
+    """Cheap one-time check that the `claude` CLI exists on PATH. Cached."""
+    global _CLAUDE_CLI_OK
+    if _CLAUDE_CLI_OK is not None:
+        return _CLAUDE_CLI_OK
+    import shutil
+    _CLAUDE_CLI_OK = shutil.which(claude_path) is not None
+    return _CLAUDE_CLI_OK
+
+
+def claude_cli_complete(prompt: str, cfg: "Config", *, timeout: int = 180,
+                        on_step=None) -> str | None:
+    """Run a single prompt through the local `claude` CLI in headless print
+    mode and return the text response. Returns None on ANY failure (CLI not
+    installed, timeout, non-zero exit, unparseable output) so callers can
+    fall back to Gemini.
+
+    This taps the user's logged-in Claude subscription — no API key, no
+    per-call billing. It's slower than a Gemini HTTP call (full agent spin-
+    up) and counts against the subscription's usage limits, so it's opt-in
+    via cfg.use_claude_cli. Intended for local/personal use; a real product
+    backend would use the Anthropic API instead.
+    """
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+
+    claude_path = getattr(cfg, "claude_cli_path", "") or "claude"
+    if not _claude_cli_available(claude_path):
+        log("      claude CLI not found on PATH — falling back to Gemini")
+        return None
+
+    # Pass the prompt on stdin, not as an argv element: moment-picking
+    # prompts embed a full transcript and can easily exceed Windows'
+    # ~32KB command-line limit. `claude -p` reads the prompt from stdin
+    # when no positional prompt is given.
+    cmd = [claude_path, "-p", "--output-format", "json"]
+    model = (getattr(cfg, "claude_cli_model", "") or "").strip()
+    if model:
+        cmd += ["--model", model]
+
+    try:
+        proc = subprocess.run(
+            cmd, input=prompt, capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"      claude CLI timed out after {timeout}s — falling back")
+        return None
+    except Exception as e:
+        log(f"      claude CLI failed to start: {str(e)[:160]} — falling back")
+        return None
+
+    if proc.returncode != 0:
+        log(f"      claude CLI exited {proc.returncode}: "
+            f"{(proc.stderr or '').strip()[:200]} — falling back")
+        return None
+
+    out = (proc.stdout or "").strip()
+    if not out:
+        return None
+    # --output-format json wraps the answer in an envelope with a "result"
+    # field. Older/other formats may print raw text — tolerate both.
+    try:
+        env = json.loads(out)
+        if isinstance(env, dict):
+            text = env.get("result") or env.get("text") or ""
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+            # Some versions nest under content blocks.
+            if isinstance(env.get("content"), list):
+                joined = "".join(
+                    b.get("text", "") for b in env["content"]
+                    if isinstance(b, dict)
+                ).strip()
+                if joined:
+                    return joined
+    except json.JSONDecodeError:
+        # stdout was raw text, not JSON — use it directly.
+        return out
+    return out or None
+
+
+def _complete_text(prompt: str, cfg: "Config", *, prefer_claude: bool,
+                   gemini_body: dict, gemini_model: str | None = None,
+                   on_step=None) -> str:
+    """Unified text completion: try the local Claude CLI first when
+    prefer_claude (and cfg.use_claude_cli) is set, otherwise POST to Gemini.
+    Always returns text or raises — callers parse the text themselves.
+
+    gemini_body is the full Gemini request body (with the prompt already
+    embedded) used for the fallback path; gemini_model overrides the model
+    in the URL when given."""
+    if prefer_claude and getattr(cfg, "use_claude_cli", False):
+        text = claude_cli_complete(prompt, cfg, on_step=on_step)
+        if text:
+            return text
+        # fall through to Gemini on any CLI failure
+    if not cfg.gemini_api_key:
+        raise RuntimeError("no text backend available (claude CLI failed and no gemini_api_key)")
+    model = gemini_model or cfg.gemini_model
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    data = _gemini_post(url, {"key": cfg.gemini_api_key}, gemini_body)
+    try:
+        candidate = data["candidates"][0]
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Gemini returned no candidates: {data}") from e
+    parts = candidate.get("content", {}).get("parts", []) or []
+    return "\n".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
 
 
 _SCRIPT_TEMPLATES = [
@@ -572,9 +702,9 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
 
 def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0,
                                language: str = "de") -> str:
-    if not cfg.gemini_api_key:
+    # Name kept for back-compat; actually dispatches Claude-CLI-or-Gemini.
+    if not cfg.gemini_api_key and not getattr(cfg, "use_claude_cli", False):
         raise RuntimeError("topic given but gemini_api_key missing in config (and GEMINI_API_KEY env not set)")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg.gemini_model}:generateContent"
     target_low = max(10, int(target_seconds - 3))
     target_high = int(target_seconds + 3)
     # Word ranges aligned with actual TTS speech rate (DE ~2.4 wps,
@@ -614,20 +744,11 @@ def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
-    try:
-        candidate = data["candidates"][0]
-    except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Gemini response had no candidates: {data}") from e
-    parts = candidate.get("content", {}).get("parts", []) or []
-    text_parts = [p.get("text", "") for p in parts if not p.get("thought")]
-    text = "\n".join(text_parts).strip()
-    finish = candidate.get("finishReason", "")
+    text = _complete_text(prompt_text, cfg, prefer_claude=True, gemini_body=body)
     if not text:
-        raise RuntimeError(f"Gemini returned no text (finishReason={finish}); full response: {data}")
-    if len(text) < 120 or finish not in ("STOP", ""):
-        print(f"      WARN: Gemini output looks short ({len(text)} chars, finishReason={finish})")
-        print(f"      full response: {json.dumps(data, ensure_ascii=False)[:1200]}")
+        raise RuntimeError("script generation returned no text")
+    if len(text) < 120:
+        print(f"      WARN: script output looks short ({len(text)} chars)")
     return text
 
 
@@ -3398,18 +3519,16 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    # Use the dedicated moments model (defaults to gemini_model). Allows
-    # setting gemini-2.5-pro in config.json for noticeably better picks
-    # without burning Pro quota on every other Gemini call.
+    # Moment-picking is THE task where a stronger model pays off most
+    # (Gemini Flash is documented-mediocre here). So when the local Claude
+    # CLI is enabled, route this through it first; otherwise use the
+    # dedicated Gemini moments model (defaults to gemini_model, can be set
+    # to gemini-2.5-pro in config.json for better picks).
     moments_model = getattr(cfg, "gemini_moments_model", "") or cfg.gemini_model
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{moments_model}:generateContent"
-    data = _gemini_post(url, {"key": cfg.gemini_api_key}, body)
-    try:
-        candidate = data["candidates"][0]
-    except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Gemini returned no candidates: {data}") from e
-    parts = candidate.get("content", {}).get("parts", []) or []
-    text = "\n".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+    text = _complete_text(
+        prompt, cfg, prefer_claude=True,
+        gemini_body=body, gemini_model=moments_model,
+    )
     if text.startswith("```"):
         text = text.split("```", 2)[1]
         if text.lower().startswith("json"):

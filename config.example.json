@@ -17,6 +17,12 @@
   "cloudflare_account_id": "leave_empty_or_paste_account_id_from_dash.cloudflare.com",
   "cloudflare_api_token": "leave_empty_or_paste_workers_ai_token",
   "cloudflare_image_model": "@cf/black-forest-labs/flux-1-schnell",
+  "use_claude_cli": false,
+  "_comment_claude_cli": "Use the locally installed `claude` CLI (your Claude subscription, no API key) for text tasks instead of Gemini — mainly multi-clip moment-picking. Opt-in, local/personal use only; slower than Gemini and counts against subscription limits. Falls back to Gemini on any failure. Can also be toggled per-run in the GUI.",
+  "claude_cli_model": "sonnet",
+  "_comment_claude_cli_model": "Model passed to `claude --model` (e.g. 'sonnet', 'opus', 'haiku'). Empty = the CLI's current default. Sonnet/Opus are far better at moment-picking than Gemini Flash.",
+  "claude_cli_path": "claude",
+  "_comment_claude_cli_path": "Path/name of the claude executable. Usually just 'claude' if it's on PATH.",
   "whisper_model": "small",
   "target_resolution": [1080, 1920],
   "ducking_db": -18

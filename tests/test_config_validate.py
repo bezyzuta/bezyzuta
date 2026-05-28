@@ -52,6 +52,16 @@ class TestConfigValidate:
         errors, _ = cfg.validate()
         assert any("gemini_api_key" in e for e in errors)
 
+    def test_missing_gemini_ok_when_claude_cli_on(self, tmp_path):
+        # use_claude_cli provides a text backend, so a missing Gemini key
+        # is a warning, not a hard error.
+        cfg = pipeline.Config.load(
+            _write_config(tmp_path, {"gemini_api_key": "", "use_claude_cli": True})
+        )
+        errors, warnings = cfg.validate()
+        assert not any("gemini_api_key" in e for e in errors)
+        assert any("claude" in w.lower() for w in warnings)
+
     def test_tiny_resolution_is_error(self, tmp_path):
         cfg = pipeline.Config.load(
             _write_config(tmp_path, {"target_resolution": [108, 192]})
