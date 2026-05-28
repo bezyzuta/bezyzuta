@@ -338,12 +338,45 @@ def _config_defaults(config_path: str = "config.json") -> dict:
         return {}
 
 
+_CUSTOM_CSS = """
+.gradio-container { max-width: 1080px !important; margin: 0 auto !important; }
+#hero {
+  background: linear-gradient(120deg, #7c3aed 0%, #db2777 50%, #f97316 100%);
+  border-radius: 18px; padding: 22px 26px; margin-bottom: 14px;
+  box-shadow: 0 8px 30px rgba(124,58,237,.35);
+}
+#hero h1 { color:#fff; margin:0; font-size:30px; font-weight:800; letter-spacing:.3px; }
+#hero p  { color:#f3e8ff; margin:6px 0 0; font-size:14px; }
+.gr-accordion { box-shadow: 0 2px 10px rgba(0,0,0,.06); margin-bottom: 8px !important; border-radius:14px !important; }
+#go_btn button, #go_btn {
+  font-size:19px !important; font-weight:800 !important; padding:16px !important;
+  border-radius:14px !important; border:none !important; color:#fff !important;
+  background: linear-gradient(120deg, #f97316, #db2777) !important;
+}
+#go_btn button:hover { filter: brightness(1.07); }
+"""
+
+
+def _theme():
+    try:
+        return gr.themes.Soft(
+            primary_hue="orange", secondary_hue="violet", neutral_hue="slate",
+            font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
+        )
+    except Exception:
+        return gr.themes.Soft()
+
+
 def build_app() -> gr.Blocks:
     _defaults = _config_defaults()
-    with gr.Blocks(title="Bezys Shorts Generator") as app:
-        gr.Markdown("# 🎬 Bezys Shorts Generator")
-        gr.Markdown("Automatischer Pipeline-Lauf: YouTube-Download → Gemini/Llama-Skript → "
-                    "Chatterbox-TTS Voiceover → Cloudflare/Pollinations Bilder → Schnitt mit Untertiteln.")
+    with gr.Blocks(title="Bezys Shorts Generator", theme=_theme(), css=_CUSTOM_CSS) as app:
+        gr.HTML(
+            '<div id="hero">'
+            '<h1>🎬 Bezys Shorts Generator</h1>'
+            '<p>YouTube-Download → KI-Skript → geklonte Stimme → cinematische Bilder + Memes → '
+            'fertiger Short mit Untertiteln, Emojis & SFX</p>'
+            '</div>'
+        )
 
         # ───────────── Output-Format ─────────────
         # First-class toggle at the top: the rest of the pipeline reads
@@ -646,7 +679,7 @@ def build_app() -> gr.Blocks:
                 )
 
         # ───────────── Hook ─────────────
-        with gr.Accordion("🪝 Hook-Overlay (großer Text am Anfang)", open=True):
+        with gr.Accordion("🪝 Hook-Overlay (großer Text am Anfang)", open=False):
             hook_text = gr.Textbox(
                 value="",
                 label="Hook-Text",
@@ -660,7 +693,7 @@ def build_app() -> gr.Blocks:
             )
 
         # ───────────── Bild-Overlays ─────────────
-        with gr.Accordion("🖼️ Bild-Overlays", open=True):
+        with gr.Accordion("🖼️ Bild-Overlays", open=False):
             with gr.Row():
                 image_count = gr.Slider(1, 5, value=3, step=1, label="Anzahl Bilder")
                 image_duration = gr.Slider(0.8, 3.0, value=1.5, step=0.1, label="Bild-Dauer (Sekunden)")
@@ -716,7 +749,7 @@ def build_app() -> gr.Blocks:
             )
 
         # ───────────── Engagement-Effekte ─────────────
-        with gr.Accordion("✨ Engagement-Effekte", open=True):
+        with gr.Accordion("✨ Engagement-Effekte", open=False):
             pop_captions = gr.Checkbox(
                 value=False,
                 label="🔍 Auto-Zoom auf Untertitel (TikTok-Style)",
@@ -858,7 +891,7 @@ def build_app() -> gr.Blocks:
                     label="Sprache für Metadaten",
                 )
 
-        generate_btn = gr.Button("🎬 Short generieren", variant="primary", size="lg")
+        generate_btn = gr.Button("🎬 Short generieren", variant="primary", size="lg", elem_id="go_btn")
 
         with gr.Row():
             status_log = gr.Textbox(
@@ -962,16 +995,18 @@ def _preflight_config(config_path: str = "config.json") -> None:
         sys.exit(1)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point for both `python gui.py` and the packaged .exe launcher."""
     _preflight_config()
     app = build_app()
     # Gradio 6 sandboxes file delivery; let it serve videos from the user's home
     allowed = [str(Path.home())]
     port = find_free_port()
     print(f"Starte GUI auf http://127.0.0.1:{port}")
-    try:
-        app.launch(server_name="127.0.0.1", server_port=port, inbrowser=True,
-                   theme=gr.themes.Soft(), allowed_paths=allowed)
-    except TypeError:
-        app.launch(server_name="127.0.0.1", server_port=port, inbrowser=True,
-                   allowed_paths=allowed)
+    # theme/css live on the Blocks (build_app); launch just serves it.
+    app.launch(server_name="127.0.0.1", server_port=port, inbrowser=True,
+               allowed_paths=allowed)
+
+
+if __name__ == "__main__":
+    main()
