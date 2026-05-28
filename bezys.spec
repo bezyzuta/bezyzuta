@@ -1,63 +1,45 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for Bezys Shorts Generator.
+PyInstaller spec for the Bezys Shorts Generator launcher.
 
-Build (on Windows, in the repo root):
-    .venv\\Scripts\\python.exe -m PyInstaller --noconfirm bezys.spec
-or just double-click build_exe.bat.
+Build (on Windows, repo root):  build_exe.bat
+or:  .venv\\Scripts\\python.exe -m PyInstaller --noconfirm bezys.spec
 
-Produces dist/BezysShortsGenerator/BezysShortsGenerator.exe — a launcher
-that boots the existing Gradio GUI (gui.py) and opens the browser, so the
-whole app feels like one double-click program. The heavy ML deps
-(torch/chatterbox/whisper/etc.) stay in your .venv and are imported lazily
-at runtime exactly as before — we deliberately do NOT bundle them into the
-exe (that would make a multi-GB binary and frequently break CUDA). The exe
-is a thin launcher; run it from inside the project folder (next to gui.py /
-pipeline.py / config.json).
+The exe is a TINY stdlib-only bootstrapper (app_launcher.py). It does NOT
+bundle Gradio or the ML stack — it just finds the project's .venv and runs
+gui.py in it, so the real app has all its dependencies. One-file output:
+dist/BezysShortsGenerator.exe — drop it in the project folder and double-click.
 """
-import gradio, os
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
-# Gradio ships its frontend as data files + has many dynamic imports.
-datas = collect_data_files("gradio") + collect_data_files("gradio_client")
-hiddenimports = (
-    collect_submodules("gradio")
-    + collect_submodules("gradio_client")
-    + ["safehttpx", "groovy"]
-)
-
 a = Analysis(
     ["app_launcher.py"],
-    pathex=[os.getcwd()],
+    pathex=[],
     binaries=[],
-    datas=datas,
-    hiddenimports=hiddenimports,
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
-    # Keep the binary lean: the GUI launcher doesn't need these bundled —
-    # they load from the .venv at runtime.
-    excludes=["torch", "torchaudio", "chatterbox", "faster_whisper",
-              "ultralytics", "mediapipe", "cv2", "numpy.tests"],
+    # Nothing heavy is imported by the launcher; keep it tiny.
+    excludes=["gradio", "torch", "torchaudio", "chatterbox", "faster_whisper",
+              "ultralytics", "mediapipe", "cv2", "numpy", "PIL", "requests"],
     noarchive=False,
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
-    pyz, a.scripts, [],
-    exclude_binaries=True,
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
     name="BezysShortsGenerator",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,          # keep the console so you see the pipeline log
+    runtime_tmpdir=None,
+    console=True,          # show the pipeline log + keep errors readable
     icon=None,
-)
-coll = COLLECT(
-    exe, a.binaries, a.datas,
-    strip=False, upx=True, upx_exclude=[],
-    name="BezysShortsGenerator",
 )
