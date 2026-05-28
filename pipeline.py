@@ -122,6 +122,12 @@ class Config:
     # Optional free Pixabay API key for reliable real-photo beats. Empty =
     # fall back to the no-key sources (Openverse / Wikimedia).
     pixabay_api_key: str
+    # yt-dlp auth to get past YouTube's "Sign in to confirm you're not a bot"
+    # / 429. youtube_cookies_from_browser: "chrome"/"firefox"/"edge"/"brave"/
+    # "" — reads the logged-in cookies from that browser. youtube_cookies_file:
+    # path to a cookies.txt export. File wins if both are set.
+    youtube_cookies_from_browser: str
+    youtube_cookies_file: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -151,6 +157,8 @@ class Config:
             claude_cli_path=str(data.get("claude_cli_path", "claude")),
             emoji_font_path=str(data.get("emoji_font_path", "")),
             pixabay_api_key=data.get("pixabay_api_key") or os.environ.get("PIXABAY_API_KEY", ""),
+            youtube_cookies_from_browser=str(data.get("youtube_cookies_from_browser", "")).strip(),
+            youtube_cookies_file=str(data.get("youtube_cookies_file", "")).strip(),
         )
 
     def validate(self) -> tuple[list[str], list[str]]:
@@ -269,11 +277,29 @@ def run_capture_stderr(cmd: list, **kw) -> subprocess.CompletedProcess:
         ) from e
 
 
-def download_gameplay(url: str, out_dir: Path) -> Path:
+def ytdlp_cookie_args(cfg) -> list:
+    """Build yt-dlp cookie CLI args from config. Cookies get past YouTube's
+    "Sign in to confirm you're not a bot" wall and 429 rate-limits, because
+    the requests then look like a logged-in browser. A cookies.txt file wins
+    over a browser name if both are set. Returns [] when neither is set."""
+    if cfg is None:
+        return []
+    f = (getattr(cfg, "youtube_cookies_file", "") or "").strip()
+    if f and Path(f).expanduser().is_file():
+        return ["--cookies", str(Path(f).expanduser())]
+    b = (getattr(cfg, "youtube_cookies_from_browser", "") or "").strip()
+    if b:
+        return ["--cookies-from-browser", b]
+    return []
+
+
+def download_gameplay(url: str, out_dir: Path, cookies: list | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     template = str(out_dir / "%(id)s.%(ext)s")
     run([
         sys.executable, "-m", "yt_dlp",
+        *(cookies or []),
+        "--retries", "3", "--fragment-retries", "3",
         "-f", "bv*[height<=1080]+ba/b[height<=1080]",
         "--merge-output-format", "mp4",
         "-o", template,
@@ -285,10 +311,11 @@ def download_gameplay(url: str, out_dir: Path) -> Path:
     return files[0]
 
 
-def list_channel_videos(channel_url: str, limit: int = 50) -> list:
+def list_channel_videos(channel_url: str, limit: int = 50, cookies: list | None = None) -> list:
     """Return [{id, url, title}, ...] for the most recent videos on a channel."""
     result = subprocess.run(
         [sys.executable, "-m", "yt_dlp",
+         *(cookies or []),
          "--flat-playlist", "-J",
          "--playlist-end", str(limit),
          channel_url],
@@ -310,14 +337,15 @@ def list_channel_videos(channel_url: str, limit: int = 50) -> list:
 
 
 def pick_unused_channel_video(channel_url: str, used_path: Path, limit: int = 200,
-                              title_filter: list | None = None) -> dict:
+                              title_filter: list | None = None,
+                              cookies: list | None = None) -> dict:
     used = set()
     if used_path.exists():
         try:
             used = set(json.loads(used_path.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
             used = set()
-    videos = list_channel_videos(channel_url, limit)
+    videos = list_channel_videos(channel_url, limit, cookies=cookies)
     if not videos:
         raise RuntimeError(f"channel returned no videos: {channel_url}")
     if title_filter:
@@ -4324,7 +4352,7 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         step(f"[MULTI 1/4] resume: source already downloaded ({raw.name})")
     else:
         step(f"[MULTI 1/4] download source: {source_url}")
-        raw = download_gameplay(source_url, work_root)
+        raw = download_gameplay(source_url, work_root, cookies=ytdlp_cookie_args(cfg))
         if state:
             state.mark_done(Step.MULTI_DOWNLOAD, {"raw_path": raw})
 
@@ -4486,7 +4514,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
         title_filter = job.get("title_filter") or None
         scan_limit = int(job.get("channel_scan_limit", 200))
-        pick = pick_unused_channel_video(channel_url, used_path, limit=scan_limit, title_filter=title_filter)
+        pick = pick_unused_channel_video(channel_url, used_path, limit=scan_limit,
+                                         title_filter=title_filter,
+                                         cookies=ytdlp_cookie_args(cfg))
         source_url = pick["url"]
         slug = f"{base_slug}-{pick['id']}"
         step(f"      channel pick: {pick['title'][:60]} ({pick['id']})")
@@ -4514,7 +4544,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         step(f"[1/5] resume: source already downloaded ({raw.name})")
     else:
         step(f"[1/5] download: {source_url}")
-        raw = download_gameplay(source_url, work / "source")
+        raw = download_gameplay(source_url, work / "source", cookies=ytdlp_cookie_args(cfg))
         if state:
             state.mark_done(Step.DOWNLOAD, {"raw_path": raw})
 

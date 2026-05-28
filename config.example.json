@@ -29,6 +29,10 @@
   "_comment_emoji_font": "Optional path to a color emoji font for caption emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto Color Emoji on Linux). Example: 'C:\\\\Windows\\\\Fonts\\\\seguiemj.ttf'.",
   "pixabay_api_key": "",
   "_comment_pixabay": "Optional FREE Pixabay API key for reliable real-photo beats (30s signup, no credit card: https://pixabay.com/api/docs/). Empty = use the no-key sources Openverse/Wikimedia (less reliable on some networks). Can also be set via PIXABAY_API_KEY env.",
+  "youtube_cookies_from_browser": "",
+  "_comment_yt_cookies_browser": "Fixes YouTube '429 / Sign in to confirm you are not a bot'. Set to your browser: 'chrome', 'firefox', 'edge', or 'brave' — yt-dlp reads its logged-in YouTube cookies. Close that browser before running so the cookie DB isn't locked.",
+  "youtube_cookies_file": "",
+  "_comment_yt_cookies_file": "Alternative to the browser option: path to a cookies.txt export (e.g. from the 'Get cookies.txt' browser extension). Wins over youtube_cookies_from_browser if both are set.",
   "whisper_model": "small",
   "target_resolution": [1080, 1920],
   "ducking_db": -18

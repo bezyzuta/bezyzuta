@@ -369,7 +369,9 @@ def _theme():
 
 def build_app() -> gr.Blocks:
     _defaults = _config_defaults()
-    with gr.Blocks(title="Bezys Shorts Generator", theme=_theme(), css=_CUSTOM_CSS) as app:
+    # NOTE: theme + css are applied at launch() time (see main()). Gradio 6
+    # moved them off the Blocks constructor; passing them here only warns.
+    with gr.Blocks(title="Bezys Shorts Generator") as app:
         gr.HTML(
             '<div id="hero">'
             '<h1>🎬 Bezys Shorts Generator</h1>'
@@ -1003,9 +1005,15 @@ def main() -> None:
     allowed = [str(Path.home())]
     port = find_free_port()
     print(f"Starte GUI auf http://127.0.0.1:{port}")
-    # theme/css live on the Blocks (build_app); launch just serves it.
-    app.launch(server_name="127.0.0.1", server_port=port, inbrowser=True,
-               allowed_paths=allowed)
+    # Gradio 6 takes theme + css on launch() (not on Blocks). Try the
+    # styled launch; fall back to a bare launch on older Gradio that
+    # doesn't accept these kwargs here.
+    base_kw = dict(server_name="127.0.0.1", server_port=port,
+                   inbrowser=True, allowed_paths=allowed)
+    try:
+        app.launch(theme=_theme(), css=_CUSTOM_CSS, **base_kw)
+    except TypeError:
+        app.launch(**base_kw)
 
 
 if __name__ == "__main__":
