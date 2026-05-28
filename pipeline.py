@@ -293,10 +293,29 @@ def ytdlp_cookie_args(cfg) -> list:
     return []
 
 
+def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
+    """Turn a raw yt-dlp failure into an actionable hint for the GUI."""
+    low = (output or "").lower()
+    if any(s in low for s in ("sign in to confirm", "not a bot", "429",
+                              "too many requests", "confirm you")):
+        if had_cookies:
+            return ("\n\n→ YouTube blockt trotz Cookies. Browser GANZ schließen "
+                    "(damit yt-dlp die Cookies lesen kann), ein paar Minuten "
+                    "warten (429), oder eine frische cookies.txt exportieren.")
+        return ("\n\n→ YouTube verlangt Login. In config.json setzen: "
+                '"youtube_cookies_from_browser": "chrome"  (oder firefox/edge/brave) '
+                "und den Browser vorm Start KOMPLETT schließen.")
+    if "requested format is not available" in low or "format" in low and "not available" in low:
+        return "\n\n→ Format nicht verfügbar — evtl. ist das Video privat/gelöscht/region-locked."
+    if "video unavailable" in low or "private video" in low:
+        return "\n\n→ Video ist privat/gelöscht/nicht verfügbar."
+    return ""
+
+
 def download_gameplay(url: str, out_dir: Path, cookies: list | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     template = str(out_dir / "%(id)s.%(ext)s")
-    run([
+    cmd = [
         sys.executable, "-m", "yt_dlp",
         *(cookies or []),
         "--retries", "3", "--fragment-retries", "3",
@@ -304,7 +323,13 @@ def download_gameplay(url: str, out_dir: Path, cookies: list | None = None) -> P
         "--merge-output-format", "mp4",
         "-o", template,
         url,
-    ])
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+        tail = combined[-700:]
+        hint = _ytdlp_error_hint(combined, bool(cookies))
+        raise RuntimeError(f"yt-dlp download failed (exit {proc.returncode}):\n{tail}{hint}")
     files = sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not files:
         raise RuntimeError("yt-dlp produced no mp4")
