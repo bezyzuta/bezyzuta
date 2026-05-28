@@ -25,6 +25,8 @@
   "_comment_claude_cli_path": "Path/name of the claude executable. Usually just 'claude' if it's on PATH.",
   "emoji_font_path": "",
   "_comment_emoji_font": "Optional path to a color emoji font for caption emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto Color Emoji on Linux). Example: 'C:\\\\Windows\\\\Fonts\\\\seguiemj.ttf'.",
+  "pixabay_api_key": "",
+  "_comment_pixabay": "Optional FREE Pixabay API key for reliable real-photo beats (30s signup, no credit card: https://pixabay.com/api/docs/). Empty = use the no-key sources Openverse/Wikimedia (less reliable on some networks). Can also be set via PIXABAY_API_KEY env.",
   "whisper_model": "small",
   "target_resolution": [1080, 1920],
   "ducking_db": -18

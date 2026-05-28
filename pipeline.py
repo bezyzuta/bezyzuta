@@ -115,6 +115,9 @@ class Config:
     # Optional override for the color-emoji font used to render caption
     # emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto on Linux).
     emoji_font_path: str
+    # Optional free Pixabay API key for reliable real-photo beats. Empty =
+    # fall back to the no-key sources (Openverse / Wikimedia).
+    pixabay_api_key: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -142,6 +145,7 @@ class Config:
             claude_cli_model=str(data.get("claude_cli_model", "")),
             claude_cli_path=str(data.get("claude_cli_path", "claude")),
             emoji_font_path=str(data.get("emoji_font_path", "")),
+            pixabay_api_key=data.get("pixabay_api_key") or os.environ.get("PIXABAY_API_KEY", ""),
         )
 
     def validate(self) -> tuple[list[str], list[str]]:
@@ -3220,6 +3224,73 @@ def fetch_image_from_pollinations(prompt: str, out_path: Path,
     raise RuntimeError(last_err or "Pollinations failed (unknown)")
 
 
+# Browser-like UA: Wikimedia rejects generic "python-requests", and some
+# image hosts 403 datacenter/no-UA requests. A realistic UA maximizes the
+# chance the free photo sources actually return an image.
+_PHOTO_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 bezyzuta-shorts/1.0")
+
+
+def _save_square_image(data: bytes, out_path: Path) -> bool:
+    """Center-crop image bytes to a square RGBA PNG (<=1024). Returns True on
+    success. Shared by all free-photo fetchers."""
+    if not data or len(data) < 1024:
+        return False
+    try:
+        from PIL import Image
+        import io
+        im = Image.open(io.BytesIO(data)).convert("RGBA")
+        w, h = im.size
+        side = min(w, h)
+        im = im.crop(((w - side) // 2, (h - side) // 2,
+                      (w - side) // 2 + side, (h - side) // 2 + side))
+        if side > 1024:
+            im = im.resize((1024, 1024), Image.LANCZOS)
+        im.save(out_path)
+        return out_path.is_file() and out_path.stat().st_size > 512
+    except Exception:
+        return False
+
+
+def fetch_image_from_pixabay(query: str, out_path: Path, cfg: "Config") -> Path:
+    """Free real photos via Pixabay. Needs a free API key (cfg.pixabay_api_key)
+    — but it's the most reliable no-cost source: datacenter-friendly,
+    hotlinkable URLs, generous limits. Get one in 30s at
+    https://pixabay.com/api/docs/ (no credit card)."""
+    key = (getattr(cfg, "pixabay_api_key", "") or "").strip()
+    if not key:
+        raise RuntimeError("pixabay: no api key configured")
+    q = (query or "").strip()
+    if not q:
+        raise RuntimeError("pixabay: empty query")
+    params = {
+        "key": key, "q": q, "image_type": "photo",
+        "per_page": 12, "safesearch": "true", "order": "popular",
+    }
+    try:
+        r = requests.get("https://pixabay.com/api/", params=params,
+                         headers={"User-Agent": _PHOTO_UA}, timeout=30)
+        r.raise_for_status()
+        hits = (r.json() or {}).get("hits") or []
+    except Exception as e:
+        raise RuntimeError(f"pixabay search failed: {str(e)[:160]}") from e
+    if not hits:
+        raise RuntimeError(f"pixabay: no results for {q!r}")
+    last_err = None
+    for hit in hits:
+        img_url = hit.get("largeImageURL") or hit.get("webformatURL")
+        if not img_url:
+            continue
+        try:
+            ir = requests.get(img_url, headers={"User-Agent": _PHOTO_UA}, timeout=30)
+            ir.raise_for_status()
+            if _save_square_image(ir.content, out_path):
+                return out_path
+        except Exception as e:
+            last_err = str(e)[:120]
+    raise RuntimeError(f"pixabay: no usable image for {q!r} ({last_err})")
+
+
 def fetch_image_from_openverse(query: str, out_path: Path,
                                max_results: int = 8) -> Path:
     """Fetch a free, openly-licensed real photo matching `query` from the
@@ -3243,7 +3314,7 @@ def fetch_image_from_openverse(query: str, out_path: Path,
         # Prefer larger images; aspect handled on our side via crop.
         "size": "large",
     }
-    headers = {"User-Agent": "bezyzuta-shorts/1.0 (personal use)"}
+    headers = {"User-Agent": _PHOTO_UA}
     try:
         r = requests.get(api, params=params, headers=headers, timeout=30)
         r.raise_for_status()
@@ -3261,22 +3332,7 @@ def fetch_image_from_openverse(query: str, out_path: Path,
         try:
             ir = requests.get(img_url, headers=headers, timeout=30)
             ir.raise_for_status()
-            data = ir.content
-            if not data or len(data) < 1024:
-                continue
-            # Normalize via Pillow so odd formats / huge sizes don't break
-            # the ffmpeg overlay. Square-ish center crop for the middle slot.
-            from PIL import Image
-            import io
-            im = Image.open(io.BytesIO(data)).convert("RGBA")
-            w, h = im.size
-            side = min(w, h)
-            im = im.crop(((w - side) // 2, (h - side) // 2,
-                          (w - side) // 2 + side, (h - side) // 2 + side))
-            if side > 1024:
-                im = im.resize((1024, 1024), Image.LANCZOS)
-            im.save(out_path)
-            if out_path.is_file() and out_path.stat().st_size > 512:
+            if _save_square_image(ir.content, out_path):
                 return out_path
         except Exception as e:
             last_err = str(e)[:160]
@@ -3299,7 +3355,7 @@ def fetch_image_from_wikimedia(query: str, out_path: Path,
         "gsrnamespace": "6", "gsrlimit": str(max_results),
         "prop": "imageinfo", "iiprop": "url", "iiurlwidth": "1024",
     }
-    headers = {"User-Agent": "bezyzuta-shorts/1.0 (personal use)"}
+    headers = {"User-Agent": _PHOTO_UA}
     try:
         r = requests.get(api, params=params, headers=headers, timeout=30)
         r.raise_for_status()
@@ -3318,20 +3374,7 @@ def fetch_image_from_wikimedia(query: str, out_path: Path,
         try:
             ir = requests.get(img_url, headers=headers, timeout=30)
             ir.raise_for_status()
-            data = ir.content
-            if not data or len(data) < 1024:
-                continue
-            from PIL import Image
-            import io
-            im = Image.open(io.BytesIO(data)).convert("RGBA")
-            w, h = im.size
-            side = min(w, h)
-            im = im.crop(((w - side) // 2, (h - side) // 2,
-                          (w - side) // 2 + side, (h - side) // 2 + side))
-            if side > 1024:
-                im = im.resize((1024, 1024), Image.LANCZOS)
-            im.save(out_path)
-            if out_path.is_file() and out_path.stat().st_size > 512:
+            if _save_square_image(ir.content, out_path):
                 return out_path
         except Exception as e:
             last_err = str(e)[:160]
@@ -3339,16 +3382,31 @@ def fetch_image_from_wikimedia(query: str, out_path: Path,
     raise RuntimeError(f"wikimedia: no usable image for {q!r} ({last_err})")
 
 
-def fetch_free_photo(query: str, out_path: Path) -> Path:
-    """Try the free, no-key photo sources in order (Openverse → Wikimedia).
-    Raises only if all of them fail, so the caller can fall back to AI."""
+def fetch_free_photo(query: str, out_path: Path, cfg: "Config" = None,
+                     on_step=None) -> Path:
+    """Try the free photo sources in order: Pixabay (if a free key is set —
+    most reliable) → Openverse → Wikimedia Commons. Logs each source's real
+    error so failures are diagnosable instead of a silent "miss". Raises only
+    if all sources fail, so the caller can fall back to an AI render."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+
+    sources = []
+    if cfg is not None and (getattr(cfg, "pixabay_api_key", "") or "").strip():
+        sources.append(("pixabay", lambda: fetch_image_from_pixabay(query, out_path, cfg)))
+    sources.append(("openverse", lambda: fetch_image_from_openverse(query, out_path)))
+    sources.append(("wikimedia", lambda: fetch_image_from_wikimedia(query, out_path)))
+
     errors = []
-    for name, fn in (("openverse", fetch_image_from_openverse),
-                     ("wikimedia", fetch_image_from_wikimedia)):
+    for name, fn in sources:
         try:
-            return fn(query, out_path)
+            return fn()
         except Exception as e:
-            errors.append(f"{name}: {str(e)[:100]}")
+            msg = f"{name}: {str(e)[:140]}"
+            errors.append(msg)
+            log(f"        {msg}")
     raise RuntimeError("; ".join(errors))
 
 
@@ -4757,12 +4815,12 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 # Photo beats → free stock/photo sources first, AI fallback.
                 if source == "photo" and query:
                     try:
-                        fetch_free_photo(query, target_path)
+                        fetch_free_photo(query, target_path, cfg=cfg, on_step=step)
                         image_paths.append(target_path)
                         ok = True
                     except Exception as e:
                         primary_err = f"FreePhoto: {e}"
-                        step(f"      free-photo miss, falling back to AI render")
+                        step(f"      free-photo miss ({str(e)[:120]}), AI render instead")
 
                 if not ok and cloudflare_ready:
                     try:

@@ -116,9 +116,7 @@ class TestFetchFreePhoto:
         wiki_img.raise_for_status = lambda: None
         wiki_img.content = _png_bytes()
 
-        calls = {"n": 0}
         def fake_get(url, **kw):
-            calls["n"] += 1
             if "openverse" in url:
                 raise pipeline.requests.RequestException("openverse down")
             if "commons.wikimedia" in url:
@@ -132,6 +130,37 @@ class TestFetchFreePhoto:
         with patch("requests.get", side_effect=pipeline.requests.RequestException("net down")):
             with pytest.raises(RuntimeError):
                 pipeline.fetch_free_photo("x", tmp_path / "o.png")
+
+    def test_free_photo_uses_pixabay_first_when_key_set(self, tmp_path):
+        # With a Pixabay key, that source is tried before openverse/wikimedia.
+        pix_search = MagicMock()
+        pix_search.raise_for_status = lambda: None
+        pix_search.json = lambda: {"hits": [{"largeImageURL": "http://p/i.jpg"}]}
+        pix_img = MagicMock()
+        pix_img.raise_for_status = lambda: None
+        pix_img.content = _png_bytes()
+
+        seen = []
+        def fake_get(url, **kw):
+            seen.append(url)
+            if "pixabay.com/api" in url:
+                return pix_search
+            return pix_img  # the image download
+
+        class CfgKey:
+            pixabay_api_key = "abc123"
+        with patch("requests.get", side_effect=fake_get):
+            p = pipeline.fetch_free_photo("gold", tmp_path / "o.png", cfg=CfgKey())
+        assert p.is_file()
+        assert any("pixabay" in u for u in seen)
+        # openverse/wikimedia never reached since pixabay succeeded
+        assert not any("openverse" in u for u in seen)
+
+    def test_pixabay_no_key_raises(self, tmp_path):
+        class CfgNoKey:
+            pixabay_api_key = ""
+        with pytest.raises(RuntimeError):
+            pipeline.fetch_image_from_pixabay("x", tmp_path / "o.png", CfgNoKey())
 
 
 class TestContinuousAutoCount:
