@@ -95,6 +95,8 @@ def generate(
     enable_captions: bool,
     image_count: int,
     image_duration: float,
+    image_size: float,
+    image_vpos: float,
     custom_image_prompts: str,
     uploaded_images,
     skip_images: bool,
@@ -203,6 +205,8 @@ def generate(
             "enable_voice": bool(enable_voice),
             "image_count": int(image_count),
             "image_duration": float(image_duration),
+            "image_size": float(image_size),
+            "image_vpos": float(image_vpos),
             "no_image": bool(skip_images),
             "image_tilt": bool(image_tilt),
             "images_continuous": bool(images_continuous),
@@ -699,6 +703,17 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 image_count = gr.Slider(1, 5, value=3, step=1, label="Anzahl Bilder")
                 image_duration = gr.Slider(0.8, 3.0, value=1.5, step=0.1, label="Bild-Dauer (Sekunden)")
+            with gr.Row():
+                image_size = gr.Slider(
+                    0.5, 1.0, value=0.92, step=0.02,
+                    label="📐 Bild-Größe (Breite)",
+                    info="Anteil der Bildbreite. 0.92 = groß (empfohlen), 0.85 = kleiner.",
+                )
+                image_vpos = gr.Slider(
+                    -0.25, 0.25, value=-0.03, step=0.01,
+                    label="↕️ Bild vertikal (− hoch / 0 Mitte / + runter)",
+                    info="0 = genau Mitte. Negativ schiebt nach oben, positiv nach unten.",
+                )
             custom_image_prompts = gr.Textbox(
                 value="",
                 label="Eigene Bild-Prompts (optional, eine Zeile pro Bild)",
@@ -950,7 +965,8 @@ def build_app() -> gr.Blocks:
                 smart_music_start, normalize_audio, target_lufs,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
                 enable_captions,
-                image_count, image_duration, custom_image_prompts, uploaded_images,
+                image_count, image_duration, image_size, image_vpos,
+                custom_image_prompts, uploaded_images,
                 skip_images, image_tilt, images_continuous,
                 image_change_secs, image_gap_secs, image_allow_photos,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,

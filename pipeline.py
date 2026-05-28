@@ -3620,6 +3620,8 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   image_tilt: bool = True,
                   images_continuous: bool = False,
                   image_gap: float = 0.5,
+                  image_size: float = 0.92,
+                  image_vpos: float = -0.03,
                   emoji_events: list | None = None,
                   caption_position: str = "bottom") -> Path:
     image_paths = list(image_paths or [])
@@ -3699,7 +3701,12 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
     # ── background + centered image overlays → captioned base ──
     parts: list[str] = []
     if image_paths:
-        overlay_w = int(cfg.target_w * 0.85)
+        # image_size = image width as a fraction of frame width.
+        overlay_w = int(cfg.target_w * max(0.4, min(1.0, image_size)))
+        # image_vpos = vertical offset from frame center as a fraction of
+        # height (negative = up, 0 = dead center, positive = down).
+        v_off = int(image_vpos * cfg.target_h)
+        v_expr = f"(H-h)/2{v_off:+d}"
         schedule = _image_schedule(
             len(image_paths), duration or 25.0, image_duration,
             continuous=images_continuous, gap=image_gap,
@@ -3715,7 +3722,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             ))
             nxt = f"bg{i+1}"
             parts.append(
-                f"[{cur}][img{i}]overlay=(W-w)/2:(H-h)/2-120:format=auto:eof_action=pass[{nxt}]"
+                f"[{cur}][img{i}]overlay=(W-w)/2:{v_expr}:format=auto:eof_action=pass[{nxt}]"
             )
             cur = nxt
         parts.append(f"[{cur}]subtitles={ass_path.name}[capbase]")
@@ -5180,6 +5187,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             image_tilt=bool(job.get("image_tilt", True)),
             images_continuous=bool(job.get("images_continuous", False)) and is_portrait_out,
             image_gap=float(job.get("image_gap_secs", 0.5)),
+            image_size=float(job.get("image_size", 0.92)),
+            image_vpos=float(job.get("image_vpos", -0.03)),
             emoji_events=emoji_png_events,
             caption_position=cap_pos,
         )
