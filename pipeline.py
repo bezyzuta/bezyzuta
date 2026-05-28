@@ -79,9 +79,13 @@ class Config:
     # zero-shot voice cloning via a reference audio file. No API key needed.
     # Primary training language is English; German output is achievable but
     # quality varies.
-    tts_reference_audio: str   # optional path to a 5-10s voice sample for cloning (Chatterbox/EN only)
+    tts_reference_audio: str   # optional path to a voice sample for cloning (Chatterbox/EN only)
     tts_exaggeration: float    # 0..1, default 0.5 (Chatterbox emotion; 0=flat, 1=dramatic)
     tts_cfg_weight: float      # 0..1, default 0.5 (Chatterbox guidance; lower=more natural)
+    # Auto-clean the clone reference (mono/trim/normalize) before Chatterbox
+    # uses it. True for any raw recording; set False if you hand it a sample
+    # that's already perfectly prepared.
+    tts_clone_autoprep: bool
     # Language dispatcher: "de" → Piper (offline native German), "en" →
     # Chatterbox (offline English w/ voice cloning), "auto" → heuristic
     # on the voiceover text.
@@ -129,6 +133,7 @@ class Config:
             tts_reference_audio=data.get("tts_reference_audio", ""),
             tts_exaggeration=float(data.get("tts_exaggeration", 0.5)),
             tts_cfg_weight=float(data.get("tts_cfg_weight", 0.5)),
+            tts_clone_autoprep=bool(data.get("tts_clone_autoprep", True)),
             tts_language=str(data.get("tts_language", "auto")).lower(),
             tts_piper_model=str(data.get("tts_piper_model", "de_DE-thorsten-medium")),
             whisper_model=data.get("whisper_model", "small"),
@@ -1117,7 +1122,24 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path) -> 
     if ref_path_str:
         ref_path = Path(ref_path_str).expanduser()
         if ref_path.is_file():
-            kwargs["audio_prompt_path"] = str(ref_path)
+            # Auto-clean the recording into a Chatterbox-friendly clone
+            # reference (mono 24k, silence-trimmed, ~12s, normalized). Cached
+            # next to the source; re-prepped only when the source changes.
+            # autoprep can be disabled (cfg.tts_clone_autoprep=False) for a
+            # sample that's already perfectly prepared.
+            use_path = ref_path
+            if bool(getattr(cfg, "tts_clone_autoprep", True)) and ref_path.suffix.lower() != ".clone.wav":
+                prepared = ref_path.with_suffix(".clone.wav")
+                try:
+                    if (not prepared.is_file()
+                            or prepared.stat().st_mtime < ref_path.stat().st_mtime):
+                        print(f"      preparing voice-clone sample from {ref_path.name}")
+                        prepare_voice_sample(ref_path, prepared)
+                    use_path = prepared
+                except Exception as e:
+                    print(f"      voice sample prep failed ({str(e)[:120]}); using raw file")
+                    use_path = ref_path
+            kwargs["audio_prompt_path"] = str(use_path)
         else:
             print(f"      WARN: voice reference audio not found: {ref_path} — using default voice")
 
@@ -1163,6 +1185,34 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path) -> 
         pass
     if not out_path.is_file() or out_path.stat().st_size < 200:
         raise RuntimeError(f"Chatterbox produced empty/missing output: {out_path}")
+    return out_path
+
+
+def prepare_voice_sample(src_path: Path, out_path: Path,
+                         max_secs: float = 12.0) -> Path:
+    """Turn an arbitrary recording (phone memo, video, any audio) into a
+    clean Chatterbox voice-clone reference: mono 24 kHz, leading silence
+    trimmed, capped to ~max_secs, lightly loudness-normalized. Chatterbox
+    clones best from 7-12s of clean, single-speaker speech — this gives it
+    exactly that without the user having to edit anything.
+
+    Returns out_path. Raises if the result is empty (e.g. the source was
+    pure silence)."""
+    run([
+        "ffmpeg", "-y", "-i", str(src_path),
+        "-vn", "-ac", "1", "-ar", "24000",
+        "-af",
+        # strip leading silence, then gently even out the level
+        "silenceremove=start_periods=1:start_duration=0.08:start_threshold=-45dB,"
+        "loudnorm=I=-18:TP=-2:LRA=11",
+        "-t", f"{max_secs:.1f}",          # cap to the first max_secs of speech
+        str(out_path),
+    ])
+    if not out_path.is_file() or out_path.stat().st_size < 2000:
+        raise RuntimeError(
+            f"voice sample prep produced empty output from {src_path} "
+            "(is the recording silent or unreadable?)"
+        )
     return out_path
 
 

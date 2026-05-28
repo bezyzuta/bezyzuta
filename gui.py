@@ -523,14 +523,21 @@ def build_app() -> gr.Blocks:
             )
             gr.Markdown(
                 "**Chatterbox TTS (Englisch):** erster Run lädt ~3GB Modell. "
-                "Optional: Voice-Sample-Datei für eigene Stimme klonen."
+                "Optional: eigene Stimme klonen.\n\n"
+                "**🎙️ Stimme klonen — so geht's:**\n"
+                "1. Nimm **10–15 Sekunden** deiner Stimme auf (Handy-Sprachmemo oder PC) — "
+                "ruhig sprechen, **kein Hintergrundgeräusch/Musik**, ein durchgehender Satz.\n"
+                "2. Datei (.wav/.mp3/.m4a — auch ein Video geht) hier unten eintragen.\n"
+                "3. Die Pipeline **säubert das Sample automatisch** (mono, Stille raus, ~12s, "
+                "normalisiert) — du musst nichts schneiden. Das geklonte `.clone.wav` wird daneben gecacht.\n"
+                "4. **Sprache auf Englisch** stellen (Cloning wirkt nur über Chatterbox)."
             )
             voice_ref_audio = gr.Textbox(
                 value="",
-                label="🎤 Voice-Sample für Cloning (optional, .wav/.mp3 — nur EN)",
-                placeholder=r"z.B. C:\Users\bezy\Desktop\voices\meine_stimme.wav",
-                info=("5-10 Sekunden saubere Aufnahme der Stimme die geklont werden "
-                      "soll. Leer = Chatterbox' Default-Stimme. Wirkt nur bei englischen Skripts."),
+                label="🎤 Deine Stimm-Aufnahme zum Klonen (Pfad, optional — nur EN)",
+                placeholder=r"z.B. C:\Users\bezy\Desktop\voices\meine_stimme.m4a",
+                info=("Beliebige Aufnahme deiner Stimme — wird automatisch fürs Cloning "
+                      "aufbereitet. Leer = Chatterbox' Default-Stimme."),
             )
             with gr.Row():
                 tts_exaggeration = gr.Slider(

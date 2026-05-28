@@ -92,6 +92,29 @@ class TestCaptionEmojis:
         assert "\\N" not in text.split("Dialogue:")[-1]
 
 
+class TestVoiceClonePrep:
+    def test_prepares_clean_mono_capped_sample(self, tmp_path):
+        import subprocess, wave
+        rec = tmp_path / "rec.wav"
+        # 20s tone with 3s of leading silence — should come out mono/24k,
+        # silence-trimmed, capped to <=12s.
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=200:duration=20",
+             "-af", "volume=0:enable='lt(t,3)'", str(rec)],
+            check=True, capture_output=True,
+        )
+        out = pipeline.prepare_voice_sample(rec, tmp_path / "rec.clone.wav")
+        assert out.is_file()
+        with wave.open(str(out)) as w:
+            assert w.getnchannels() == 1
+            assert w.getframerate() == 24000
+            assert w.getnframes() / w.getframerate() <= 12.5
+
+    def test_prepare_signature_default_maxsecs(self):
+        sig = inspect.signature(pipeline.prepare_voice_sample)
+        assert sig.parameters["max_secs"].default == 12.0
+
+
 class TestPlumbing:
     def test_normalize_loudness_exists(self):
         assert callable(pipeline.normalize_loudness)
