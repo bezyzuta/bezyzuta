@@ -99,10 +99,12 @@ def generate(
     uploaded_images,
     skip_images: bool,
     image_tilt: bool,
+    images_continuous: bool,
     caption_font: str,
     caption_color: str,
     caption_stroke_color: str,
     caption_font_size: int,
+    caption_position: str,
     hook_text: str,
     hook_duration: float,
     pop_captions: bool,
@@ -194,10 +196,12 @@ def generate(
             "image_duration": float(image_duration),
             "no_image": bool(skip_images),
             "image_tilt": bool(image_tilt),
+            "images_continuous": bool(images_continuous),
             "caption_font": str(caption_font or "Impact"),
             "caption_font_size": int(caption_font_size),
             "caption_color": str(caption_color or "#FFFFFF"),
             "caption_stroke_color": str(caption_stroke_color or "#000000"),
+            "caption_position": str(caption_position or "top"),
             "hook_text": str(hook_text or "").strip(),
             "hook_duration": float(hook_duration),
             "pop_captions": bool(pop_captions),
@@ -647,6 +651,13 @@ def build_app() -> gr.Blocks:
                       "Top-Roblox-Shorts (empfohlen). Bild-Stil ist jetzt cinematischer "
                       "3D-Roblox-Render statt flacher Cartoon."),
             )
+            images_continuous = gr.Checkbox(
+                value=True,
+                label="🖼️ Durchgehend Bilder in der Mitte (wie im Referenz-Video)",
+                info=("An = die Bilder werden lückenlos aneinandergereiht, sodass fast "
+                      "immer eins in der Mitte ist (mehr Bilder = mehr Abwechslung). "
+                      "Aus = Bilder poppen kurz auf und verschwinden wieder. Nur Hochformat."),
+            )
 
         # ───────────── Engagement-Effekte ─────────────
         with gr.Accordion("✨ Engagement-Effekte", open=True):
@@ -689,6 +700,16 @@ def build_app() -> gr.Blocks:
                 value=True,
                 label="Gesprochene Untertitel einblenden",
                 info="Aus = keine Wort-für-Wort-Captions. Hook & Subscribe-Button (falls aktiv) bleiben.",
+            )
+            caption_position = gr.Dropdown(
+                choices=[
+                    ("Oben — über den Bildern (wie virale Roblox-Shorts)", "top"),
+                    ("Mitte", "center"),
+                    ("Unten", "bottom"),
+                ],
+                value="top",
+                label="📍 Untertitel-Position",
+                info="Oben = Text sitzt über dem Bild in der Mitte, wie im Referenz-Video. Bei Lang-Videos immer unten.",
             )
             caption_font = gr.Dropdown(
                 choices=[
@@ -839,8 +860,9 @@ def build_app() -> gr.Blocks:
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
                 enable_captions,
                 image_count, image_duration, custom_image_prompts, uploaded_images,
-                skip_images, image_tilt,
+                skip_images, image_tilt, images_continuous,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
+                caption_position,
                 hook_text, hook_duration,
                 pop_captions, caption_emojis, progress_bar, subscribe_overlay,
                 subscribe_sting_file, subscribe_sting_volume,

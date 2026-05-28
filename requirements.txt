@@ -13,6 +13,10 @@ torchaudio
 # voice model auto-downloaded on first use. ONNX runtime is pulled as a
 # transitive dep.
 piper-tts
+# Pillow renders color caption emojis from the system emoji font (Segoe UI
+# Emoji on Windows / Noto Color Emoji on Linux). Usually already present via
+# ultralytics, pinned here so the emoji overlay never silently no-ops.
+Pillow>=9.2
 
 # ── Dev / test only — not needed for the pipeline itself ──
 # pytest runs the unit-test suite in tests/. Install with

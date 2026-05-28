@@ -176,9 +176,15 @@ Multi: multi_download, multi_transcribe, multi_moments, multi_render
 - Sound-Effects pro Bild-Pop-In + pro Scene-Cut
 - Subscribe-Sting (Sound bei Subscribe-Banner)
 - Hook-Overlay (großer Text oben am Anfang, manuell)
-- Pop-Captions (TikTok-Style Karaoke)
+- Pop-Captions (TikTok-Style Karaoke), **Position via `caption_position`**
+  (top/center/bottom; Default `top` = Text über den Mittel-Bildern wie im
+  Referenz-Video; Lang-Videos immer unten)
 - **Kontext-Emojis unter Captions** (`caption_emojis`, Keyword→Emoji-Heuristik
-  `_CAPTION_EMOJI_KEYWORDS`, DE+EN, nur bei Treffer — wie virale Roblox-Shorts)
+  `_CAPTION_EMOJI_KEYWORDS`, DE+EN, nur bei Treffer). **Farbig** als PNG-Overlay
+  (`get_emoji_png` rendert via Pillow + System-Emoji-Font lokal, kein Netz;
+  libass würde nur s/w rendern → deshalb `emoji_overlay`-Pfad in `compose_short`).
+- **Durchgehende Mittel-Bilder** (`images_continuous`, `_image_schedule(continuous=True)`
+  reiht Bilder lückenlos aneinander statt Pop-mit-Lücke — nur Hochformat)
 - Progress-Bar unten via color+scale+overlay
 - Subscribe-Button am Ende
 - **Image-Overlays — cinematischer 3D-Roblox-Render-Stil** (`_IMAGE_STYLE_SUFFIX`,

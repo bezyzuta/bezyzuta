@@ -112,6 +112,9 @@ class Config:
     use_claude_cli: bool
     claude_cli_model: str
     claude_cli_path: str
+    # Optional override for the color-emoji font used to render caption
+    # emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto on Linux).
+    emoji_font_path: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -138,6 +141,7 @@ class Config:
             use_claude_cli=bool(data.get("use_claude_cli", False)),
             claude_cli_model=str(data.get("claude_cli_model", "")),
             claude_cli_path=str(data.get("claude_cli_path", "claude")),
+            emoji_font_path=str(data.get("emoji_font_path", "")),
         )
 
     def validate(self) -> tuple[list[str], list[str]]:
@@ -2631,6 +2635,124 @@ def _emoji_for_caption(text: str) -> str:
     return ""
 
 
+# Hex-codepoint id per emoji (used only for stable cache filenames; FE0F
+# variation selectors dropped). Our curated caption-emoji set.
+_EMOJI_TWEMOJI_CODE: dict[str, str] = {
+    "💰": "1f4b0", "⚠️": "26a0", "😱": "1f631", "😨": "1f628",
+    "🔥": "1f525", "🏆": "1f3c6", "😂": "1f602", "❤️": "2764",
+    "🤫": "1f92b", "🤝": "1f91d", "🤔": "1f914", "🌙": "1f319",
+    "😎": "1f60e",
+}
+
+_EMOJI_CACHE_DIR = Path.home() / ".cache" / "bezyzuta-emoji"
+
+# Color emoji fonts, in preference order. Windows ships Segoe UI Emoji
+# (scalable COLR — renders at any size); Linux usually has Noto Color Emoji
+# (bitmap CBDT — only its built-in strike size, we resize after). First one
+# that exists wins. cfg.emoji_font_path can override.
+_COLOR_EMOJI_FONTS = [
+    r"C:\Windows\Fonts\seguiemj.ttf",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
+    "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+]
+_EMOJI_FONT_CACHE: list | None = None   # [path] or [] once probed
+
+
+def _find_emoji_font(override: str = "") -> str | None:
+    """Return a usable color-emoji font path, or None. Cached."""
+    global _EMOJI_FONT_CACHE
+    if override:
+        return override if Path(override).is_file() else None
+    if _EMOJI_FONT_CACHE is not None:
+        return _EMOJI_FONT_CACHE[0] if _EMOJI_FONT_CACHE else None
+    for f in _COLOR_EMOJI_FONTS:
+        if Path(f).is_file():
+            _EMOJI_FONT_CACHE = [f]
+            return f
+    _EMOJI_FONT_CACHE = []
+    return None
+
+
+def _chunk_words(words, chunk_size: int):
+    """Group timed words into chunks of `chunk_size`. Shared by the caption
+    renderer and the emoji-overlay scheduler so their timing matches exactly."""
+    chunks, buf = [], []
+    for w in words:
+        buf.append(w)
+        if len(buf) >= chunk_size:
+            chunks.append(buf)
+            buf = []
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+def get_emoji_png(emoji: str, font_path: str = "", px: int = 160) -> Path | None:
+    """Render `emoji` to a transparent color PNG using a local color-emoji
+    font (Segoe UI Emoji on Windows, Noto Color Emoji on Linux). No network.
+    Cached on disk. Returns None if Pillow or a color font is unavailable, so
+    the caller can fall back to the monochrome ASS-text emoji."""
+    code = _EMOJI_TWEMOJI_CODE.get(emoji) or f"u{ord(emoji[0]):x}"
+    _EMOJI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _EMOJI_CACHE_DIR / f"{code}_{px}.png"
+    if dest.is_file() and dest.stat().st_size > 200:
+        return dest
+
+    font_file = _find_emoji_font(font_path)
+    if not font_file:
+        return None
+    try:
+        from PIL import Image, ImageFont, ImageDraw  # type: ignore
+    except Exception:
+        return None
+
+    try:
+        # Scalable COLR fonts (Segoe) load at any size. Bitmap CBDT fonts
+        # (Noto) only load at a built-in strike — load big, resize after.
+        try:
+            font = ImageFont.truetype(font_file, px)
+        except OSError:
+            font = ImageFont.truetype(font_file, 109)  # Noto's native strike
+
+        img = Image.new("RGBA", (px * 2, px * 2), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        try:
+            draw.text((px // 2, px // 2), emoji, font=font, embedded_color=True)
+        except TypeError:
+            # Very old Pillow without embedded_color → monochrome, not useful.
+            return None
+        bbox = img.getbbox()
+        if not bbox:
+            return None
+        img = img.crop(bbox)
+        if max(img.size) != px:
+            scale = px / max(img.size)
+            img = img.resize((max(1, int(img.width * scale)),
+                              max(1, int(img.height * scale))), Image.LANCZOS)
+        tmp = dest.with_suffix(".part.png")
+        img.save(tmp)
+        tmp.replace(dest)
+    except Exception as e:
+        print(f"      emoji render failed for {emoji}: {str(e)[:120]}")
+        return None
+    return dest if dest.is_file() and dest.stat().st_size > 200 else None
+
+
+def compute_caption_emoji_events(words, long_form: bool = False) -> list[tuple[float, float, str]]:
+    """Replicate write_ass's chunking and return [(start, end, emoji), ...]
+    for chunks whose text triggers an emoji. Used to schedule color PNG
+    overlays with timing that lines up exactly with the caption chunks."""
+    chunk_size = 8 if long_form else 3
+    events: list[tuple[float, float, str]] = []
+    for ch in _chunk_words(words, chunk_size):
+        raw = " ".join(w[2] for w in ch)
+        emo = _emoji_for_caption(raw)
+        if emo:
+            events.append((ch[0][0], ch[-1][1], emo))
+    return events
+
+
 def write_ass(words, video_w: int, video_h: int, out_path: Path,
               font_name: str = "Impact",
               font_size: int | None = None,
@@ -2645,8 +2767,10 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               total_duration: float = 0.0,
               enable_captions: bool = True,
               long_form: bool = False,
-              caption_emojis: bool = False) -> Path:
-    """Bold center-bottom karaoke captions; styling exposed for the GUI.
+              caption_emojis: bool = False,
+              caption_position: str = "bottom",
+              emoji_overlay: bool = False) -> Path:
+    """Bold karaoke captions; styling exposed for the GUI.
     Optional hook_text shown big at the top for the first hook_duration seconds.
     pop_captions: every chunk pops in with a scale animation (TikTok-style).
     subscribe_overlay: red SUBSCRIBE button in the last ~2.5s (needs total_duration).
@@ -2655,7 +2779,13 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     pops anchored high in the frame) to readable long-video subtitles
     (~8-word phrases in original case, anchored near the bottom, no scale
     pop). Driven by landscape output — shorts (portrait) keep the punchy
-    style unchanged."""
+    style unchanged.
+
+    caption_position: "top" / "center" / "bottom". Top matches viral Roblox
+    shorts (text above the center images). Forced to bottom for long_form.
+    emoji_overlay: when True, emojis are rendered as color PNG overlays in
+    compose_short, so we DON'T also bake the (monochrome) emoji into the ASS
+    text here."""
     if font_size is None or font_size <= 0:
         # Portrait shorts: big chunky text sized off the tall dimension.
         # Landscape long-form: a calmer subtitle ~4.5% of frame height.
@@ -2664,9 +2794,19 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     outline = _hex_to_ass_color(outline_color)
     hook_size = int(font_size * 1.4)
     sub_size = int(font_size * 1.2)
-    # Long-form subtitles sit near the bottom edge like normal video captions;
-    # shorts ride higher (360px) so they clear phone UI / the progress bar.
-    pop_margin_v = max(40, int(video_h * 0.06)) if long_form else 360
+    # Caption anchor. Long-form is always bottom (normal subtitles); shorts
+    # honor caption_position. ASS alignment: 2=bottom-center, 5=mid-center,
+    # 8=top-center. MarginV is measured from the aligned edge.
+    pos = "bottom" if long_form else (caption_position or "bottom").lower()
+    if pos == "top":
+        pop_align = 8
+        pop_margin_v = max(40, int(video_h * 0.13))   # ~250px down on 1920
+    elif pos == "center":
+        pop_align = 5
+        pop_margin_v = 0
+    else:  # bottom
+        pop_align = 2
+        pop_margin_v = max(40, int(video_h * 0.06)) if long_form else 360
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -2678,7 +2818,7 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Pop, {font_name}, {int(font_size)}, {primary}, &H000000FF, {outline}, &H64000000, "
-        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width)}, 2, 2, 80, 80, {pop_margin_v}, 1\n"
+        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width)}, 2, {pop_align}, 80, 80, {pop_margin_v}, 1\n"
         f"Style: Hook, {font_name}, {hook_size}, &H00FFFFFF, &H000000FF, &H00000000, &H64000000, "
         f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width) + 2}, 3, 8, 60, 60, 280, 1\n"
         # Red opaque box behind text (BorderStyle=3), white text. Sits above the captions.
@@ -2690,14 +2830,7 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     # Shorts: 3-word karaoke chunks (fast, punchy). Long-form: ~8-word
     # phrases that read like normal subtitles instead of flickering.
     chunk_size = 8 if long_form else 3
-    chunks, buf = [], []
-    for w in words:
-        buf.append(w)
-        if len(buf) >= chunk_size:
-            chunks.append(buf)
-            buf = []
-    if buf:
-        chunks.append(buf)
+    chunks = _chunk_words(words, chunk_size)
 
     lines = []
     if hook_text.strip():
@@ -2724,7 +2857,9 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
             # Optional contextual emoji on its own line below the caption,
             # mirroring the reference shorts. Only added when a trigger word
             # matches, so most captions stay clean. \\N = ASS hard newline.
-            if caption_emojis:
+            # Skipped when emoji_overlay is on — compose_short paints color
+            # PNG emojis instead (libass would only render them monochrome).
+            if caption_emojis and not emoji_overlay:
                 emo = _emoji_for_caption(raw)
                 if emo:
                     text = f"{text}\\N{emo}"
@@ -2992,10 +3127,23 @@ def fetch_image_from_pollinations(prompt: str, out_path: Path,
 
 
 def _image_schedule(n: int, duration: float, image_dur: float,
-                    buffer: float = 1.0) -> list[tuple[float, float]]:
-    """Return [(start, end), ...] for n images evenly distributed."""
+                    buffer: float = 1.0,
+                    continuous: bool = False) -> list[tuple[float, float]]:
+    """Return [(start, end), ...] for n images.
+
+    continuous=False: n images of image_dur evenly spread with gaps (the
+    classic pop-in-then-gone look).
+    continuous=True: n images packed edge-to-edge covering [0, duration] so
+    there's almost always an image in the middle, like the reference shorts.
+    """
     if n <= 0:
         return []
+    if continuous:
+        # Edge-to-edge: each image fills duration/n, no gaps. Small 0.3s
+        # head start so the first image is up almost immediately.
+        slice_dur = duration / n
+        return [(max(0.0, i * slice_dur - (0.3 if i else 0.0)),
+                 (i + 1) * slice_dur) for i in range(n)]
     usable = max(image_dur, duration - 2 * buffer)
     if n == 1:
         start = (duration - image_dur) / 2
@@ -3071,8 +3219,12 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   progress_color: str = "red",
                   progress_duration: float = 0.0,
                   crop_offset: float = 0.5,
-                  image_tilt: bool = True) -> Path:
+                  image_tilt: bool = True,
+                  images_continuous: bool = False,
+                  emoji_events: list | None = None,
+                  caption_position: str = "bottom") -> Path:
     image_paths = list(image_paths or [])
+    emoji_events = list(emoji_events or [])
     if mute_source_audio:
         # ignore gameplay audio; output is just the voice/music track
         af = "[1:a]anull[a]"
@@ -3135,26 +3287,27 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
 
     use_bar = bool(progress_bar and progress_duration > 0.5)
     bar_h = max(8, int(cfg.target_h * 0.008)) if use_bar else 0
-    # Label the main video chain output: if we add a bar, the main chain emits
-    # [vmain] and an extra overlay produces the real [v].
-    main_label = "vmain" if use_bar else "v"
 
     cmd = ["ffmpeg", "-y", "-i", str(gameplay_clip), "-i", str(voice_audio)]
 
+    # Image inputs follow the gameplay(0)+voice(1); emoji PNGs follow those.
+    for img in image_paths:
+        cmd += ["-loop", "1", "-i", str(img)]
+    emoji_base_idx = 2 + len(image_paths)
+    for (_s, _e, png) in emoji_events:
+        cmd += ["-loop", "1", "-i", str(png)]
+
+    # ── background + centered image overlays → captioned base ──
+    parts: list[str] = []
     if image_paths:
-        for img in image_paths:
-            cmd += ["-loop", "1", "-i", str(img)]
-
         overlay_w = int(cfg.target_w * 0.85)
-        schedule = _image_schedule(len(image_paths), duration or 25.0, image_duration)
-
-        parts = [
-            f"[0:v]{cover_chain}[bg0]"
-        ]
+        schedule = _image_schedule(
+            len(image_paths), duration or 25.0, image_duration,
+            continuous=images_continuous,
+        )
+        parts.append(f"[0:v]{cover_chain}[bg0]")
         cur = "bg0"
         for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
-            # Straight (0°) images match the reference shorts; tilt adds
-            # playful dynamism. Toggleable via image_tilt.
             angle = _TILT_ANGLES_DEG[i % len(_TILT_ANGLES_DEG)] if image_tilt else 0.0
             parts.append(_image_chain(
                 idx_input=2 + i, image_idx=i,
@@ -3166,11 +3319,33 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                 f"[{cur}][img{i}]overlay=(W-w)/2:(H-h)/2-120:format=auto:eof_action=pass[{nxt}]"
             )
             cur = nxt
-        parts.append(f"[{cur}]subtitles={ass_path.name}[{main_label}]")
+        parts.append(f"[{cur}]subtitles={ass_path.name}[capbase]")
     else:
-        vf = f"{cover_chain},subtitles={ass_path.name}"
-        parts = [f"[0:v]{vf}[{main_label}]"]
+        parts.append(f"[0:v]{cover_chain},subtitles={ass_path.name}[capbase]")
+    vlabel = "capbase"
 
+    # ── color emoji PNG overlays (sit just under the caption text) ──
+    if emoji_events:
+        emoji_w = max(48, int(cfg.target_w * 0.085))
+        pos = (caption_position or "bottom").lower()
+        if pos == "top":
+            emoji_y = int(cfg.target_h * 0.245)
+        elif pos == "center":
+            emoji_y = int(cfg.target_h * 0.58)
+        else:
+            emoji_y = int(cfg.target_h * 0.80)
+        for j, (e_start, e_end, _png) in enumerate(emoji_events):
+            in_idx = emoji_base_idx + j
+            parts.append(f"[{in_idx}:v]scale={emoji_w}:-1[emo{j}]")
+            nxt = f"emv{j}"
+            parts.append(
+                f"[{vlabel}][emo{j}]overlay=(W-w)/2:{emoji_y}:"
+                f"enable='between(t\\,{e_start:.2f}\\,{e_end:.2f})':"
+                f"format=auto:eof_action=pass[{nxt}]"
+            )
+            vlabel = nxt
+
+    # ── progress bar ──
     if use_bar:
         # Generate a colored strip and shrink/grow its width per frame.
         # scale (not crop) supports eval=frame in ffmpeg 8.x; drawbox's width
@@ -3182,15 +3357,16 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             f"[barfull]scale=w='max(2\\,iw*t/{progress_duration:.2f})':h={bar_h}:eval=frame[bar]"
         )
         parts.append(
-            f"[vmain][bar]overlay=x=0:y=H-{bar_h}:eof_action=pass[v]"
+            f"[{vlabel}][bar]overlay=x=0:y=H-{bar_h}:eof_action=pass[vbar]"
         )
+        vlabel = "vbar"
 
     parts.append(af)
     filter_complex = ";".join(parts)
 
     cmd += [
         "-filter_complex", filter_complex,
-        "-map", "[v]", "-map", "[a]",
+        "-map", f"[{vlabel}]", "-map", "[a]",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-shortest", "-movflags", "+faststart",
@@ -4241,6 +4417,32 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         words = []
         if state:
             state.mark_done(Step.TRANSCRIBE, {"word_count": 0})
+    is_portrait_out = cfg.target_h > cfg.target_w
+    # Caption position: shorts default to "top" (text above the center
+    # images, like viral Roblox shorts); landscape long-form is forced to
+    # bottom inside write_ass regardless.
+    cap_pos = str(job.get("caption_position", "top")).lower()
+
+    # Contextual color-emoji overlays (portrait/shorts only). We compute the
+    # schedule from `words` and pre-fetch each emoji's color PNG; if any are
+    # available we tell write_ass to NOT bake the monochrome emoji into the
+    # ASS text (compose_short paints the color PNGs instead). On fetch
+    # failure we keep the events empty and fall back to the ASS text emoji.
+    emoji_png_events: list = []
+    want_emojis = bool(job.get("caption_emojis", False)) and is_portrait_out and words
+    if want_emojis:
+        try:
+            for (e_s, e_e, emo) in compute_caption_emoji_events(words, long_form=False):
+                png = get_emoji_png(emo, font_path=getattr(cfg, "emoji_font_path", ""))
+                if png:
+                    emoji_png_events.append((e_s, e_e, png))
+            if emoji_png_events:
+                step(f"      caption emojis: {len(emoji_png_events)} color overlay(s)")
+        except Exception as e:
+            log.warn(f"emoji overlay prep failed (using text fallback): {e}")
+            emoji_png_events = []
+    emoji_overlay_active = bool(emoji_png_events)
+
     ass_path = work / "captions.ass"
     if state and state.is_done(Step.CAPTIONS) and ass_path.is_file():
         ass = ass_path
@@ -4264,6 +4466,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             # subtitle styling instead of TikTok karaoke pops.
             long_form=(cfg.target_w >= cfg.target_h),
             caption_emojis=bool(job.get("caption_emojis", False)),
+            caption_position=cap_pos,
+            emoji_overlay=emoji_overlay_active,
         )
         if state:
             state.mark_done(Step.CAPTIONS, {"ass_path": ass})
@@ -4517,6 +4721,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             progress_duration=vo_dur,
             crop_offset=crop_offset,
             image_tilt=bool(job.get("image_tilt", True)),
+            images_continuous=bool(job.get("images_continuous", False)) and is_portrait_out,
+            emoji_events=emoji_png_events,
+            caption_position=cap_pos,
         )
         speed = float(job.get("playback_speed", 1.0))
         if abs(speed - 1.0) > 0.01:
