@@ -231,16 +231,32 @@ class TestEmojiOverlay:
 
 
 class TestContinuousImages:
-    def test_continuous_covers_full_duration(self):
-        sched = pipeline._image_schedule(4, 30.0, 1.5, continuous=True)
+    def test_continuous_starts_on_beat(self):
+        # Each image starts exactly on its beat (i * slice), so it lines up
+        # with the narration; first image at t=0.
+        sched = pipeline._image_schedule(4, 30.0, 1.5, continuous=True, gap=0.5)
+        slice_dur = 30.0 / 4
         assert sched[0][0] == 0.0
-        assert abs(sched[-1][1] - 30.0) < 0.01
+        for i, (start, _end) in enumerate(sched):
+            assert abs(start - i * slice_dur) < 0.01
 
-    def test_continuous_no_gaps(self):
-        sched = pipeline._image_schedule(5, 30.0, 1.5, continuous=True)
+    def test_continuous_leaves_gap_between_images(self):
+        gap = 0.5
+        sched = pipeline._image_schedule(5, 30.0, 1.5, continuous=True, gap=gap)
         for i in range(1, len(sched)):
-            # next image starts at or before previous ends → no gameplay gap
-            assert sched[i][0] <= sched[i - 1][1] + 0.01
+            # the gameplay-only gap between image i-1 end and image i start
+            assert abs(sched[i][0] - sched[i - 1][1] - gap) < 0.01
+
+    def test_continuous_gap_zero_is_seamless(self):
+        sched = pipeline._image_schedule(5, 30.0, 1.5, continuous=True, gap=0.0)
+        for i in range(1, len(sched)):
+            assert abs(sched[i][0] - sched[i - 1][1]) < 0.01
+
+    def test_continuous_short_slice_keeps_image_visible(self):
+        # Many images on a short video → gap would eat the slice; keep the
+        # image visible instead of producing zero/negative duration.
+        sched = pipeline._image_schedule(20, 12.0, 1.5, continuous=True, gap=0.5)
+        assert all(e > s for s, e in sched)
 
     def test_non_continuous_unchanged(self):
         # Default behavior (gaps) must be untouched.

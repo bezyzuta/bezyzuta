@@ -3464,30 +3464,39 @@ def fetch_free_photo(query: str, out_path: Path, cfg: "Config" = None,
 
 def _image_schedule(n: int, duration: float, image_dur: float,
                     buffer: float = 1.0,
-                    continuous: bool = False) -> list[tuple[float, float]]:
+                    continuous: bool = False,
+                    gap: float = 0.5) -> list[tuple[float, float]]:
     """Return [(start, end), ...] for n images.
 
     continuous=False: n images of image_dur evenly spread with gaps (the
     classic pop-in-then-gone look).
-    continuous=True: n images packed edge-to-edge covering [0, duration] so
-    there's almost always an image in the middle, like the reference shorts.
+    continuous=True: one image per beat. Each image STARTS on its beat
+    (i*slice, so it lines up with the narration) and ENDS `gap` seconds
+    before the next one — leaving `gap`s of gameplay-only between images.
     """
     if n <= 0:
         return []
     if continuous:
-        # Edge-to-edge: each image fills duration/n, no gaps. Small 0.3s
-        # head start so the first image is up almost immediately.
         slice_dur = duration / n
-        return [(max(0.0, i * slice_dur - (0.3 if i else 0.0)),
-                 (i + 1) * slice_dur) for i in range(n)]
+        g = max(0.0, gap)
+        out = []
+        for i in range(n):
+            start = i * slice_dur
+            end = (i + 1) * slice_dur - g
+            # If the slice is too short to leave a gap and still show the
+            # image for a reasonable beat, keep it visible (drop the gap).
+            if end - start < 0.8:
+                end = (i + 1) * slice_dur
+            out.append((start, end))
+        return out
     usable = max(image_dur, duration - 2 * buffer)
     if n == 1:
         start = (duration - image_dur) / 2
         return [(start, start + image_dur)]
-    gap = (usable - image_dur) / (n - 1) if n > 1 else 0
+    step_gap = (usable - image_dur) / (n - 1) if n > 1 else 0
     out = []
     for i in range(n):
-        start = buffer + i * gap
+        start = buffer + i * step_gap
         out.append((start, start + image_dur))
     return out
 
@@ -3557,6 +3566,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   crop_offset: float = 0.5,
                   image_tilt: bool = True,
                   images_continuous: bool = False,
+                  image_gap: float = 0.5,
                   emoji_events: list | None = None,
                   caption_position: str = "bottom") -> Path:
     image_paths = list(image_paths or [])
@@ -3639,7 +3649,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         overlay_w = int(cfg.target_w * 0.85)
         schedule = _image_schedule(
             len(image_paths), duration or 25.0, image_duration,
-            continuous=images_continuous,
+            continuous=images_continuous, gap=image_gap,
         )
         parts.append(f"[0:v]{cover_chain}[bg0]")
         cur = "bg0"
@@ -4958,7 +4968,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             # image actually changes.
             sfx_continuous = bool(job.get("images_continuous", False)) and is_portrait_out
             schedule = _image_schedule(len(image_paths), target, image_duration,
-                                       continuous=sfx_continuous)
+                                       continuous=sfx_continuous,
+                                       gap=float(job.get("image_gap_secs", 0.5)))
             for start, _end in schedule:
                 picked = pick_sfx_track(sfx_dir, sfx_track)
                 if picked is not None:
@@ -5113,6 +5124,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             crop_offset=crop_offset,
             image_tilt=bool(job.get("image_tilt", True)),
             images_continuous=bool(job.get("images_continuous", False)) and is_portrait_out,
+            image_gap=float(job.get("image_gap_secs", 0.5)),
             emoji_events=emoji_png_events,
             caption_position=cap_pos,
         )

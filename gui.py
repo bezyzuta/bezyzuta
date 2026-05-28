@@ -101,6 +101,7 @@ def generate(
     image_tilt: bool,
     images_continuous: bool,
     image_change_secs: float,
+    image_gap_secs: float,
     image_allow_photos: bool,
     caption_font: str,
     caption_color: str,
@@ -206,6 +207,7 @@ def generate(
             "image_tilt": bool(image_tilt),
             "images_continuous": bool(images_continuous),
             "image_change_secs": float(image_change_secs),
+            "image_gap_secs": float(image_gap_secs),
             "image_allow_photos": bool(image_allow_photos),
             "caption_font": str(caption_font or "Impact"),
             "caption_font_size": int(caption_font_size),
@@ -680,6 +682,12 @@ def build_app() -> gr.Blocks:
                 label="⏱️ Sekunden pro Bild (bei durchgehend)",
                 info="Wie oft das Mittelbild wechselt. 3-4s wie im Referenz-Video.",
             )
+            image_gap_secs = gr.Slider(
+                0.0, 1.5, value=0.5, step=0.1,
+                label="⏸️ Pause zwischen Bildern (Sek)",
+                info=("Kurze Lücke nur mit Gameplay, bevor das nächste Bild kommt. "
+                      "Das Bild startet weiterhin genau auf seinem Wort. 0 = nahtlos."),
+            )
             image_allow_photos = gr.Checkbox(
                 value=True,
                 label="📷 Auch echte Fotos verwenden (free via Openverse, kein KI)",
@@ -890,7 +898,7 @@ def build_app() -> gr.Blocks:
                 enable_captions,
                 image_count, image_duration, custom_image_prompts, uploaded_images,
                 skip_images, image_tilt, images_continuous,
-                image_change_secs, image_allow_photos,
+                image_change_secs, image_gap_secs, image_allow_photos,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 caption_position,
                 hook_text, hook_duration,
