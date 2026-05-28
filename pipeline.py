@@ -2468,17 +2468,29 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               subscribe_overlay: bool = False,
               subscribe_text: str = "ABONNIEREN",
               total_duration: float = 0.0,
-              enable_captions: bool = True) -> Path:
+              enable_captions: bool = True,
+              long_form: bool = False) -> Path:
     """Bold center-bottom karaoke captions; styling exposed for the GUI.
     Optional hook_text shown big at the top for the first hook_duration seconds.
     pop_captions: every chunk pops in with a scale animation (TikTok-style).
-    subscribe_overlay: red SUBSCRIBE button in the last ~2.5s (needs total_duration)."""
+    subscribe_overlay: red SUBSCRIBE button in the last ~2.5s (needs total_duration).
+
+    long_form: switches captions from TikTok-style (3-word ALL-CAPS karaoke
+    pops anchored high in the frame) to readable long-video subtitles
+    (~8-word phrases in original case, anchored near the bottom, no scale
+    pop). Driven by landscape output — shorts (portrait) keep the punchy
+    style unchanged."""
     if font_size is None or font_size <= 0:
-        font_size = max(56, int(video_h * 0.048))
+        # Portrait shorts: big chunky text sized off the tall dimension.
+        # Landscape long-form: a calmer subtitle ~4.5% of frame height.
+        font_size = max(40, int(video_h * 0.045)) if long_form else max(56, int(video_h * 0.048))
     primary = _hex_to_ass_color(primary_color)
     outline = _hex_to_ass_color(outline_color)
     hook_size = int(font_size * 1.4)
     sub_size = int(font_size * 1.2)
+    # Long-form subtitles sit near the bottom edge like normal video captions;
+    # shorts ride higher (360px) so they clear phone UI / the progress bar.
+    pop_margin_v = max(40, int(video_h * 0.06)) if long_form else 360
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -2490,7 +2502,7 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Pop, {font_name}, {int(font_size)}, {primary}, &H000000FF, {outline}, &H64000000, "
-        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width)}, 2, 2, 80, 80, 360, 1\n"
+        f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width)}, 2, 2, 80, 80, {pop_margin_v}, 1\n"
         f"Style: Hook, {font_name}, {hook_size}, &H00FFFFFF, &H000000FF, &H00000000, &H64000000, "
         f"1, 0, 0, 0, 100, 100, 0, 0, 1, {int(outline_width) + 2}, 3, 8, 60, 60, 280, 1\n"
         # Red opaque box behind text (BorderStyle=3), white text. Sits above the captions.
@@ -2499,10 +2511,13 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
+    # Shorts: 3-word karaoke chunks (fast, punchy). Long-form: ~8-word
+    # phrases that read like normal subtitles instead of flickering.
+    chunk_size = 8 if long_form else 3
     chunks, buf = [], []
     for w in words:
         buf.append(w)
-        if len(buf) >= 3:
+        if len(buf) >= chunk_size:
             chunks.append(buf)
             buf = []
     if buf:
@@ -2520,11 +2535,16 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
         )
 
     # TikTok-style pop animation: start scaled up, shrink to 100% over 150ms.
-    pop_tag = "\\fscx125\\fscy125\\t(0,150,\\fscx100\\fscy100)" if pop_captions else ""
+    # Forced off in long-form — a scale-pop every 8 words for 10 minutes is
+    # nauseating; long-form just fades.
+    pop_tag = "\\fscx125\\fscy125\\t(0,150,\\fscx100\\fscy100)" if (pop_captions and not long_form) else ""
     if enable_captions:
         for ch in chunks:
             start, end = ch[0][0], ch[-1][1]
-            text = " ".join(w[2] for w in ch).upper().replace("{", "(").replace("}", ")")
+            raw = " ".join(w[2] for w in ch).replace("{", "(").replace("}", ")")
+            # Shorts SHOUT in all-caps; long-form keeps Whisper's original
+            # casing for comfortable reading over long durations.
+            text = raw if long_form else raw.upper()
             lines.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Pop,,0,0,0,,"
                 f"{{{pop_tag}\\fad(80,80)}}{text}"
@@ -4031,6 +4051,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             subscribe_text=str(job.get("subscribe_text", "ABONNIEREN")),
             total_duration=vo_dur,
             enable_captions=bool(job.get("enable_captions", True)),
+            # Landscape output = the GUI's "Lang-Video" format → readable
+            # subtitle styling instead of TikTok karaoke pops.
+            long_form=(cfg.target_w >= cfg.target_h),
         )
         if state:
             state.mark_done(Step.CAPTIONS, {"ass_path": ass})
