@@ -3,9 +3,17 @@
 Run: `pytest tests/test_pipeline_helpers.py -v`
 """
 
+from unittest.mock import patch
+
 import pytest
 
 import pipeline
+
+
+class _Cfg:
+    use_claude_cli = False
+    gemini_api_key = "AIza_fake"
+    gemini_model = "gemini-2.5-flash"
 
 
 # ───────────────────────── language detection ─────────────────────────
@@ -163,3 +171,63 @@ class TestEstimateScriptSeconds:
         # Robustness: unknown lang shouldn't crash, falls back to German wps.
         secs = pipeline._estimate_script_seconds("wort " * 240, "fr")
         assert 95 < secs < 105
+
+
+# ─────────────────────── long-form script extension ───────────────────────
+
+
+class TestExtendScriptToTarget:
+    """The bounded-chunk top-up loop. A real LLM under-delivers per call
+    (ignores 'write 900 more words'), so a single big request only recovered
+    ~half the deficit (600s asked → ~340s). The loop must keep going."""
+
+    def _chunked(self, words_per_call=200):
+        """Mimic an LLM that returns a fixed ~N words no matter what's asked."""
+        def _cont(previous, cfg, add_words, language="de", on_step=None):
+            return "wort " * words_per_call
+        return _cont
+
+    def test_loops_until_target_reached(self):
+        # 300w start, target 600s @ 2.4 wps = 1440w; accept 92% = 1324w.
+        start = "wort " * 300
+        with patch("pipeline._gemini_continuation", side_effect=self._chunked(200)):
+            out = pipeline._extend_script_to_target(start, _Cfg(), 600.0, "de")
+        words = len(out.split())
+        assert words >= int(1440 * 0.92), f"only reached {words}w"
+
+    def test_single_call_would_be_too_short(self):
+        # Sanity: ONE 200-word top-up on a 300w script is nowhere near 1440w —
+        # this is the bug we're fixing, proven by the loop test above clearing it.
+        start = "wort " * 300
+        one = (start.rstrip() + " " + ("wort " * 200)).split()
+        assert len(one) < int(1440 * 0.92)
+
+    def test_stalls_out_without_infinite_loop(self):
+        # LLM returns nothing → stop after two empty rounds, keep what we have.
+        def _empty(previous, cfg, add_words, language="de", on_step=None):
+            return ""
+        with patch("pipeline._gemini_continuation", side_effect=_empty):
+            out = pipeline._extend_script_to_target("wort " * 300, _Cfg(), 600.0, "de")
+        assert len(out.split()) == 300
+
+    def test_stops_when_continuation_raises(self):
+        with patch("pipeline._gemini_continuation", side_effect=RuntimeError("api down")):
+            out = pipeline._extend_script_to_target("wort " * 300, _Cfg(), 600.0, "de")
+        assert len(out.split()) == 300  # original kept, no crash
+
+    def test_already_long_enough_is_noop(self):
+        long_script = "wort " * 1500  # already > 1440w target
+        with patch("pipeline._gemini_continuation", side_effect=AssertionError("should not be called")):
+            out = pipeline._extend_script_to_target(long_script, _Cfg(), 600.0, "de")
+        assert len(out.split()) == 1500
+
+    def test_chunk_request_is_bounded(self):
+        # Each call must request at most _CONTINUATION_CHUNK_WORDS, never the
+        # whole deficit (which the LLM would ignore).
+        seen = []
+        def _spy(previous, cfg, add_words, language="de", on_step=None):
+            seen.append(add_words)
+            return "wort " * 200
+        with patch("pipeline._gemini_continuation", side_effect=_spy):
+            pipeline._extend_script_to_target("wort " * 300, _Cfg(), 600.0, "de")
+        assert seen and max(seen) <= pipeline._CONTINUATION_CHUNK_WORDS

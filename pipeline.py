@@ -574,6 +574,76 @@ def _gemini_continuation(previous: str, cfg: "Config", add_words: int,
     return text
 
 
+# Max words to request in a SINGLE continuation call. LLMs reliably produce a
+# few hundred words per turn but ignore "write 900 more words" and stop early —
+# which is exactly why one big top-up request only recovered ~half the deficit
+# (600s asked → ~340s out). We request the deficit in bounded chunks and loop.
+_CONTINUATION_CHUNK_WORDS = 280
+
+
+def _script_tail(text: str, words: int = 380) -> str:
+    """Last `words` words of the script — enough context for a coherent
+    continuation without handing the model the whole (complete-looking) script,
+    which makes it write a conclusion instead of continuing."""
+    parts = (text or "").split()
+    return " ".join(parts[-words:]) if len(parts) > words else (text or "")
+
+
+def _extend_script_to_target(script: str, cfg: "Config", target_seconds: float,
+                             language: str, on_step=None,
+                             accept_frac: float = 0.92, max_rounds: int = 14) -> str:
+    """Grow `script` until its estimated speech duration is within accept_frac
+    of target_seconds, by requesting bounded continuation chunks in a loop.
+    Robust to the LLM under-delivering on any single call: it keeps going while
+    progress is made and stops on a stall (two near-empty continuations) or
+    when the per-round LLM call fails. Works with both Claude CLI and Gemini
+    (via _gemini_continuation → _complete_text)."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+
+    wps = _WPS_EN if (language or "de").lower() == "en" else _WPS_DE
+    target_words = int(target_seconds * wps)
+    accept_words = int(target_words * accept_frac)
+    stalls = 0
+    for rnd in range(1, max_rounds + 1):
+        current_words = len(script.split())
+        if current_words >= accept_words:
+            break
+        deficit = target_words - current_words
+        if deficit < 40:
+            break
+        ask = min(deficit, _CONTINUATION_CHUNK_WORDS)
+        current_secs = current_words / wps
+        log(f"      extend round {rnd}/{max_rounds}: {current_words}w "
+            f"(~{current_secs:.0f}s) → target {target_words}w "
+            f"(~{target_seconds:.0f}s), requesting ~{ask}w")
+        try:
+            addition = _gemini_continuation(_script_tail(script), cfg, ask,
+                                            language=language, on_step=on_step)
+        except Exception as e:
+            log(f"      extend round failed: {str(e)[:120]} — keeping current script")
+            break
+        added = len(addition.split())
+        if added < 25:
+            # Model returned almost nothing — give it one more shot, then stop.
+            stalls += 1
+            if stalls >= 2:
+                log(f"      extend stalled (two near-empty rounds) — stopping at "
+                    f"{len(script.split())}w")
+                break
+            continue
+        stalls = 0
+        script = script.rstrip() + " " + addition.lstrip()
+    final_words = len(script.split())
+    log(f"      final script: {final_words}w (~{final_words / wps:.0f}s, "
+        f"target ~{target_seconds:.0f}s)")
+    return script
+
+
 def _gemini_post(url: str, params: dict, body: dict, retries: int = 4,
                  backoff: tuple = (10, 30, 60, 60)) -> dict:
     """POST to Gemini with exponential backoff on 429/503."""
@@ -1027,34 +1097,10 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
     if target_seconds < 90:
         return script
 
-    wps = _WPS_EN if (language or "de").lower() == "en" else _WPS_DE
-    target_words = int(target_seconds * wps)
-    accept_words = int(target_words * 0.85)  # within 15% of target = good enough
-
-    max_topups = 3
-    for attempt in range(1, max_topups + 1):
-        current_words = len(script.split())
-        current_secs = current_words / wps
-        if current_words >= accept_words:
-            break
-        deficit_words = target_words - current_words
-        if deficit_words < 30:  # already extremely close
-            break
-        log(f"      script short: {current_words}w (~{current_secs:.0f}s), "
-            f"target {target_words}w (~{target_seconds:.0f}s) — "
-            f"top-up {attempt}/{max_topups}, requesting ~{deficit_words}w")
-        try:
-            addition = _gemini_continuation(script, cfg, deficit_words, language=language, on_step=on_step)
-        except Exception as e:
-            log(f"      top-up failed: {e} — keeping current script")
-            break
-        # Glue with a space; Gemini's continuation may or may not lead with one.
-        script = script.rstrip() + " " + addition.lstrip()
-
-    final_words = len(script.split())
-    final_secs = final_words / wps
-    log(f"      final script: {final_words}w (~{final_secs:.0f}s, target ~{target_seconds:.0f}s)")
-    return script
+    # Long-form: the first draft almost always comes back short (the model
+    # stops after a few hundred words no matter the requested length), so loop
+    # bounded continuations until we're within ~8% of the target.
+    return _extend_script_to_target(script, cfg, target_seconds, language, on_step=on_step)
 
 
 def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0,
@@ -5435,28 +5481,22 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
             # If the script is meaningfully shorter than the requested
             # target, either auto-extend (opt-in toggle) or just warn loudly.
-            if target_duration >= 90 and est_secs < 0.7 * target_duration:
+            if target_duration >= 90 and est_secs < 0.9 * target_duration:
                 extend_on = bool(job.get("extend_script", False))
-                if extend_on and cfg.gemini_api_key:
-                    wps = _WPS_EN if script_lang_hint == "en" else _WPS_DE
-                    target_words = int(target_duration * wps)
-                    current_words = len(script.split())
-                    deficit = target_words - current_words
-                    if deficit > 50:
-                        step(f"      extending script via Gemini: +{deficit}w to hit ~{target_duration:.0f}s")
-                        try:
-                            addition = _gemini_continuation(script, cfg, deficit,
-                                                            language=script_lang_hint)
-                            script = script.rstrip() + " " + addition.lstrip()
-                            new_est = _estimate_script_seconds(script, script_lang_hint)
-                            step(f"      extended script: {len(script)} chars (~{new_est:.0f}s)")
-                        except Exception as e:
-                            step(f"      extend failed: {e} — keeping original")
+                have_backend = bool(cfg.gemini_api_key or getattr(cfg, "use_claude_cli", False))
+                if extend_on and have_backend:
+                    step(f"      extending script to ~{target_duration:.0f}s "
+                         f"(from ~{est_secs:.0f}s)")
+                    try:
+                        script = _extend_script_to_target(
+                            script, cfg, target_duration, script_lang_hint, on_step=step)
+                    except Exception as e:
+                        step(f"      extend failed: {e} — keeping original")
                 else:
                     step(f"      WARN: script is ~{est_secs:.0f}s but target is "
                          f"{target_duration:.0f}s. Final video will be ~{est_secs:.0f}s "
                          f"(clip follows voice). Enable '🪶 Skript per AI verlängern' "
-                         f"in the GUI if you want Gemini to extend it.")
+                         f"in the GUI if you want it extended.")
         else:
             topic = (job.get("topic") or "").strip()
             if not topic:
