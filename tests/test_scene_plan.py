@@ -87,6 +87,74 @@ class _ClaudeCfg:
     gemini_api_key = "AIza_fake"
     gemini_model = "gemini-2.5-flash"
     image_style = "auto"
+    image_roblox_max = 2
+
+
+class TestRobloxCap:
+    def _beats(self):
+        return [
+            {"source": "ai", "motif": "a Roblox blocky avatar with a crown", "query": "", "prompt": "x"},
+            {"source": "ai", "motif": "a lonely Roblox noob in a dark Roblox map", "query": "", "prompt": "x"},
+            {"source": "photo", "motif": "", "query": "shocked face", "prompt": ""},
+            {"source": "ai", "motif": "a Roblox blocky avatar mid-jump", "query": "", "prompt": "x"},
+            {"source": "ai", "motif": "a Roblox avatar getting a gift", "query": "", "prompt": "x"},
+        ]
+
+    def test_auto_caps_roblox_and_rewrites_rest(self):
+        class C:
+            image_style = "auto"
+            image_roblox_max = 2
+        out = pipeline._enforce_roblox_cap(self._beats(), C())
+        roblox = [b for b in out if b["source"] == "ai" and pipeline._is_roblox_motif(b["motif"])]
+        assert len(roblox) == 2  # only the first two kept
+        # The rewritten beats are now photoreal and Roblox-free.
+        rewritten = [b for b in out if b["source"] == "ai" and not pipeline._is_roblox_motif(b["motif"])]
+        assert len(rewritten) == 2
+        for b in rewritten:
+            assert "Roblox" not in b["prompt"]
+            assert "photorealistic" in b["prompt"]
+
+    def test_zero_cap_removes_all_roblox(self):
+        class C:
+            image_style = "auto"
+            image_roblox_max = 0
+        out = pipeline._enforce_roblox_cap(self._beats(), C())
+        assert not any(pipeline._is_roblox_motif(b["motif"]) for b in out if b["source"] == "ai")
+
+    def test_realistic_style_forces_zero_roblox(self):
+        class C:
+            image_style = "realistic"
+            image_roblox_max = 99  # ignored when a style is forced
+        out = pipeline._enforce_roblox_cap(self._beats(), C())
+        assert not any(pipeline._is_roblox_motif(b["motif"]) for b in out if b["source"] == "ai")
+
+    def test_roblox_style_keeps_all(self):
+        class C:
+            image_style = "roblox"
+            image_roblox_max = 1
+        out = pipeline._enforce_roblox_cap(self._beats(), C())
+        roblox = [b for b in out if b["source"] == "ai" and pipeline._is_roblox_motif(b["motif"])]
+        assert len(roblox) == 4  # nothing rewritten
+
+    def test_derobloxify_replaces_tokens(self):
+        s = pipeline._derobloxify("a lonely Roblox noob avatar in a dark Roblox map")
+        assert "roblox" not in s.lower()
+        assert "noob" not in s.lower()
+        assert "avatar" not in s.lower()
+        assert s.strip()  # not empty
+
+    def test_end_to_end_plan_caps_roblox(self):
+        # A full plan from the LLM where every AI beat is Roblox → capped to 2.
+        payload = (
+            '[{"source":"ai","motif":"a Roblox blocky avatar","query":""},'
+            '{"source":"ai","motif":"a Roblox noob in a Roblox map","query":""},'
+            '{"source":"ai","motif":"a Roblox avatar jumping","query":""},'
+            '{"source":"ai","motif":"a Roblox avatar with a gift","query":""}]'
+        )
+        with patch("pipeline._complete_text", return_value=payload):
+            plan = pipeline.generate_scene_plan("a roblox noob story", 4, _ClaudeCfg())
+        roblox = [b for b in plan if b["source"] == "ai" and pipeline._is_roblox_motif(b["motif"])]
+        assert len(roblox) == 2
 
 
 class TestScenePlanGeminiRetry:

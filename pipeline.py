@@ -131,6 +131,10 @@ class Config:
     # subjects). "roblox"/"realistic"/"cinematic" force one look for the whole
     # video; any other non-empty string is used verbatim as the style suffix.
     image_style: str
+    # In "auto", the max number of AI beats that may be Roblox 3D renders; any
+    # beyond this are rewritten into photoreal real-world scenes. 0 = never
+    # Roblox even in auto. Ignored when image_style forces a look.
+    image_roblox_max: int
     # Optional override for the color-emoji font used to render caption
     # emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto on Linux).
     emoji_font_path: str
@@ -178,6 +182,7 @@ class Config:
             grok_cli_path=str(data.get("grok_cli_path", "grok")),
             grok_cli_extra_args=str(data.get("grok_cli_extra_args", "")),
             image_style=str(data.get("image_style", "auto")).strip() or "auto",
+            image_roblox_max=int(data.get("image_roblox_max", 2)),
             emoji_font_path=str(data.get("emoji_font_path", "")),
             pixabay_api_key=data.get("pixabay_api_key") or os.environ.get("PIXABAY_API_KEY", ""),
             youtube_cookies_from_browser=str(data.get("youtube_cookies_from_browser", "")).strip(),
@@ -3338,6 +3343,88 @@ def derive_image_prompt(seed_text: str, cfg=None) -> str:
     return ", ".join(p for p in parts if p)
 
 
+# Heuristic rewrite of a Roblox-flavored motif into a real-world one, so an AI
+# beat can be rendered photoreal without the prompt fighting itself (a style
+# suffix alone can't override "a Roblox blocky avatar" sitting in the motif).
+# Longest phrases first so "roblox blocky avatar" wins over "avatar".
+_DEROBLOX_REPL = [
+    ("roblox blocky noob avatar", "person"),
+    ("roblox blocky avatar", "person"),
+    ("roblox noob avatar", "person"),
+    ("blocky noob avatar", "person"),
+    ("default noob avatar", "person"),
+    ("roblox avatar", "person"),
+    ("blocky avatar", "person"),
+    ("noob avatar", "person"),
+    ("default avatar", "person"),
+    ("roblox character", "person"),
+    ("game character", "person"),
+    ("roblox map", "place"),
+    ("roblox world", "place"),
+    ("roblox game", "place"),
+    ("roblox server", "room"),
+    ("roblox 3d render", "cinematic photo"),
+    ("3d render", "cinematic photo"),
+    ("avatar", "person"),
+    ("noob", "beginner"),
+    ("blocky", ""),
+    ("roblox", ""),
+]
+
+
+def _is_roblox_motif(motif: str) -> bool:
+    m = (motif or "").lower()
+    return any(tok in m for tok in ("roblox", "noob", "blocky"))
+
+
+def _derobloxify(motif: str) -> str:
+    """Turn a Roblox motif into a plausible real-world scene description."""
+    s = motif or ""
+    for a, b in _DEROBLOX_REPL:
+        s = re.sub(re.escape(a), b, s, flags=re.IGNORECASE)
+    s = re.sub(r"\s{2,}", " ", s)
+    s = re.sub(r"\s+([,.])", r"\1", s)
+    s = re.sub(r"(,\s*){2,}", ", ", s)
+    s = s.strip(" ,.")
+    return s or "a person in a dramatic cinematic scene"
+
+
+def _roblox_cap(cfg) -> int:
+    """Max number of Roblox-render AI beats allowed per video.
+    image_style 'roblox' = unlimited; 'auto' = cfg.image_roblox_max (default 2);
+    any other forced style (realistic/cinematic/custom) = 0 (no Roblox)."""
+    style = (getattr(cfg, "image_style", "auto") or "auto").strip().lower()
+    if style == "roblox":
+        return 1_000_000
+    if style == "auto":
+        try:
+            return max(0, int(getattr(cfg, "image_roblox_max", 2)))
+        except (TypeError, ValueError):
+            return 2
+    return 0
+
+
+def _enforce_roblox_cap(beats: list[dict], cfg) -> list[dict]:
+    """Keep at most _roblox_cap(cfg) Roblox-render AI beats; rewrite the rest
+    into photoreal scenes. Mutates and returns the beat list."""
+    cap = _roblox_cap(cfg)
+    realistic = _IMAGE_STYLE_PRESETS["realistic"]
+    seen = 0
+    for b in beats:
+        if b.get("source") != "ai":
+            continue
+        motif = b.get("motif", "")
+        if not (motif and _is_roblox_motif(motif)):
+            continue
+        if seen < cap:
+            seen += 1
+            continue
+        new_motif = _derobloxify(motif)
+        b["motif"] = new_motif
+        b["prompt"] = f"{new_motif}, {realistic}, {_IMAGE_STYLE_SUFFIX}"
+    return beats
+
+
 SCENE_PROMPT = """Du bekommst ein Voiceover-Skript fuer einen YouTube Short.
 
 Finde die {n} staerksten visuellen Momente im Skript und schreibe pro Moment EINEN englischen Bild-Prompt. WICHTIG: Jeder Prompt muss zum konkret an dieser Stelle Gesagten passen und den Moment ILLUSTRIEREN. Waehle das Medium nach Inhalt: geht es um eine Roblox-/Spiel-Figur, beschreibe einen Roblox-3D-Render; geht es um etwas Reales oder Abstraktes (Person, Gefuehl, Geld, Stadt, Objekt, Ort), beschreibe ein FOTOREALISTISCHES/cinematisches Bild — KEINEN Roblox-Avatar erzwingen.
@@ -3564,6 +3651,13 @@ def generate_scene_plan(script: str, n: int, cfg: "Config",
     if result is None or not result[0]:
         return _fallback_ai()
     out = result[0]
+    # Limit how many AI beats may be Roblox renders; rewrite the rest photoreal.
+    before = sum(1 for b in out if b.get("source") == "ai" and _is_roblox_motif(b.get("motif", "")))
+    out = _enforce_roblox_cap(out, cfg)
+    after = sum(1 for b in out if b.get("source") == "ai" and _is_roblox_motif(b.get("motif", "")))
+    if before > after:
+        log(f"      scene-plan: capped Roblox renders {before}→{after}, "
+            f"rewrote {before - after} beat(s) photoreal")
     # pad/trim to n
     while len(out) < n:
         out.append({"source": "ai", "motif": "", "query": "",
