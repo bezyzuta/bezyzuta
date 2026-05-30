@@ -777,7 +777,7 @@ def build_app() -> gr.Blocks:
                       "berechnet (Bild-Anzahl-Slider wird dann ignoriert). Nur Hochformat."),
             )
             image_change_secs = gr.Slider(
-                2.0, 6.0, value=3.5, step=0.5,
+                1.0, 6.0, value=3.5, step=0.5,
                 label="⏱️ Sekunden pro Bild (bei durchgehend)",
                 info="Wie oft das Mittelbild wechselt. 3-4s wie im Referenz-Video.",
             )

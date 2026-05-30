@@ -5610,7 +5610,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             # the GUI's fixed count.
             continuous = bool(job.get("images_continuous", False)) and is_portrait_out
             if continuous and not user_prompts:
-                change_secs = max(2.0, float(job.get("image_change_secs", 3.5)))
+                change_secs = max(1.0, float(job.get("image_change_secs", 3.5)))
                 n_images = max(4, min(int(round((vo_dur or 25.0) / change_secs)), 14))
             else:
                 n_images = max(1, min(int(job.get("image_count", 3)), 14))
