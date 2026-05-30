@@ -128,6 +128,10 @@ class Config:
     # path to a cookies.txt export. File wins if both are set.
     youtube_cookies_from_browser: str
     youtube_cookies_file: str
+    # Optional free Pexels API key for stock B-roll VIDEOS in the middle
+    # slot. https://www.pexels.com/api/ — 30s signup, no card. Empty = the
+    # pipeline keeps using AI renders / photos only (today's behavior).
+    pexels_api_key: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -159,6 +163,7 @@ class Config:
             pixabay_api_key=data.get("pixabay_api_key") or os.environ.get("PIXABAY_API_KEY", ""),
             youtube_cookies_from_browser=str(data.get("youtube_cookies_from_browser", "")).strip(),
             youtube_cookies_file=str(data.get("youtube_cookies_file", "")).strip(),
+            pexels_api_key=data.get("pexels_api_key") or os.environ.get("PEXELS_API_KEY", ""),
         )
 
     def validate(self) -> tuple[list[str], list[str]]:
@@ -3160,19 +3165,20 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
     return prompts[:n]
 
 
-_SCENE_PLAN_PROMPT = """Du bist Editor fuer virale Roblox-YouTube-Shorts. Plane die Bilder in der Mitte des Videos.
+_SCENE_PLAN_PROMPT = """Du bist Editor fuer virale Roblox-YouTube-Shorts. Plane die Bilder/Clips in der Mitte des Videos.
 
-Teile dieses Skript in {n} chronologische Beats (Reihenfolge = Erzaehl-Reihenfolge). Fuer JEDEN Beat entscheide, welche Art Bild den gerade gesprochenen Satz am besten illustriert:
+Teile dieses Skript in {n} chronologische Beats (Reihenfolge = Erzaehl-Reihenfolge). Fuer JEDEN Beat entscheide, welche Art Visual den gerade gesprochenen Satz am besten illustriert:
 
-- "ai"    = ein cinematischer 3D-Roblox-Render (fuer Roblox-Charaktere, Items, Szenen: reicher Spieler mit Krone, Feuer-Boss, Nacht-Setup, usw.)
-- "photo" = ein echtes Foto / Reaktionsbild das zum Thema passt (fuer Emotionen/Reaktionen/Alltag: geschockte Person, Geldstapel, Pokal, gruseliges Zimmer, Handschlag, usw.)
+- "ai"    = cinematischer 3D-Roblox-Render (fuer Roblox-Charaktere, Items, Spiel-Szenen: reicher Spieler mit Krone, Feuer-Boss, Nacht-Setup, usw.)
+- "photo" = echtes Standbild (Reaktion/Objekt: geschockte Person, Geldstapel, Pokal, Handschlag, usw.)
+- "video" = echtes Stock-Video / B-Roll Clip {video_hint}fuer bewegte Action / Atmosphaere (rennen, klettern, Geld zaehlen, Explosion, Stadt bei Nacht, jubelnde Crowd, Lichter blitzen, usw.) — wenn Bewegung den Moment besser traegt als ein Standbild.
 
-Mische die beiden sinnvoll — wie echte virale Shorts (Roblox-Renders fuer Spiel-Momente, echte Fotos/Memes fuer Reaktionen).
+Mische die Quellen wie echte virale Shorts. Faustregel: 30-50% ai, 30-50% photo/video, je nach Inhalt.
 
 Fuer jeden Beat liefere:
-- "source": "ai" oder "photo"
-- "motif": bei source=ai ein englischer Bild-Prompt (NUR das Motiv, ohne Stil — Charakter, Pose, Objekte, FX, Stimmung). Bei source=photo leer lassen.
-- "query": bei source=photo 2-4 englische Such-Stichworte fuer eine Foto-Suche (z.B. "shocked person face", "stack of gold coins", "golden trophy"). Bei source=ai leer lassen.
+- "source": "ai", "photo" oder "video"
+- "motif": bei source=ai ein englischer Bild-Prompt (NUR das Motiv, ohne Stil — Charakter, Pose, Objekte, FX, Stimmung). Sonst leer.
+- "query": bei source=photo ODER video 2-4 englische Such-Stichworte (z.B. "shocked person face", "running fast pov", "money cash counting"). Sonst leer.
 
 Skript:
 \"\"\"
@@ -3183,11 +3189,12 @@ Antworte NUR mit einem gueltigen JSON-Array von genau {n} Objekten. KEINE Markdo
 
 
 def generate_scene_plan(script: str, n: int, cfg: "Config",
-                        allow_photos: bool = True, on_step=None) -> list[dict]:
-    """Plan n chronological image beats, each tagged source=ai|photo with a
-    motif (AI) or query (photo). Falls back to all-AI motifs from
-    generate_scene_prompts if the structured call fails. Returns a list of
-    dicts: {"source", "motif", "query"}."""
+                        allow_photos: bool = True, allow_videos: bool = False,
+                        on_step=None) -> list[dict]:
+    """Plan n chronological media beats, each tagged source=ai|photo|video
+    with a motif (AI) or query (photo/video). Falls back to all-AI motifs
+    from generate_scene_prompts if the structured call fails. Returns a list
+    of dicts: {"source", "motif", "query", "prompt"}."""
     def log(msg):
         if on_step:
             try: on_step(msg)
@@ -3202,7 +3209,8 @@ def generate_scene_plan(script: str, n: int, cfg: "Config",
     if not (getattr(cfg, "use_claude_cli", False) or cfg.gemini_api_key):
         return _fallback_ai()
 
-    prompt_text = _SCENE_PLAN_PROMPT.format(n=n, script=script)
+    video_hint = ("(z.B. action-clip, kein Standbild) " if allow_videos else "(NICHT verwenden) ")
+    prompt_text = _SCENE_PLAN_PROMPT.format(n=n, script=script, video_hint=video_hint)
     body = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -3235,14 +3243,18 @@ def generate_scene_plan(script: str, n: int, cfg: "Config",
         if not isinstance(beat, dict):
             continue
         source = str(beat.get("source", "ai")).lower()
+        if source not in ("ai", "photo", "video"):
+            source = "ai"
+        if source == "video" and not allow_videos:
+            source = "photo" if allow_photos else "ai"
         if source == "photo" and not allow_photos:
             source = "ai"
         motif = str(beat.get("motif", "")).strip()
         query = str(beat.get("query", "")).strip()
-        if source == "photo" and query:
-            out.append({"source": "photo", "motif": "", "query": query, "prompt": ""})
+        if source in ("photo", "video") and query:
+            out.append({"source": source, "motif": "", "query": query, "prompt": ""})
         else:
-            # AI beat (or photo with no query → treat as AI). Build full prompt.
+            # AI beat (or photo/video with no query → treat as AI).
             full = _finalize_scene_prompt(motif or script[:120])
             out.append({"source": "ai", "motif": motif, "query": "", "prompt": full})
     if not out:
@@ -3454,6 +3466,90 @@ def fetch_image_from_pixabay(query: str, out_path: Path, cfg: "Config") -> Path:
     raise RuntimeError(f"pixabay: no usable image for {q!r} ({last_err})")
 
 
+def fetch_video_from_pexels(query: str, out_path: Path, cfg: "Config",
+                            max_dur: float = 6.0) -> Path:
+    """Free stock B-roll video matching `query`, downloaded from Pexels.
+    Needs a free key (cfg.pexels_api_key; https://www.pexels.com/api/).
+    Picks the shortest HD (or best-available) clip that's long enough for
+    our beat, downloads it, and ffmpeg-trims it to max_dur for fast loading.
+    Raises so the caller can fall back to a photo/AI render."""
+    key = (getattr(cfg, "pexels_api_key", "") or "").strip()
+    if not key:
+        raise RuntimeError("pexels: no api key configured")
+    q = (query or "").strip()
+    if not q:
+        raise RuntimeError("pexels: empty query")
+    api = "https://api.pexels.com/videos/search"
+    params = {"query": q, "per_page": 12, "orientation": "portrait", "size": "medium"}
+    headers = {"Authorization": key, "User-Agent": _PHOTO_UA}
+    try:
+        r = requests.get(api, params=params, headers=headers, timeout=30)
+        r.raise_for_status()
+        videos = (r.json() or {}).get("videos") or []
+    except Exception as e:
+        raise RuntimeError(f"pexels search failed: {str(e)[:160]}") from e
+    if not videos:
+        raise RuntimeError(f"pexels: no results for {q!r}")
+
+    # Prefer clips that are at least max_dur long, sorted by smallest
+    # adequate file (cheapest download). Then pick HD where available.
+    candidates = []
+    for v in videos:
+        dur = float(v.get("duration") or 0)
+        if dur < max_dur:
+            continue
+        files = v.get("video_files") or []
+        # Prefer HD (>=720p), portrait-ish, smaller bytes when in doubt.
+        for f in files:
+            w, h = int(f.get("width") or 0), int(f.get("height") or 0)
+            link = f.get("link")
+            if not link or h < 720:
+                continue
+            candidates.append((h, v.get("id"), link))
+            break
+    if not candidates:
+        # Looser fallback: any video, any file with a link.
+        for v in videos:
+            for f in (v.get("video_files") or []):
+                link = f.get("link")
+                if link:
+                    candidates.append((int(f.get("height") or 0), v.get("id"), link))
+                    break
+    if not candidates:
+        raise RuntimeError(f"pexels: no usable file in results for {q!r}")
+    candidates.sort(key=lambda c: (-c[0],))   # prefer larger
+    _, vid_id, dl_url = candidates[0]
+
+    raw = out_path.with_suffix(".raw.mp4")
+    try:
+        with requests.get(dl_url, headers=headers, stream=True, timeout=120) as ir:
+            ir.raise_for_status()
+            with open(raw, "wb") as fh:
+                for chunk in ir.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+    except Exception as e:
+        raise RuntimeError(f"pexels download failed: {str(e)[:160]}") from e
+    if not raw.is_file() or raw.stat().st_size < 8192:
+        raise RuntimeError("pexels: empty download")
+
+    # Trim to max_dur + strip audio (we have our own voiceover/music) so the
+    # compose-time overlay is small and decodes fast. Re-encode lightly so
+    # later filters don't have to handle a hostile codec.
+    try:
+        run([
+            "ffmpeg", "-y", "-i", str(raw), "-t", f"{max_dur:.2f}",
+            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path),
+        ])
+    finally:
+        try: raw.unlink()
+        except Exception: pass
+    if not out_path.is_file() or out_path.stat().st_size < 4096:
+        raise RuntimeError("pexels: trim produced empty mp4")
+    return out_path
+
+
 def fetch_image_from_openverse(query: str, out_path: Path,
                                max_results: int = 8) -> Path:
     """Fetch a free, openly-licensed real photo matching `query` from the
@@ -3613,6 +3709,25 @@ def _image_schedule(n: int, duration: float, image_dur: float,
 
 
 _TILT_ANGLES_DEG = [-3.0, 2.5, -2.0, 3.0, -2.5]
+
+
+def _video_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
+                 overlay_w: int) -> str:
+    """Filter chain for one B-roll video clip overlay: trim, white border,
+    short fade-in/out. No rotate/pop (those would look weird on real footage).
+    The clip plays at native speed; if shorter than image_dur, it just ends."""
+    fade_in, fade_out = 0.15, 0.25
+    fade_out_start = max(0.0, image_dur - fade_out)
+    return (
+        f"[{idx_input}:v]"
+        f"trim=duration={image_dur:.2f},setpts=PTS-STARTPTS,"
+        f"scale=w={overlay_w}:h=-1:flags=bicubic,"
+        f"format=yuva420p,pad=iw+18:ih+18:9:9:color=white@0.95,"
+        f"fade=t=in:st=0:d={fade_in}:alpha=1,"
+        f"fade=t=out:st={fade_out_start:.2f}:d={fade_out}:alpha=1,"
+        f"tpad=start_duration={start:.2f}:color=black@0"
+        f"[img{image_idx}]"
+    )
 
 
 def _image_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
@@ -3893,8 +4008,14 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
     cmd = ["ffmpeg", "-y", "-i", str(gameplay_clip), "-i", str(voice_audio)]
 
     # Image inputs follow the gameplay(0)+voice(1); emoji PNGs follow those.
-    for img in image_paths:
-        cmd += ["-loop", "1", "-i", str(img)]
+    # Media inputs: images get -loop 1 (still frame held for the chain's
+    # trim duration); video clips (.mp4) get NO -loop because they already
+    # have their own frames.
+    for media in image_paths:
+        if Path(str(media)).suffix.lower() == ".mp4":
+            cmd += ["-i", str(media)]
+        else:
+            cmd += ["-loop", "1", "-i", str(media)]
     emoji_base_idx = 2 + len(image_paths)
     for ev in emoji_events:
         cmd += ["-loop", "1", "-i", str(ev[2])]  # ev = (start, end, png[, y])
@@ -3918,12 +4039,19 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         parts.append(f"[0:v]{cover_chain}[bg0]")
         cur = "bg0"
         for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
-            angle = _TILT_ANGLES_DEG[i % len(_TILT_ANGLES_DEG)] if image_tilt else 0.0
-            parts.append(_image_chain(
-                idx_input=2 + i, image_idx=i,
-                image_dur=end - start, start=start,
-                overlay_w=overlay_w, angle_deg=angle, ken_burns=ken_burns,
-            ))
+            is_video = Path(str(img_path)).suffix.lower() == ".mp4"
+            if is_video:
+                parts.append(_video_chain(
+                    idx_input=2 + i, image_idx=i,
+                    image_dur=end - start, start=start, overlay_w=overlay_w,
+                ))
+            else:
+                angle = _TILT_ANGLES_DEG[i % len(_TILT_ANGLES_DEG)] if image_tilt else 0.0
+                parts.append(_image_chain(
+                    idx_input=2 + i, image_idx=i,
+                    image_dur=end - start, start=start,
+                    overlay_w=overlay_w, angle_deg=angle, ken_burns=ken_burns,
+                ))
             nxt = f"bg{i+1}"
             if slide_in:
                 # image slides in from the left over ~0.3s at its start time
@@ -5168,32 +5296,52 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 n_images = max(1, min(int(job.get("image_count", 3)), 14))
 
             allow_photos = bool(job.get("image_allow_photos", True))
+            allow_videos = (bool(job.get("image_allow_videos", False))
+                            and bool(getattr(cfg, "pexels_api_key", "")))
             if user_prompts:
                 step(f"      using {len(user_prompts)} user-provided image prompt(s)")
                 plan = [{"source": "ai", "prompt": p, "query": ""} for p in user_prompts[:n_images]]
                 if len(plan) < n_images:
                     step(f"      filling remaining {n_images - len(plan)} beat(s) via LLM")
                     plan.extend(generate_scene_plan(script, n_images - len(plan), cfg,
-                                                    allow_photos=allow_photos, on_step=step))
+                                                    allow_photos=allow_photos,
+                                                    allow_videos=allow_videos, on_step=step))
             else:
-                step(f"      planning {n_images} image beats (AI + free photos) via LLM")
+                kinds = ["AI"] + (["photos"] if allow_photos else []) + (["videos"] if allow_videos else [])
+                step(f"      planning {n_images} beats ({' + '.join(kinds)}) via LLM")
                 plan = generate_scene_plan(script, n_images, cfg,
-                                           allow_photos=allow_photos, on_step=step)
+                                           allow_photos=allow_photos,
+                                           allow_videos=allow_videos, on_step=step)
 
             consecutive_failures = 0
             cloudflare_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
+            beat_dur = float(job.get("image_change_secs", 3.5))
             for i, beat in enumerate(plan, 1):
                 source = beat.get("source", "ai")
                 prompt = beat.get("prompt", "") or derive_image_prompt(script[:120])
                 query = beat.get("query", "")
-                target_path = work / f"image_{i}.png"
-                label = f"photo:{query}" if source == "photo" else prompt
+                # video beats get .mp4, others .png
+                ext = "mp4" if source == "video" else "png"
+                target_path = work / f"image_{i}.{ext}"
+                label = f"{source}:{query}" if source in ("photo", "video") else prompt
                 step(f"      [{i}/{len(plan)}] {source}: {label[:74]}")
                 ok = False
                 primary_err: str | None = None
 
+                # Video beats → Pexels stock B-roll, fallback to photo→AI.
+                if source == "video" and query:
+                    try:
+                        fetch_video_from_pexels(query, target_path, cfg, max_dur=beat_dur + 0.6)
+                        image_paths.append(target_path)
+                        ok = True
+                    except Exception as e:
+                        primary_err = f"Pexels: {e}"
+                        step(f"      pexels miss ({str(e)[:120]}), versuche Foto")
+                        source = "photo"
+                        target_path = target_path.with_suffix(".png")
+
                 # Photo beats → free stock/photo sources first, AI fallback.
-                if source == "photo" and query:
+                if not ok and source == "photo" and query:
                     try:
                         fetch_free_photo(query, target_path, cfg=cfg, on_step=step)
                         image_paths.append(target_path)

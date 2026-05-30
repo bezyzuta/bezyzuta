@@ -33,6 +33,8 @@
   "_comment_yt_cookies_browser": "Fixes YouTube '429 / Sign in to confirm you are not a bot'. Set to your browser: 'chrome', 'firefox', 'edge', or 'brave' — yt-dlp reads its logged-in YouTube cookies. Close that browser before running so the cookie DB isn't locked.",
   "youtube_cookies_file": "",
   "_comment_yt_cookies_file": "Alternative to the browser option: path to a cookies.txt export (e.g. from the 'Get cookies.txt' browser extension). Wins over youtube_cookies_from_browser if both are set.",
+  "pexels_api_key": "",
+  "_comment_pexels": "FREE Pexels API key for stock B-roll VIDEOS in the middle slot (https://www.pexels.com/api/ — 30s signup, no card). Enables the GUI's '📹 Auch Stock-VIDEOS verwenden' toggle. Empty = pipeline keeps using AI renders / photos only. Can also be set via PEXELS_API_KEY env.",
   "whisper_model": "small",
   "target_resolution": [1080, 1920],
   "ducking_db": -18

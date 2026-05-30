@@ -105,6 +105,7 @@ def generate(
     image_change_secs: float,
     image_gap_secs: float,
     image_allow_photos: bool,
+    image_allow_videos: bool,
     caption_font: str,
     caption_color: str,
     caption_stroke_color: str,
@@ -215,6 +216,7 @@ def generate(
             "image_change_secs": float(image_change_secs),
             "image_gap_secs": float(image_gap_secs),
             "image_allow_photos": bool(image_allow_photos),
+            "image_allow_videos": bool(image_allow_videos),
             "caption_font": str(caption_font or "Impact"),
             "caption_font_size": int(caption_font_size),
             "caption_color": str(caption_color or "#FFFFFF"),
@@ -768,6 +770,14 @@ def build_app() -> gr.Blocks:
                       "Text passen (geschockte Person, Geldstapel, Pokal …) — wie virale Shorts. "
                       "Die KI entscheidet pro Beat was besser passt. Aus = nur KI-Bilder."),
             )
+            image_allow_videos = gr.Checkbox(
+                value=False,
+                label="📹 Auch Stock-VIDEOS verwenden (Pexels B-Roll, KOSTENLOS mit Key)",
+                info=("An = bei passenden Beats werden echte kurze Stock-Clips eingeblendet "
+                      "(rennen, Geld zählen, Explosion, Stadt bei Nacht …). Erfordert "
+                      "pexels_api_key in config.json (https://www.pexels.com/api/ — 30s, kostenlos). "
+                      "Massiver Qualitätssprung. Bei Fehler → Foto/KI-Fallback."),
+            )
 
         # ───────────── Engagement-Effekte ─────────────
         with gr.Accordion("✨ Engagement-Effekte", open=False):
@@ -994,7 +1004,7 @@ def build_app() -> gr.Blocks:
                 image_count, image_duration, image_size, image_vpos,
                 custom_image_prompts, uploaded_images,
                 skip_images, image_tilt, images_continuous,
-                image_change_secs, image_gap_secs, image_allow_photos,
+                image_change_secs, image_gap_secs, image_allow_photos, image_allow_videos,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 caption_position,
                 hook_text, hook_duration,
