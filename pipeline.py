@@ -591,7 +591,33 @@ def _resolve_claude_cli(claude_path: str = "claude") -> str:
     if claude_path and Path(claude_path).expanduser().is_file():
         _CLAUDE_CLI_PATH = str(Path(claude_path).expanduser())
         return _CLAUDE_CLI_PATH
-    _CLAUDE_CLI_PATH = shutil.which(claude_path) or ""
+    # On PATH? (resolves claude.cmd/.exe on Windows)
+    found = shutil.which(claude_path) or shutil.which("claude")
+    if found:
+        _CLAUDE_CLI_PATH = found
+        return _CLAUDE_CLI_PATH
+    # Common npm-global / install locations when PATH wasn't refreshed —
+    # very common on Windows right after `npm install -g`.
+    home = Path.home()
+    appdata = os.environ.get("APPDATA", str(home / "AppData" / "Roaming"))
+    candidates = [
+        Path(appdata) / "npm" / "claude.cmd",
+        Path(appdata) / "npm" / "claude.exe",
+        Path(appdata) / "npm" / "claude",
+        home / "AppData" / "Roaming" / "npm" / "claude.cmd",
+        home / ".npm-global" / "bin" / "claude",
+        home / ".local" / "bin" / "claude",
+        Path("/usr/local/bin/claude"),
+        Path("/opt/homebrew/bin/claude"),
+    ]
+    for c in candidates:
+        try:
+            if c.is_file():
+                _CLAUDE_CLI_PATH = str(c)
+                return _CLAUDE_CLI_PATH
+        except Exception:
+            continue
+    _CLAUDE_CLI_PATH = ""
     return _CLAUDE_CLI_PATH
 
 
