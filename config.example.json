@@ -31,6 +31,8 @@
   "_comment_grok_cli_path": "Path/name of the grok executable. Usually just 'grok' if it's on PATH (run `grok login` once first).",
   "grok_cli_extra_args": "",
   "_comment_grok_cli_args": "Optional extra CLI flags for the headless `grok -p` image call, space-separated (e.g. an auto-approve/non-interactive flag if your Grok Build version needs one to write files without a prompt). Empty = none.",
+  "image_style": "auto",
+  "_comment_image_style": "AI-image look. 'auto' (recommended) = the planner picks the medium per beat: Roblox-render when the line is about a game character, photoreal/cinematic when it's about a real person, money, a city, an emotion, etc. — no more forced Roblox avatars on every image. Force one look for the whole video with 'roblox', 'realistic', or 'cinematic'; or put any custom style phrase here to append it to every prompt.",
   "emoji_font_path": "",
   "_comment_emoji_font": "Optional path to a color emoji font for caption emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto Color Emoji on Linux). Example: 'C:\\\\Windows\\\\Fonts\\\\seguiemj.ttf'.",
   "pixabay_api_key": "",

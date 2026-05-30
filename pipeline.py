@@ -126,6 +126,11 @@ class Config:
     use_grok_cli: bool
     grok_cli_path: str
     grok_cli_extra_args: str
+    # AI-image style. "auto" (default) = the scene planner picks the medium per
+    # beat (Roblox-render for game characters, photoreal for real/abstract
+    # subjects). "roblox"/"realistic"/"cinematic" force one look for the whole
+    # video; any other non-empty string is used verbatim as the style suffix.
+    image_style: str
     # Optional override for the color-emoji font used to render caption
     # emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto on Linux).
     emoji_font_path: str
@@ -172,6 +177,7 @@ class Config:
             use_grok_cli=bool(data.get("use_grok_cli", False)),
             grok_cli_path=str(data.get("grok_cli_path", "grok")),
             grok_cli_extra_args=str(data.get("grok_cli_extra_args", "")),
+            image_style=str(data.get("image_style", "auto")).strip() or "auto",
             emoji_font_path=str(data.get("emoji_font_path", "")),
             pixabay_api_key=data.get("pixabay_api_key") or os.environ.get("PIXABAY_API_KEY", ""),
             youtube_cookies_from_browser=str(data.get("youtube_cookies_from_browser", "")).strip(),
@@ -3294,32 +3300,54 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     return out_path
 
 
-# Mandatory style suffix appended to every image prompt. Tuned to match the
-# look of top-performing Roblox shorts: cinematic 3D character renders with
-# dramatic rim lighting and glowing FX on a dark atmospheric background —
-# NOT flat cartoon scenes. Flux/Pollinations respond well to these tokens.
+# Mandatory QUALITY suffix appended to every image prompt. Intentionally
+# STYLE-NEUTRAL — it only nails render quality (lighting, detail, clean output),
+# NOT the subject medium. Whether a beat looks like a blocky Roblox render or a
+# photoreal shot is decided per-beat by the scene planner (see _SCENE_PLAN_PROMPT)
+# or forced via cfg.image_style. Flux/Pollinations/Grok respond well to these.
 _IMAGE_STYLE_SUFFIX = (
-    "cinematic 3D render, Roblox blocky avatar character, single subject centered, "
-    "dramatic rim lighting, glowing volumetric effects, vibrant saturated colors, "
-    "dark atmospheric background, high detail, octane render, depth of field, "
-    "no text, no watermark, no logos"
+    "single subject centered, dramatic rim lighting, vibrant saturated colors, "
+    "high detail, depth of field, no text, no watermark, no logos"
 )
 
+# Optional hard style override, keyed off cfg.image_style. "auto" (default) lets
+# the scene planner pick the medium per beat. The named presets force one look
+# for the whole video; any other non-empty value is used verbatim as the style.
+_IMAGE_STYLE_PRESETS = {
+    "roblox": "cinematic 3D render, Roblox blocky avatar character, dark atmospheric background, octane render",
+    "realistic": "photorealistic, ultra-realistic photography, natural lighting, shot on a DSLR, 4k",
+    "cinematic": "cinematic film still, dramatic composition, moody lighting, photorealistic",
+}
 
-def derive_image_prompt(seed_text: str) -> str:
-    return f"{seed_text[:200]}, {_IMAGE_STYLE_SUFFIX}"
+
+def _style_directive(cfg) -> str:
+    """The forced style fragment for cfg.image_style, or "" for auto (the LLM's
+    per-beat motif already carries its own medium)."""
+    style = (getattr(cfg, "image_style", "auto") or "auto").strip()
+    if not style or style.lower() == "auto":
+        return ""
+    return _IMAGE_STYLE_PRESETS.get(style.lower(), style)
 
 
-SCENE_PROMPT = """Du bekommst ein Voiceover-Skript fuer einen Roblox YouTube Short.
+def derive_image_prompt(seed_text: str, cfg=None) -> str:
+    parts = [seed_text[:200].strip()]
+    directive = _style_directive(cfg) if cfg is not None else ""
+    if directive:
+        parts.append(directive)
+    parts.append(_IMAGE_STYLE_SUFFIX)
+    return ", ".join(p for p in parts if p)
 
-Finde die {n} staerksten visuellen Momente im Skript und schreibe pro Moment EINEN englischen Bild-Prompt. WICHTIG: Jeder Prompt muss zum konkret an dieser Stelle Gesagten passen — wenn das Skript ueber "der reichste Spieler" redet, zeige einen reichen Roblox-Charakter mit Krone, Geld, Diamanten; bei "maechtiger Boss" einen dunklen gepanzerten Charakter mit Feuer-Aura; usw. Das Bild soll den Moment ILLUSTRIEREN.
 
-Beschreibe pro Prompt das HAUPTMOTIV konkret und bildhaft in Englisch (welcher Charakter, welche Pose, welche Objekte/FX rundherum, welche Stimmung). Schreibe NUR das Motiv — der einheitliche Render-Stil wird automatisch angehaengt, den musst du NICHT dazuschreiben.
+SCENE_PROMPT = """Du bekommst ein Voiceover-Skript fuer einen YouTube Short.
+
+Finde die {n} staerksten visuellen Momente im Skript und schreibe pro Moment EINEN englischen Bild-Prompt. WICHTIG: Jeder Prompt muss zum konkret an dieser Stelle Gesagten passen und den Moment ILLUSTRIEREN. Waehle das Medium nach Inhalt: geht es um eine Roblox-/Spiel-Figur, beschreibe einen Roblox-3D-Render; geht es um etwas Reales oder Abstraktes (Person, Gefuehl, Geld, Stadt, Objekt, Ort), beschreibe ein FOTOREALISTISCHES/cinematisches Bild — KEINEN Roblox-Avatar erzwingen.
+
+Beschreibe pro Prompt das HAUPTMOTIV konkret und bildhaft in Englisch, inklusive Medium (Roblox-Render ODER fotorealistisch). Den einheitlichen Qualitaets-Zusatz musst du NICHT dazuschreiben.
 
 Beispiele fuer gute Motive:
-- "a Roblox avatar in a golden suit wearing a diamond crown, surrounded by stacks of gold coins and floating gems, triumphant pose"
-- "a dark armored Roblox character with glowing red eyes and a fiery aura, menacing stance, embers floating around"
-- "a scared Roblox avatar sitting at a glowing computer at night, blue screen light on his face, dark room"
+- "a Roblox avatar in a golden suit wearing a diamond crown, surrounded by stacks of gold coins, triumphant pose"
+- "a photorealistic shocked young man staring at a phone screen, hand over mouth, dramatic lighting"
+- "a cinematic photo of stacks of cash and gold coins on a dark table, moody light"
 
 Skript:
 \"\"\"
@@ -3374,17 +3402,23 @@ def generate_scene_prompts_cloudflare(script: str, n: int, cfg: Config) -> list[
     return prompts[:n]
 
 
-def _finalize_scene_prompt(motif: str) -> str:
-    """Append the mandatory cinematic render style to an LLM-generated motif,
-    unless it's already there (e.g. the base fallback prompt)."""
+def _finalize_scene_prompt(motif: str, cfg=None) -> str:
+    """Append the mandatory quality suffix (and any forced cfg.image_style
+    directive) to an LLM-generated motif, unless already present. With
+    image_style=auto the motif keeps the medium the planner chose for it."""
     motif = motif.strip()
     if _IMAGE_STYLE_SUFFIX in motif:
         return motif
-    return f"{motif}, {_IMAGE_STYLE_SUFFIX}"
+    directive = _style_directive(cfg) if cfg is not None else ""
+    parts = [motif]
+    if directive:
+        parts.append(directive)
+    parts.append(_IMAGE_STYLE_SUFFIX)
+    return ", ".join(p for p in parts if p)
 
 
 def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
-    base = derive_image_prompt(script[:200])
+    base = derive_image_prompt(script[:200], cfg)
     raw: list[str] | None = None
     if cfg.gemini_api_key:
         try:
@@ -3399,18 +3433,18 @@ def generate_scene_prompts(script: str, n: int, cfg: Config) -> list[str]:
             print(f"      WARN: Cloudflare scene gen failed ({e}); falling back to single prompt")
     if raw is None:
         raw = [base] * n
-    # Apply the uniform render style and pad/trim to exactly n.
-    prompts = [_finalize_scene_prompt(p) for p in raw if p.strip()]
+    # Apply the quality/style suffix and pad/trim to exactly n.
+    prompts = [_finalize_scene_prompt(p, cfg) for p in raw if p.strip()]
     while len(prompts) < n:
         prompts.append(base)
     return prompts[:n]
 
 
-_SCENE_PLAN_PROMPT = """Du bist Editor fuer virale Roblox-YouTube-Shorts. Plane die Bilder/Clips in der Mitte des Videos.
+_SCENE_PLAN_PROMPT = """Du bist Editor fuer virale YouTube-Shorts. Plane die Bilder/Clips in der Mitte des Videos.
 
 Teile dieses Skript in {n} chronologische Beats (Reihenfolge = Erzaehl-Reihenfolge). Fuer JEDEN Beat entscheide, welche Art Visual den gerade gesprochenen Satz am besten illustriert:
 
-- "ai"    = cinematischer 3D-Roblox-Render (fuer Roblox-Charaktere, Items, Spiel-Szenen: reicher Spieler mit Krone, Feuer-Boss, Nacht-Setup, usw.)
+- "ai"    = ein generiertes Bild. WICHTIG zum Motiv: Das Bild muss zum konkret Gesagten passen. Geht es im Satz um eine Roblox-/Spiel-Figur (Avatar, Charakter, Item, Map), beschreibe einen Roblox-3D-Render. Geht es um etwas Reales oder Abstraktes (eine Person, ein Gefuehl, Geld, eine Stadt, ein Objekt, ein Ort), beschreibe ein passendes FOTOREALISTISCHES/cinematisches Bild — KEINEN Roblox-Avatar erzwingen. Waehle das Medium pro Beat nach dem Inhalt.
 - "photo" = echtes Standbild (Reaktion/Objekt: geschockte Person, Geldstapel, Pokal, Handschlag, usw.)
 - "video" = echtes Stock-Video / B-Roll Clip {video_hint}fuer bewegte Action / Atmosphaere (rennen, klettern, Geld zaehlen, Explosion, Stadt bei Nacht, jubelnde Crowd, Lichter blitzen, usw.) — wenn Bewegung den Moment besser traegt als ein Standbild.
 
@@ -3418,7 +3452,7 @@ Mische die Quellen wie echte virale Shorts. Faustregel: 30-50% ai, 30-50% photo/
 
 Fuer jeden Beat liefere:
 - "source": "ai", "photo" oder "video"
-- "motif": bei source=ai ein englischer Bild-Prompt (NUR das Motiv, ohne Stil — Charakter, Pose, Objekte, FX, Stimmung). Sonst leer.
+- "motif": bei source=ai ein englischer Bild-Prompt. Beschreibe das HAUPTMOTIV konkret UND das Medium ("a Roblox blocky avatar ..." fuer Spiel-Figuren, sonst "a photorealistic ..." / "a cinematic photo of ..."). Keinen einheitlichen Render-Stil dazuschreiben — nur Motiv + ob Roblox-Render oder fotorealistisch. Sonst leer.
 - "query": bei source=photo ODER video 2-4 englische Such-Stichworte (z.B. "shocked person face", "running fast pov", "money cash counting"). Sonst leer.
 
 Skript:
@@ -3496,14 +3530,14 @@ def generate_scene_plan(script: str, n: int, cfg: "Config",
             out.append({"source": source, "motif": "", "query": query, "prompt": ""})
         else:
             # AI beat (or photo/video with no query → treat as AI).
-            full = _finalize_scene_prompt(motif or script[:120])
+            full = _finalize_scene_prompt(motif or script[:120], cfg)
             out.append({"source": "ai", "motif": motif, "query": "", "prompt": full})
     if not out:
         return _fallback_ai()
     # pad/trim to n
     while len(out) < n:
         out.append({"source": "ai", "motif": "", "query": "",
-                    "prompt": derive_image_prompt(script[:120])})
+                    "prompt": derive_image_prompt(script[:120], cfg)})
     return out[:n]
 
 
@@ -5648,7 +5682,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             beat_dur = float(job.get("image_change_secs", 3.5))
             for i, beat in enumerate(plan, 1):
                 source = beat.get("source", "ai")
-                prompt = beat.get("prompt", "") or derive_image_prompt(script[:120])
+                prompt = beat.get("prompt", "") or derive_image_prompt(script[:120], cfg)
                 query = beat.get("query", "")
                 # video beats get .mp4, others .png
                 ext = "mp4" if source == "video" else "png"

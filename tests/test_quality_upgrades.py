@@ -16,13 +16,20 @@ import pipeline
 
 
 class TestCinematicImagePrompts:
-    def test_derive_includes_cinematic_style(self):
+    def test_derive_includes_quality_suffix(self):
         p = pipeline.derive_image_prompt("a rich roblox player with a crown")
-        assert "cinematic 3D render" in p
+        assert pipeline._IMAGE_STYLE_SUFFIX in p
         assert "a rich roblox player with a crown" in p
         # No leftover flat-cartoon style from the old prompt.
         assert "vertical cartoon illustration" not in p
         assert "blocky aesthetic" not in p
+
+    def test_derive_default_is_style_neutral(self):
+        # With image_style=auto (no cfg), the suffix must NOT force a medium —
+        # no hard-coded "Roblox" in the appended style.
+        p = pipeline.derive_image_prompt("a shocked person")
+        assert "Roblox" not in pipeline._IMAGE_STYLE_SUFFIX
+        assert "Roblox" not in p
 
     def test_finalize_appends_style_to_motif(self):
         out = pipeline._finalize_scene_prompt("a fire demon avatar")
@@ -34,10 +41,29 @@ class TestCinematicImagePrompts:
         # not get it twice.
         already = pipeline.derive_image_prompt("x")
         out = pipeline._finalize_scene_prompt(already)
-        assert out.count("cinematic 3D render") == 1
+        assert out.count(pipeline._IMAGE_STYLE_SUFFIX) == 1
 
     def test_finalize_strips_whitespace(self):
         assert pipeline._finalize_scene_prompt("  motif  ").startswith("motif,")
+
+    def test_image_style_roblox_preset_forces_roblox(self):
+        class _C:
+            image_style = "roblox"
+        out = pipeline._finalize_scene_prompt("a guy with a crown", _C())
+        assert "Roblox blocky avatar" in out
+
+    def test_image_style_realistic_preset(self):
+        class _C:
+            image_style = "realistic"
+        out = pipeline.derive_image_prompt("a city at night", _C())
+        assert "photorealistic" in out
+        assert "Roblox" not in out
+
+    def test_image_style_custom_verbatim(self):
+        class _C:
+            image_style = "anime watercolor"
+        out = pipeline._finalize_scene_prompt("a hero", _C())
+        assert "anime watercolor" in out
 
     def test_scene_prompt_template_asks_for_motif_only(self):
         # The template must instruct beat-matching and motif-only output.
