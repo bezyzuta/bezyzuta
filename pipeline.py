@@ -4909,21 +4909,29 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             line_h = resolved_fs * 1.15
             usable_w = max(200, cfg.target_w - 160)         # MarginL/R = 80 each
             per_line_chars = max(6, int(usable_w / (resolved_fs * 0.55)))
+            emoji_h = max(48, int(cfg.target_w * 0.085))    # ~same as overlay width
             if eff_cap_pos == "top":
                 cap_top = cfg.target_h * 0.13
             elif eff_cap_pos == "center":
                 cap_top = cfg.target_h * 0.42
             else:
                 cap_top = cfg.target_h * 0.72
-            gap = int(resolved_fs * 0.22)                   # small gap under text
+            gap = int(resolved_fs * 0.22)                   # small gap to the text
             for (e_s, e_e, emo, text) in compute_caption_emoji_events(words, long_form=is_landscape_out):
                 png = get_emoji_png(emo, font_path=getattr(cfg, "emoji_font_path", ""))
                 if not png:
                     continue
                 n_lines = 1 + (len(text) > per_line_chars)  # 1 or 2 lines
-                y = int(cap_top + n_lines * line_h + gap)
+                if eff_cap_pos == "bottom":
+                    # caption sits at the bottom → put the emoji ABOVE it,
+                    # otherwise it lands under the text (and under the image)
+                    # where it's barely visible.
+                    y = int(cap_top - emoji_h - gap)
+                else:
+                    # emoji just below the caption text block
+                    y = int(cap_top + n_lines * line_h + gap)
                 # keep the emoji on-screen
-                y = max(0, min(y, cfg.target_h - resolved_fs))
+                y = max(0, min(y, cfg.target_h - emoji_h))
                 emoji_png_events.append((e_s, e_e, png, y))
             if emoji_png_events:
                 step(f"      caption emojis: {len(emoji_png_events)} color overlay(s)")
