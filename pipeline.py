@@ -4842,7 +4842,13 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     # ASS text (compose_short paints the color PNGs instead). On fetch
     # failure we keep the events empty and fall back to the ASS text emoji.
     emoji_png_events: list = []
-    want_emojis = bool(job.get("caption_emojis", False)) and is_portrait_out and words
+    # Color emoji overlays work in ANY orientation (it's just a PNG overlay).
+    # Landscape/long-form captions are forced to the bottom, so derive the
+    # effective position + chunking from the orientation, not just cap_pos —
+    # otherwise long videos fell back to ugly monochrome ASS-text emojis.
+    is_landscape_out = cfg.target_w >= cfg.target_h
+    eff_cap_pos = "bottom" if is_landscape_out else cap_pos
+    want_emojis = bool(job.get("caption_emojis", False)) and bool(words)
     if want_emojis:
         try:
             # Resolve the caption font size the same way write_ass does, so we
@@ -4852,19 +4858,21 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             line_h = resolved_fs * 1.15
             usable_w = max(200, cfg.target_w - 160)         # MarginL/R = 80 each
             per_line_chars = max(6, int(usable_w / (resolved_fs * 0.55)))
-            if cap_pos == "top":
+            if eff_cap_pos == "top":
                 cap_top = cfg.target_h * 0.13
-            elif cap_pos == "center":
+            elif eff_cap_pos == "center":
                 cap_top = cfg.target_h * 0.42
             else:
                 cap_top = cfg.target_h * 0.72
             gap = int(resolved_fs * 0.22)                   # small gap under text
-            for (e_s, e_e, emo, text) in compute_caption_emoji_events(words, long_form=False):
+            for (e_s, e_e, emo, text) in compute_caption_emoji_events(words, long_form=is_landscape_out):
                 png = get_emoji_png(emo, font_path=getattr(cfg, "emoji_font_path", ""))
                 if not png:
                     continue
                 n_lines = 1 + (len(text) > per_line_chars)  # 1 or 2 lines
                 y = int(cap_top + n_lines * line_h + gap)
+                # keep the emoji on-screen
+                y = max(0, min(y, cfg.target_h - resolved_fs))
                 emoji_png_events.append((e_s, e_e, png, y))
             if emoji_png_events:
                 step(f"      caption emojis: {len(emoji_png_events)} color overlay(s)")
@@ -5190,7 +5198,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             image_size=float(job.get("image_size", 0.92)),
             image_vpos=float(job.get("image_vpos", -0.03)),
             emoji_events=emoji_png_events,
-            caption_position=cap_pos,
+            caption_position=eff_cap_pos,
         )
         speed = float(job.get("playback_speed", 1.0))
         if abs(speed - 1.0) > 0.01:
