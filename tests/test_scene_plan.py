@@ -162,6 +162,83 @@ class TestFetchFreePhoto:
         with pytest.raises(RuntimeError):
             pipeline.fetch_image_from_pixabay("x", tmp_path / "o.png", CfgNoKey())
 
+    def test_quota_error_disables_source_for_run(self, tmp_path):
+        """A 429 / quota error on Pexels skips Pexels for ALL subsequent
+        beats in the same run — no point burning latency on a known-dead
+        source. Other failures (e.g. no result) don't disable."""
+        # Reset module state for this test
+        pipeline._DISABLED_PHOTO_SOURCES.clear()
+
+        class CfgPexOnly:
+            pexels_api_key = "PX"
+            pixabay_api_key = ""
+
+        pix_search = MagicMock()
+        pix_search.raise_for_status = MagicMock(
+            side_effect=pipeline.requests.HTTPError("429 Client Error: Too Many Requests"))
+        ov_search = MagicMock()
+        ov_search.raise_for_status = lambda: None
+        ov_search.json = lambda: {"results": [{"url": "http://o/img.jpg"}]}
+        ov_img = MagicMock()
+        ov_img.raise_for_status = lambda: None
+        ov_img.content = _png_bytes()
+
+        seen = []
+        def fake_get(url, **kw):
+            seen.append(url)
+            if "api.pexels.com" in url:
+                return pix_search
+            if "openverse" in url:
+                return ov_search
+            return ov_img
+
+        # First beat: Pexels 429s → openverse delivers.
+        with patch("requests.get", side_effect=fake_get):
+            p1 = pipeline.fetch_free_photo("a", tmp_path / "1.png", cfg=CfgPexOnly())
+        assert p1.is_file()
+        assert "pexels" in pipeline._DISABLED_PHOTO_SOURCES
+
+        # Second beat: Pexels should NOT be hit again — disabled.
+        seen.clear()
+        with patch("requests.get", side_effect=fake_get):
+            p2 = pipeline.fetch_free_photo("b", tmp_path / "2.png", cfg=CfgPexOnly())
+        assert p2.is_file()
+        assert not any("api.pexels.com" in u for u in seen)
+
+        pipeline._DISABLED_PHOTO_SOURCES.clear()
+
+    def test_no_result_does_not_disable(self, tmp_path):
+        """A 'no results for query' miss is local to one beat; Pexels stays
+        eligible for the next beat."""
+        pipeline._DISABLED_PHOTO_SOURCES.clear()
+
+        class CfgPex:
+            pexels_api_key = "PX"
+            pixabay_api_key = ""
+
+        empty = MagicMock()
+        empty.raise_for_status = lambda: None
+        empty.json = lambda: {"photos": []}
+        ov_search = MagicMock()
+        ov_search.raise_for_status = lambda: None
+        ov_search.json = lambda: {"results": [{"url": "http://o/img.jpg"}]}
+        ov_img = MagicMock()
+        ov_img.raise_for_status = lambda: None
+        ov_img.content = _png_bytes()
+
+        def fake_get(url, **kw):
+            if "api.pexels.com" in url:
+                return empty
+            if "openverse" in url:
+                return ov_search
+            return ov_img
+
+        with patch("requests.get", side_effect=fake_get):
+            pipeline.fetch_free_photo("nothing", tmp_path / "x.png", cfg=CfgPex())
+        # NOT disabled — Pexels was just empty, not rate-limited.
+        assert "pexels" not in pipeline._DISABLED_PHOTO_SOURCES
+        pipeline._DISABLED_PHOTO_SOURCES.clear()
+
     def test_free_photo_prefers_pexels_when_key_set(self, tmp_path):
         # With ONLY a pexels key, that's tried first; openverse never reached.
         pex_search = MagicMock()

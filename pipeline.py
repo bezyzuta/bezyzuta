@@ -3763,34 +3763,71 @@ def fetch_image_from_wikimedia(query: str, out_path: Path,
     raise RuntimeError(f"wikimedia: no usable image for {q!r} ({last_err})")
 
 
+# Circuit breaker: once a source clearly says "rate limited / quota exceeded"
+# in this process, skip it for the rest of the run so subsequent beats don't
+# waste a slow failing call. Reset on process exit (the set lives in-memory).
+_DISABLED_PHOTO_SOURCES: set[str] = set()
+
+
+def _is_quota_error(err_msg: str) -> bool:
+    """True if an error string indicates the source is rate-limited / out of
+    quota — at which point retrying within the same run is pointless."""
+    s = (err_msg or "").lower()
+    return any(t in s for t in (
+        "429", "rate limit", "ratelimit", "rate-limit",
+        "quota", "too many requests", "limit exceeded", "403",
+    ))
+
+
 def fetch_free_photo(query: str, out_path: Path, cfg: "Config" = None,
                      on_step=None) -> Path:
     """Try the free photo sources in order: Pexels (if key — best quality)
-    → Pixabay (if key) → Openverse → Wikimedia Commons. Logs each source's
-    real error instead of a silent "miss". Raises only when all sources
-    fail, so the caller can fall back to an AI render."""
+    → Pixabay (if key) → Openverse → Wikimedia Commons.
+
+    Process-wide circuit breaker: a source that fails with a clear rate-limit
+    / quota error is SKIPPED for the rest of the run, so the next beat
+    doesn't burn time on the same failing call (and you don't waste a slow
+    upstream timeout per image). Other failures (no result, network blip,
+    bad query) are local to this beat and don't disable the source.
+    Logs each source's real error instead of a silent "miss". Raises only
+    when all sources fail, so the caller can fall back to an AI render."""
     def log(msg):
         if on_step:
             try: on_step(msg)
             except Exception: pass
 
-    sources = []
-    if cfg is not None and (getattr(cfg, "pexels_api_key", "") or "").strip():
-        sources.append(("pexels", lambda: fetch_image_from_pexels(query, out_path, cfg)))
-    if cfg is not None and (getattr(cfg, "pixabay_api_key", "") or "").strip():
-        sources.append(("pixabay", lambda: fetch_image_from_pixabay(query, out_path, cfg)))
-    sources.append(("openverse", lambda: fetch_image_from_openverse(query, out_path)))
-    sources.append(("wikimedia", lambda: fetch_image_from_wikimedia(query, out_path)))
-
-    errors = []
-    for name, fn in sources:
+    def _try(name: str, fn) -> Path | None:
+        if name in _DISABLED_PHOTO_SOURCES:
+            return None  # already known dead for this run
         try:
             return fn()
         except Exception as e:
-            msg = f"{name}: {str(e)[:140]}"
-            errors.append(msg)
-            log(f"        {msg}")
-    raise RuntimeError("; ".join(errors))
+            err = f"{name}: {str(e)[:140]}"
+            log(f"        {err}")
+            if _is_quota_error(str(e)):
+                _DISABLED_PHOTO_SOURCES.add(name)
+                log(f"        → {name} skip für Rest des Runs (Rate-Limit/Quota)")
+            raise
+
+    has_pexels = cfg is not None and (getattr(cfg, "pexels_api_key", "") or "").strip()
+    has_pixabay = cfg is not None and (getattr(cfg, "pixabay_api_key", "") or "").strip()
+    chain: list[tuple[str, callable]] = []
+    if has_pexels:
+        chain.append(("pexels", lambda: fetch_image_from_pexels(query, out_path, cfg)))
+    if has_pixabay:
+        chain.append(("pixabay", lambda: fetch_image_from_pixabay(query, out_path, cfg)))
+    chain.append(("openverse", lambda: fetch_image_from_openverse(query, out_path)))
+    chain.append(("wikimedia", lambda: fetch_image_from_wikimedia(query, out_path)))
+
+    errors = []
+    for name, fn in chain:
+        try:
+            result = _try(name, fn)
+            if result is not None:
+                return result
+        except Exception as e:
+            errors.append(f"{name}: {str(e)[:140]}")
+    raise RuntimeError("; ".join(errors) or "all photo sources unavailable")
 
 
 def _image_schedule(n: int, duration: float, image_dur: float,
