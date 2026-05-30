@@ -261,21 +261,202 @@ Schritte vermutlich nötig:
 
 - **Multi-Clip-Qualität**: ohne custom trained model bleibt das deutlich
   schlechter als Opus.pro. Chunking ist eingebaut aber Gemini wählt trotzdem
-  manchmal mittelmäßige Momente. User ist frustriert deswegen.
+  manchmal mittelmäßige Momente. Mit Claude CLI (Sonnet/Opus) als Provider
+  spürbar besser, aber langsamer.
 - **CLAUDE.md** ist dieser Datei (gerade von Claude geschrieben).
 - Token-Verbrauch im Chat fast bei 1M — User wechselt zu frischem Chat.
 
+## Session 2 (Mai/Juni 2026 — selbe Branch, große Quality-Welle)
+
+Seit der letzten CLAUDE.md sind ~50 weitere Features/Fixes dazu gekommen.
+Kurz-Index der wichtigsten:
+
+### Neue LLM-Backends
+- **Claude Code CLI als optionaler Provider** (`use_claude_cli` in config /
+  GUI-Accordion "🧠 KI-Modell"). `claude_cli_complete()` ruft `claude -p
+  --output-format json` per subprocess, **Prompt über stdin** (Windows
+  argv-Limit!). `_resolve_claude_cli()` probt PATH + npm-Standardspots
+  (`%APPDATA%\npm\claude.cmd` etc.), cached den vollen Pfad — Windows
+  startet keine bare "claude.cmd" ohne resolved path. `_complete_text()`
+  ist der Dispatcher: Claude-first wenn aktiv, sonst Gemini; bei jedem
+  CLI-Fehler automatischer Fallback. Verdrahtet in:
+  Moment-Picking (Hauptgewinn), Skript-Gen, Continuation, Effekt-Regie,
+  Scene-Plan, Hook-Vorschläge, YouTube-Metadaten.
+- Gemini Long-Form-Skript: separater Prompt für ≥90s, Top-Up-Loop (3x)
+  wenn Output zu kurz, realistischere wps-Ranges (`_WPS_EN`/`_WPS_DE`).
+- **YouTube cookies** (`youtube_cookies_from_browser`/`youtube_cookies_file`)
+  + actionable error hints (`_ytdlp_error_hint`) gegen die "Sign in to
+  confirm you're not a bot"-Wall.
+
+### TTS: Voice-Cloning + Auto-Prep
+- **Chatterbox Auto-Sample-Prep** (`prepare_voice_sample`): User gibt
+  beliebige Aufnahme (Handy-Memo, Video) als `tts_reference_audio` an,
+  Pipeline macht ffmpeg → mono 24k, Stille raus, ~12s gekappt, normalize.
+  Cache als `<name>.clone.wav` neben dem Original; nur neu wenn Source
+  jünger. Datei die bereits `.clone.wav` heißt wird direkt genutzt.
+  GUI-Feld pre-fillt sich aus config.json; leeres GUI-Feld überschreibt
+  config NICHT mehr (User muss Pfad nicht jedes Mal eintragen).
+
+### Bild-Pipeline — komplette Überholung
+- **Per-Beat Scene-Plan** (`generate_scene_plan`): LLM plant pro
+  gesprochenem Beat `source=ai|photo|video`. Anzahl Bilder wird aus
+  Voice-Länge auto-bestimmt (`image_change_secs`, Default 3.5s; 4..14
+  cap). Continuous-Schedule: Bild startet **auf** seinem Wort, endet
+  `image_gap` (0.5s) vor dem nächsten — nahtlos verkettet aber mit
+  Gameplay-Atempausen.
+- **Cinematischer 3D-Roblox-Render-Stil** statt flacher Cartoons
+  (`_IMAGE_STYLE_SUFFIX`). Scene-Prompts an gesprochenen Beat gekoppelt
+  ("a rich Roblox avatar with crown..." statt generisch).
+- **Bild-Größe + Position als Slider** (`image_size` 0.92 Default,
+  `image_vpos` -0.03 Default = fast Mitte). Tilt optional, Default aus
+  (gerade Rechtecke).
+- **Bild-Quellen-Kaskade** (`fetch_free_photo` mit Process-wide
+  Circuit-Breaker `_DISABLED_PHOTO_SOURCES`):
+  **Pexels** (`pexels_api_key`, free, beste Qualität) →
+  **Pixabay** (`pixabay_api_key`, free) →
+  **Openverse** (kein Key) → **Wikimedia** (kein Key) → AI-Fallback.
+  Quota-Fehler (429/403/"rate limit"/"quota") disablen die Quelle für
+  den Rest des Runs (keine wiederholten slow-failing calls).
+- **Pexels Videos** (`fetch_video_from_pexels`, selber Key): Stock-B-Roll
+  in der Mitte statt Standbild. Eigene `_video_chain` (kein -loop, kein
+  Tilt/Pop, fade in/out, weißer Rand). compose_short routet pro Beat
+  zu `_image_chain` oder `_video_chain` basierend auf Suffix
+  (.mp4 = video, sonst image). Opt-in via `image_allow_videos`.
+- **Twemoji/Pillow Color-Emoji-Overlays** statt libass-mono. `get_emoji_png`
+  rendert lokal mit Segoe UI Emoji / Noto Color Emoji, kein Netz. Position
+  passt sich Caption-Position an: Caption oben → Emoji unter Caption,
+  Caption unten → Emoji **über** Caption (sonst landet's hinter dem Bild).
+  Funktioniert in jeder Orientierung (Hoch + Quer).
+
+### Audio
+- **Loudness-Normalisierung** (`normalize_loudness`, EBU R128) auf finalen
+  Mix, Default -14 LUFS (`target_lufs` slider -16..-9).
+- **SFX synchron zum Bildwechsel** (Fix: SFX-Schedule nutzt jetzt denselben
+  continuous-Flag wie der Bild-Schedule — vorher lief SFX ~1s versetzt).
+
+### Caption-Styling
+- **Position via `caption_position`** ("top"/"center"/"bottom"). Default
+  "top" (über Mittelbildern wie Referenz-Video). Long-Form forciert "bottom".
+- **Per-Wort-Karaoke** (`word_karaoke` in effects): ein Wort pro Dialogue
+  mit gelb→weiß Pop (TikTok-Style). Long-Form ausgenommen.
+- **Keyword-Pop** (`keyword_pop`): Caption-Chunk mit Trigger-Wort
+  (`_CAPTION_EMOJI_KEYWORDS`) wird kurz größer + gelb.
+- **Long-Form-Captions** (≥landscape): 8-Wort-Chunks statt 3-Wort-Pop,
+  Original-Case statt ALL-CAPS, anchored bottom.
+- Default Textfarbe `#FFFFFF`, Default Schriftgröße `80`.
+
+### Effekte (KI-Regie) — `generate_effect_plan`
+- CheckboxGroup `effects_enabled` mit 7 Optionen + `effects_ai` (Default
+  on): LLM platziert die timed Effekte (flash/shake/punch) an dramatische
+  Skript-Stellen. Globals: `color_grade`, `ken_burns` (Mittelbilder driften
+  +6% Zoom), `slide_in` (Mittelbilder fliegen rein), `keyword_pop`,
+  `word_karaoke`.
+- `_effects_final_vf` baut die ffmpeg-Filter-Chain (shake → eq+vignette
+  → drawbox-flash → punch-zoom), wird nach dem ganzen Compose appliziert.
+- Speed-Ramp/Freeze-Frame **bewusst NICHT** drin — würde die Voice/
+  Caption-Timeline desynchronisieren.
+
+### YouTube Optimizer
+- **Long-Form-aware** Metadata-Prompts (Portrait/Landscape getrennt).
+- **Chapter-Markers** auto generiert (`generate_chapters`), per
+  `_format_chapter_timestamp` mit YouTube-Regeln (erste = 0:00, ≥10s
+  Abstand, ≥3 chapters).
+- **Thumbnail-from-Video** (`generate_thumbnail_from_video`,
+  `youtube_thumb_from_video`): Pickt Action-Frame aus erster Hälfte
+  (höchste stddev), Pillow malt Hook in gelbem Impact + schwarzem Outline
+  + Bottom-Gradient — typischer Roblox-YouTube-Thumb-Stil. AI-Thumb als
+  Fallback.
+
+### GUI
+- Modernes Theme (Orange/Violett + Inter-Font), Custom-CSS Hero-Header,
+  großer Gradient-Button "🎬 Short generieren" (`elem_id=go_btn`),
+  Karten-Optik für Accordions. **Theme/CSS bei `launch()`** (Gradio 6).
+- **Output-Format-Toggle ganz oben**: Short 9:16 / Long-Video 16:9 (setzt
+  `cfg.target_w/target_h`, schaltet auto-reframe in Landscape ab,
+  forciert bottom-captions, erweitert target_duration auf 900s).
+- **Wiedergabe-Geschwindigkeit**-Slider (0.5..1.5, ffmpeg setpts+atempo
+  Post-Compose). **Image-Gap**-Slider (0..1.5s), **Bild-Größe** + **Bild-vpos**.
+- **Sprache (Skript+TTS)** Dropdown: auto/de/en. Steuert sowohl Gemini-
+  Prompt-Sprache als auch TTS-Engine (Piper bei DE, Chatterbox bei EN).
+  Bidirektionaler Safety-Override: wenn Custom-Script in anderer Sprache
+  ist als Toggle, switcht automatisch.
+- **🎣 Hook-Vorschläge-Button** (`generate_hook_variants`, n=4):
+  LLM gibt 4 Hook-Varianten, Radio → Klick füllt `hook_text` Feld.
+- **Pre-fill aus config.json** (`_config_defaults`): tts_reference_audio,
+  tts_language, tts_exaggeration, tts_cfg_weight beim GUI-Start.
+- Szenen-Auswahl in eigenes eingeklapptes Accordion.
+
+### Code-Hygiene
+- **185 grüne pytest Tests** in `tests/` (pure functions, scene_plan,
+  effects, captions, claude_cli mit subprocess-Mock, config-validate,
+  youtube_chapters, state_manager).
+- `Config.validate()` beim GUI-Start mit klaren Errors/Warnings.
+- 4 Detector-Helper offiziell public umbenannt (kein _underscore).
+
+### .exe-Build-Kit
+- `app_launcher.py` (Stdlib-only Bootstrapper, findet .venv + gui.py),
+  `bezys.spec` (PyInstaller, one-file), `build_exe.bat` (1-Klick-Build),
+  `BUILD_EXE.md`. **NICHT** die Heavy-ML-Stack einbacken — Launcher startet
+  gui.py in der .venv, exakt wie `start-gui.bat`. Build muss auf Windows
+  laufen (PyInstaller cross-compilet nicht).
+
 ## Wie du (neue Claude-Instance) anfangen solltest
 
-1. Lies `pipeline.py` und `gui.py` — die Kernlogik
-2. Lies `requirements.txt` — was an Deps schon da ist
-3. Schau `git log --oneline -20` — wo wir zuletzt waren
-4. Wenn User nochmal Multi-Clip testet und Quality wieder schlecht ist:
-   - Custom Trained Model für Moment-Picking ist die einzige echte Lösung
-   - Alternativ: Gemini 2.5 Pro statt Flash (besser, teurer)
-   - Oder: User gibt manuelle Hinweise im Prompt was er sucht
+1. **Lies diese ganze CLAUDE.md.** Sie ist die einzige Wahrheit über
+   Architektur + bisherige Entscheidungen.
+2. `git log --oneline -30` für Recent Commits.
+3. `pytest -q` muss durchlaufen (aktuell 185 grün).
+4. **Sei ehrlich.** Der User schätzt klare "geht nicht weil X" mehr als
+   optimistische Schätzungen. Wenn Code nicht testbar weil Sandbox-Limits
+   — sag's, schick Mock-Tests + bitte um echten Test-Run vom User.
+5. **Workflow-Konventionen aus Session 2:**
+   - **Jeder Feature-Commit testet** mit echtem ffmpeg/Pillow wo möglich.
+   - **GUI-Signature ↔ Inputs-List müssen 1:1 alignen** (Helper-Skript:
+     params count + Reihenfolge per name). Mismatch = stiller Bug.
+   - Pipeline-Funktionen die im GUI-Worker-Thread laufen → `on_step`
+     IMMER durchreichen (sonst sieht User keine Fehler).
+   - Bei größeren Features: **in saubere Batches commiten**, jeder
+     getestet. Ein 5-Stunden-PR der zwölf Sachen ändert ist Risiko.
+   - **Niemals** PowerShell-Beispiele dem User geben und JSON-Pfade mit
+     einzelnen Backslashes — er hat sich daran schon mal verbrannt.
+6. **Pipeline.py ist 5500+ Zeilen** und bleibt vorerst monolithisch. User
+   hat das Splitting explizit verschoben (aktiv im Feature-Bauen). Nicht
+   ohne explizite Aufforderung anfassen.
+7. Wenn neue Effekte/Effekt-Regie: routen über `_complete_text` (honors
+   Claude-CLI-Toggle), nicht direkt `_gemini_post`.
 
-## Recent commits (relevant)
+## Config.json — User hat (im echten config, NICHT example):
+- output_dir, gemini_api_key, cloudflare_*, pixabay_api_key, pexels_api_key
+- tts_reference_audio (Pfad zu seinem Voice-Sample für Cloning)
+- tts_language: "en", tts_exaggeration 0.7, tts_cfg_weight 0.3 (Viral-Preset)
+- youtube_cookies_from_browser: "edge"
+- use_claude_cli: true (manchmal an, manchmal aus je nach Run)
+- Branch: `claude/upgrade-roblox-autopilot-cdW3P`
+
+## Recent commits (Session 2)
+
+```
+55501e8 photos: circuit-breaker — disable quota-exceeded source for the run
+0fb5bae photos: add Pexels as the top-quality source (same key as videos)
+b29afd2 batches B+C+D: per-word karaoke captions + multi-hook button + frame-thumbnails
+93e7f4c batch A: stock B-roll VIDEOS in the middle slot via Pexels (free)
+eefc166 effects batch 2: punch, ken-burns, slide-in, keyword-pop
+e1bc3ee effects engine batch 1: KI-directed color-grade / flash / shake
+377b3e8 emoji: place above the caption when caption is at the bottom
+b9c936a claude CLI: auto-probe common npm-global locations when PATH lacks it
+3374d75 claude CLI: fix Windows execution + make provider choice visible
+1884d39 color caption emojis in landscape/long-form (were falling back to white)
+c3e64d2 download: surface the real yt-dlp failure + actionable cookie hint
+d715827 fix: apply theme/css at launch() (Gradio 6) + yt-dlp cookies
+ec7cde1 exe: make it a venv-bootstrapper launcher (was crashing on startup)
+b6a4605 gui: modern themed design + .exe build kit; refactor entry to main()
+2302ee0 images: 0.5s gameplay gap between continuous images (start on-beat)
+fa4c9c7 voice cloning: auto-prep any recording into a clean Chatterbox reference
+8b10ea2 fix: SFX synced to image changes + tighter caption→emoji gap
+bf3e92d images: per-beat changing visuals + free-photo source mix
+```
+
+## Recent commits (Session 1, älter)
 
 ```
 9a60c7a multi-clip: forced distribution via per-region Gemini calls
