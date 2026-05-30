@@ -3658,6 +3658,121 @@ def apply_playback_speed(video_path: Path, speed: float) -> None:
     tmp.replace(video_path)
 
 
+def _effects_final_vf(effects: dict | None, target_w: int, target_h: int) -> str:
+    """Build a comma-chain of ffmpeg video filters for the global/timed
+    effects, to append to the final composed frame. Returns "" if nothing is
+    enabled. Order: shake (geometry) → color grade → flash (on top)."""
+    if not effects:
+        return ""
+    chain: list[str] = []
+
+    # Camera shake: brief positional jitter inside the LLM-chosen windows.
+    shakes = effects.get("shakes") or []
+    if shakes:
+        win = "+".join(f"between(t\\,{s:.2f}\\,{e:.2f})" for s, e in shakes)
+        amp = 14
+        chain.append(
+            f"crop=w=in_w-{amp*3}:h=in_h-{amp*3}:"
+            f"x='{amp}+if(gt({win}\\,0)\\,{amp}*sin(t*90)\\,0)':"
+            f"y='{amp}+if(gt({win}\\,0)\\,{amp}*cos(t*78)\\,0)',"
+            f"scale={target_w}:{target_h}"
+        )
+
+    # Viral color grade: punchier contrast/saturation + gentle vignette.
+    if effects.get("color_grade"):
+        chain.append("eq=contrast=1.08:saturation=1.28:brightness=0.012")
+        chain.append("vignette=PI/4.5")
+
+    # Flash: full-frame white blips at the LLM-chosen timestamps.
+    flashes = effects.get("flashes") or []
+    if flashes:
+        win = "+".join(f"between(t\\,{ts:.2f}\\,{ts + 0.10:.2f})" for ts in flashes)
+        chain.append(
+            f"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.85:t=fill:enable='gt({win}\\,0)'"
+        )
+    return ",".join(chain)
+
+
+_EFFECT_PLAN_PROMPT = """Du bist Editor fuer virale Roblox-Shorts und entscheidest die "Effekt-Regie".
+
+Skript-Dauer: ca. {duration} Sekunden.
+Erlaubte Effekte: {allowed}
+
+Finde 3-6 dramatische Momente im Skript und ordne jedem einen Effekt zu:
+- "flash" = kurzer weisser Blitz, fuer Schock/Reveal/"ploetzlich"-Momente
+- "shake" = kurzes Wackeln, fuer Impact/Action/"krass"-Momente
+
+Fuer jeden Moment:
+- "position": Wert 0.0..1.0 (Anteil am Video, in Erzaehl-Reihenfolge)
+- "type": "flash" oder "shake" (nur aus den erlaubten Effekten!)
+
+Skript:
+\"\"\"
+{script}
+\"\"\"
+
+Antworte NUR mit gueltigem JSON-Array, z.B. [{{"position":0.15,"type":"flash"}},{{"position":0.6,"type":"shake"}}]. KEINE Markdown."""
+
+
+def generate_effect_plan(script: str, duration: float, enabled: list,
+                         cfg: "Config", ai_direction: bool = True,
+                         on_step=None) -> dict:
+    """Decide which effects go where. Global effects (color_grade) are simply
+    on/off. Timed effects (flash/shake) are placed by the LLM at dramatic
+    beats when ai_direction is on; otherwise a couple are spread evenly.
+    Returns {color_grade: bool, flashes: [ts], shakes: [(s,e)]}."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+    enabled = [str(e).lower() for e in (enabled or [])]
+    plan = {"color_grade": "color_grade" in enabled, "flashes": [], "shakes": []}
+    allowed_timed = [e for e in ("flash", "shake") if e in enabled]
+    if not allowed_timed or duration <= 0:
+        return plan
+
+    beats = []
+    have_llm = bool(getattr(cfg, "use_claude_cli", False) or cfg.gemini_api_key)
+    if ai_direction and have_llm and script.strip():
+        prompt = _EFFECT_PLAN_PROMPT.format(
+            duration=int(duration), allowed=", ".join(allowed_timed), script=script)
+        body = {"contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024,
+                                     "thinkingConfig": {"thinkingBudget": 0}}}
+        try:
+            text = _complete_text(prompt, cfg, prefer_claude=True, gemini_body=body, on_step=on_step)
+            raw = text.strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```(?:json)?\s*", "", raw); raw = re.sub(r"\s*```\s*$", "", raw)
+            s, e = raw.find("["), raw.rfind("]")
+            if s != -1 and e != -1:
+                raw = raw[s:e + 1]
+            for it in json.loads(raw):
+                if not isinstance(it, dict):
+                    continue
+                typ = str(it.get("type", "")).lower()
+                pos = float(it.get("position", -1))
+                if typ in allowed_timed and 0.0 <= pos <= 1.0:
+                    beats.append((typ, pos * duration))
+        except Exception as ex:
+            log(f"      effect-plan LLM failed ({str(ex)[:90]}) — gleichmäßige Verteilung")
+    if not beats:
+        # Fallback: spread ~1 emphasis every ~8s using the allowed types.
+        n = max(2, min(int(duration // 8), 6))
+        for i in range(n):
+            ts = (i + 0.5) * duration / n
+            beats.append((allowed_timed[i % len(allowed_timed)], ts))
+
+    for typ, ts in beats:
+        if typ == "flash":
+            plan["flashes"].append(round(ts, 2))
+        elif typ == "shake":
+            plan["shakes"].append((round(ts, 2), round(ts + 0.4, 2)))
+    log(f"      effekt-regie: {len(plan['flashes'])} flash, {len(plan['shakes'])} shake"
+        f"{', color-grade' if plan['color_grade'] else ''}")
+    return plan
+
+
 def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   cfg: Config, out_path: Path,
                   image_paths: list | None = None,
@@ -3674,7 +3789,8 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   image_size: float = 0.92,
                   image_vpos: float = -0.03,
                   emoji_events: list | None = None,
-                  caption_position: str = "bottom") -> Path:
+                  caption_position: str = "bottom",
+                  effects: dict | None = None) -> Path:
     image_paths = list(image_paths or [])
     emoji_events = list(emoji_events or [])
     if mute_source_audio:
@@ -3822,6 +3938,13 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             f"[{vlabel}][bar]overlay=x=0:y=H-{bar_h}:eof_action=pass[vbar]"
         )
         vlabel = "vbar"
+
+    # Final global/timed effects (color grade, flash, shake) on the composed
+    # frame — toggled + timed by the effect plan. No-op when disabled.
+    eff_vf = _effects_final_vf(effects, cfg.target_w, cfg.target_h)
+    if eff_vf:
+        parts.append(f"[{vlabel}]{eff_vf}[veff]")
+        vlabel = "veff"
 
     parts.append(af)
     filter_complex = ";".join(parts)
@@ -5238,6 +5361,15 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
     step("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"
+    # KI-directed effects (color grade / flash / shake). Opt-in via the
+    # effects list; the LLM places the timed ones at dramatic beats.
+    effects_enabled = job.get("effects_enabled") or []
+    effects_plan = None
+    if effects_enabled:
+        effects_plan = generate_effect_plan(
+            script if enable_voice else "", target, effects_enabled, cfg,
+            ai_direction=bool(job.get("effects_ai", True)), on_step=step,
+        )
     if state and state.is_done(Step.COMPOSE) and out.is_file():
         step(f"      resume: final video already rendered: {out.name}")
     else:
@@ -5258,6 +5390,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             image_vpos=float(job.get("image_vpos", -0.03)),
             emoji_events=emoji_png_events,
             caption_position=eff_cap_pos,
+            effects=effects_plan,
         )
         speed = float(job.get("playback_speed", 1.0))
         if abs(speed - 1.0) > 0.01:

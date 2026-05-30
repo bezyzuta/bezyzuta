@@ -112,6 +112,8 @@ def generate(
     caption_position: str,
     hook_text: str,
     hook_duration: float,
+    effects_enabled: list,
+    effects_ai: bool,
     pop_captions: bool,
     caption_emojis: bool,
     progress_bar: bool,
@@ -220,6 +222,8 @@ def generate(
             "caption_position": str(caption_position or "top"),
             "hook_text": str(hook_text or "").strip(),
             "hook_duration": float(hook_duration),
+            "effects_enabled": list(effects_enabled or []),
+            "effects_ai": bool(effects_ai),
             "pop_captions": bool(pop_captions),
             "caption_emojis": bool(caption_emojis),
             "progress_bar": bool(progress_bar),
@@ -767,6 +771,23 @@ def build_app() -> gr.Blocks:
 
         # ───────────── Engagement-Effekte ─────────────
         with gr.Accordion("✨ Engagement-Effekte", open=False):
+            gr.Markdown("**🎬 KI-Effekt-Regie** — wähle erlaubte Effekte, die KI (Claude/Gemini) "
+                        "entscheidet dann WANN/WO sie im Video kommen.")
+            effects_enabled = gr.CheckboxGroup(
+                choices=[
+                    ("🎨 Viral Color-Grade (Sättigung/Kontrast/Vignette)", "color_grade"),
+                    ("⚪ Flash (weißer Blitz bei Schock/Reveal)", "flash"),
+                    ("📳 Camera-Shake (Wackeln bei Impact-Momenten)", "shake"),
+                ],
+                value=[],
+                label="Effekte erlauben (leer = aus)",
+                info="Color-Grade gilt fürs ganze Video. Flash/Shake setzt die KI an dramatische Stellen.",
+            )
+            effects_ai = gr.Checkbox(
+                value=True,
+                label="🤖 KI bestimmt Timing (aus statt → gleichmäßig verteilt)",
+                info="An: Claude/Gemini liest das Skript und platziert Flash/Shake an den krassesten Momenten.",
+            )
             pop_captions = gr.Checkbox(
                 value=False,
                 label="🔍 Auto-Zoom auf Untertitel (TikTok-Style)",
@@ -972,6 +993,7 @@ def build_app() -> gr.Blocks:
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 caption_position,
                 hook_text, hook_duration,
+                effects_enabled, effects_ai,
                 pop_captions, caption_emojis, progress_bar, subscribe_overlay,
                 subscribe_sting_file, subscribe_sting_volume,
                 whisper_device,
