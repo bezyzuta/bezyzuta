@@ -81,6 +81,70 @@ class TestGenerateScenePlan:
         assert plan[0]["source"] == "ai"
 
 
+class _ClaudeCfg:
+    """Claude enabled + a Gemini key available for the retry path."""
+    use_claude_cli = True
+    gemini_api_key = "AIza_fake"
+    gemini_model = "gemini-2.5-flash"
+    image_style = "auto"
+
+
+class TestScenePlanGeminiRetry:
+    SCRIPT = "the richest player got a crown and everyone was shocked at the moment"
+
+    def test_empty_claude_plan_retries_with_gemini(self):
+        # Claude answers but leaves every AI motif blank → it falls back to the
+        # script text (not a real motif). Gemini then returns proper motifs.
+        claude_bad = (
+            '[{"source":"ai","motif":"","query":""},'
+            '{"source":"ai","motif":"","query":""},'
+            '{"source":"ai","motif":"","query":""}]'
+        )
+        gemini_good = (
+            '[{"source":"ai","motif":"a golden crown on a throne","query":""},'
+            '{"source":"ai","motif":"a shocked crowd of avatars","query":""},'
+            '{"source":"ai","motif":"a pile of glowing gems","query":""}]'
+        )
+        with patch("pipeline._complete_text", side_effect=[claude_bad, gemini_good]) as m:
+            plan = pipeline.generate_scene_plan(self.SCRIPT, 3, _ClaudeCfg())
+        # Both providers were consulted: Claude first, then Gemini.
+        assert m.call_count == 2
+        assert m.call_args_list[0].kwargs["prefer_claude"] is True
+        assert m.call_args_list[1].kwargs["prefer_claude"] is False
+        # The good Gemini motifs won.
+        assert any("crown on a throne" in b["prompt"] for b in plan)
+
+    def test_good_claude_plan_does_not_retry(self):
+        claude_good = (
+            '[{"source":"ai","motif":"a golden crown on a throne","query":""},'
+            '{"source":"ai","motif":"a shocked crowd of avatars","query":""},'
+            '{"source":"photo","motif":"","query":"money cash stacks"}]'
+        )
+        with patch("pipeline._complete_text", side_effect=[claude_good]) as m:
+            plan = pipeline.generate_scene_plan(self.SCRIPT, 3, _ClaudeCfg())
+        # No retry — Claude's plan was usable.
+        assert m.call_count == 1
+        assert len(plan) == 3
+
+    def test_retry_keeps_claude_when_gemini_not_better(self):
+        # Claude gives 1 good of 3 (below threshold), Gemini gives 0 good →
+        # keep Claude's result rather than the worse Gemini one.
+        claude_partial = (
+            '[{"source":"ai","motif":"a golden crown","query":""},'
+            '{"source":"ai","motif":"","query":""},'
+            '{"source":"ai","motif":"","query":""}]'
+        )
+        gemini_worse = (
+            '[{"source":"ai","motif":"","query":""},'
+            '{"source":"ai","motif":"","query":""},'
+            '{"source":"ai","motif":"","query":""}]'
+        )
+        with patch("pipeline._complete_text", side_effect=[claude_partial, gemini_worse]) as m:
+            plan = pipeline.generate_scene_plan(self.SCRIPT, 3, _ClaudeCfg())
+        assert m.call_count == 2
+        assert any("golden crown" in b["prompt"] for b in plan)
+
+
 class TestFetchFreePhoto:
     def test_openverse_success(self, tmp_path):
         search = MagicMock()

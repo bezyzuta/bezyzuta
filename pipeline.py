@@ -3493,47 +3493,77 @@ def generate_scene_plan(script: str, n: int, cfg: "Config",
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    try:
-        text = _complete_text(prompt_text, cfg, prefer_claude=True, gemini_body=body)
-    except Exception as e:
-        log(f"      scene-plan LLM failed ({str(e)[:120]}), all-AI fallback")
-        return _fallback_ai()
 
-    raw = text.strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```\s*$", "", raw)
-    s_idx, e_idx = raw.find("["), raw.rfind("]")
-    if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
-        raw = raw[s_idx:e_idx + 1]
-    try:
-        plan = json.loads(raw)
-        assert isinstance(plan, list)
-    except Exception as e:
-        log(f"      scene-plan parse failed ({str(e)[:100]}), all-AI fallback")
-        return _fallback_ai()
+    def _attempt(prefer_claude: bool) -> tuple[list[dict], int] | None:
+        """Run the planner once and return (normalized_beats, good_count), or
+        None on a hard failure (LLM error / unparseable). A beat is "good" when
+        it carries real content: a photo/video query, or an AI motif that isn't
+        just the script text echoed back. good_count lets the caller decide
+        whether the plan is worth keeping or should be retried with Gemini."""
+        try:
+            text = _complete_text(prompt_text, cfg, prefer_claude=prefer_claude,
+                                  gemini_body=body, on_step=on_step)
+        except Exception as e:
+            log(f"      scene-plan LLM failed ({str(e)[:120]})")
+            return None
+        raw = text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```\s*$", "", raw)
+        s_idx, e_idx = raw.find("["), raw.rfind("]")
+        if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+            raw = raw[s_idx:e_idx + 1]
+        try:
+            plan = json.loads(raw)
+            assert isinstance(plan, list)
+        except Exception as e:
+            log(f"      scene-plan parse failed ({str(e)[:100]})")
+            return None
 
-    out: list[dict] = []
-    for beat in plan:
-        if not isinstance(beat, dict):
-            continue
-        source = str(beat.get("source", "ai")).lower()
-        if source not in ("ai", "photo", "video"):
-            source = "ai"
-        if source == "video" and not allow_videos:
-            source = "photo" if allow_photos else "ai"
-        if source == "photo" and not allow_photos:
-            source = "ai"
-        motif = str(beat.get("motif", "")).strip()
-        query = str(beat.get("query", "")).strip()
-        if source in ("photo", "video") and query:
-            out.append({"source": source, "motif": "", "query": query, "prompt": ""})
-        else:
-            # AI beat (or photo/video with no query → treat as AI).
-            full = _finalize_scene_prompt(motif or script[:120], cfg)
-            out.append({"source": "ai", "motif": motif, "query": "", "prompt": full})
-    if not out:
+        beats: list[dict] = []
+        good = 0
+        for beat in plan:
+            if not isinstance(beat, dict):
+                continue
+            source = str(beat.get("source", "ai")).lower()
+            if source not in ("ai", "photo", "video"):
+                source = "ai"
+            if source == "video" and not allow_videos:
+                source = "photo" if allow_photos else "ai"
+            if source == "photo" and not allow_photos:
+                source = "ai"
+            motif = str(beat.get("motif", "")).strip()
+            query = str(beat.get("query", "")).strip()
+            if source in ("photo", "video") and query:
+                good += 1
+                beats.append({"source": source, "motif": "", "query": query, "prompt": ""})
+            else:
+                # AI beat (or photo/video with no query → treat as AI). A motif
+                # is only "good" if the LLM actually wrote one — an empty motif
+                # falls back to the script text, which is the symptom we're
+                # guarding against.
+                if motif and motif[:60].lower() not in script.lower():
+                    good += 1
+                full = _finalize_scene_prompt(motif or script[:120], cfg)
+                beats.append({"source": "ai", "motif": motif, "query": "", "prompt": full})
+        return beats, good
+
+    # Primary attempt (Claude first if enabled). If the plan comes back mostly
+    # empty — the model answered but didn't actually fill in motifs/queries —
+    # and Claude was the one used, explicitly retry with Gemini before giving
+    # up to the all-AI fallback. Threshold: at least 60% of beats must be good.
+    used_claude = bool(getattr(cfg, "use_claude_cli", False))
+    result = _attempt(prefer_claude=True)
+    min_good = max(1, round(n * 0.6))
+    if result is not None and result[1] < min_good and used_claude and cfg.gemini_api_key:
+        log(f"      scene-plan: only {result[1]}/{n} beats usable from Claude — "
+            f"retrying with Gemini")
+        gem = _attempt(prefer_claude=False)
+        if gem is not None and gem[1] >= result[1]:
+            result = gem
+    if result is None or not result[0]:
         return _fallback_ai()
+    out = result[0]
     # pad/trim to n
     while len(out) < n:
         out.append({"source": "ai", "motif": "", "query": "",
