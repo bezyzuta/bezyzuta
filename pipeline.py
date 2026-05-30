@@ -761,6 +761,73 @@ _SCRIPT_TEMPLATES = [
 ]
 
 
+_HOOK_PROMPT_DE = """Schreibe {n} VERSCHIEDENE kurze YouTube-Short Hooks (Aufmacher-Text fuer die ersten 2-3 Sekunden) zum Thema "{topic}".
+
+Jeder Hook MUSS:
+- Maximal 8 Woerter / 50 Zeichen sein
+- Sofort Neugier oder Schock ausloesen
+- KEIN Punkt am Ende, optional ! oder ?
+- Komplett anderer Stil zueinander (POV, Frage, Behauptung, Warnung, "99%"-Stat)
+
+Antworte NUR mit einem JSON-Array von {n} Strings, sonst nichts. Beispiel: ["Hook 1","Hook 2","Hook 3"]"""
+
+_HOOK_PROMPT_EN = """Write {n} DIFFERENT short YouTube-Short hooks (the big text for the first 2-3 seconds) about "{topic}".
+
+Each hook MUST:
+- Be max 8 words / 50 characters
+- Trigger instant curiosity or shock
+- NO trailing period, optional ! or ?
+- Completely different style from each other (POV, question, claim, warning, "99%"-stat)
+
+Reply with ONLY a JSON array of {n} strings, nothing else. Example: ["Hook 1","Hook 2","Hook 3"]"""
+
+
+def generate_hook_variants(topic: str, cfg: "Config", n: int = 4,
+                           language: str = "de", on_step=None) -> list[str]:
+    """Ask the LLM for n short hook variants — the user picks the best one in
+    the GUI. Returns a list of strings (may be shorter than n if the LLM
+    delivers fewer). Routes through _complete_text so the Claude-CLI toggle
+    is honored. On any failure returns a few hand-rolled fallbacks so the
+    GUI button never silently does nothing."""
+    n = max(1, min(int(n), 8))
+    topic = (topic or "").strip() or "ein krasser Roblox Moment"
+    template = _HOOK_PROMPT_EN if (language or "de").lower() == "en" else _HOOK_PROMPT_DE
+    prompt = template.format(n=n, topic=topic)
+    body = {"contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.95, "maxOutputTokens": 512,
+                                 "thinkingConfig": {"thinkingBudget": 0}}}
+    try:
+        text = _complete_text(prompt, cfg, prefer_claude=True, gemini_body=body, on_step=on_step)
+    except Exception:
+        text = ""
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```\s*$", "", raw)
+    s, e = raw.find("["), raw.rfind("]")
+    if s != -1 and e != -1:
+        raw = raw[s:e + 1]
+    hooks: list[str] = []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            for h in parsed:
+                h = str(h).strip().rstrip(".").strip('"').strip("'")
+                if 2 <= len(h) <= 80:
+                    hooks.append(h)
+    except Exception:
+        pass
+    if not hooks:
+        # safe last-resort fallbacks so the button never dies on the user
+        is_en = (language or "de").lower() == "en"
+        fallbacks_de = [f"99% schaffen das nicht", f"POV: {topic}", f"Achtung! Das ist Wahnsinn",
+                       f"Du wirst es nicht glauben"]
+        fallbacks_en = [f"99% can't do this", f"POV: {topic}", f"Wait... watch this",
+                       f"You won't believe it"]
+        hooks = (fallbacks_en if is_en else fallbacks_de)[:n]
+    return hooks[:n]
+
+
 def fallback_template_script(topic: str) -> str:
     return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein krasser Roblox Moment")
 
@@ -2935,7 +3002,8 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               caption_emojis: bool = False,
               caption_position: str = "bottom",
               emoji_overlay: bool = False,
-              keyword_pop: bool = False) -> Path:
+              keyword_pop: bool = False,
+              word_karaoke: bool = False) -> Path:
     """Bold karaoke captions; styling exposed for the GUI.
     Optional hook_text shown big at the top for the first hook_duration seconds.
     pop_captions: every chunk pops in with a scale animation (TikTok-style).
@@ -3013,7 +3081,23 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     # Forced off in long-form — a scale-pop every 8 words for 10 minutes is
     # nauseating; long-form just fades.
     pop_tag = "\\fscx125\\fscy125\\t(0,150,\\fscx100\\fscy100)" if (pop_captions and not long_form) else ""
-    if enable_captions:
+
+    # TikTok per-word karaoke: instead of 3-word chunks shown together,
+    # emit ONE dialogue per word with a punchy pop+yellow-flash. Visually
+    # this is the modern "single word reveals to the beat" style. Only for
+    # short-form portrait (long-form keeps its 8-word readable lines).
+    if enable_captions and word_karaoke and not long_form:
+        word_pop = "\\fscx150\\fscy150\\c&H00FFFF&\\t(0,160,\\fscx100\\fscy100\\c&HFFFFFF&)"
+        for w in words:
+            ws, we, wt = w[0], w[1], (w[2] or "").strip()
+            if not wt:
+                continue
+            wt = wt.replace("{", "(").replace("}", ")").upper()
+            lines.append(
+                f"Dialogue: 0,{_ass_time(ws)},{_ass_time(we)},Pop,,0,0,0,,"
+                f"{{{word_pop}\\fad(40,40)}}{wt}"
+            )
+    elif enable_captions:
         for ch in chunks:
             start, end = ch[0][0], ch[-1][1]
             raw = " ".join(w[2] for w in ch).replace("{", "(").replace("}", ")")
@@ -5260,6 +5344,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             caption_position=cap_pos,
             emoji_overlay=emoji_overlay_active,
             keyword_pop=("keyword_pop" in [str(e).lower() for e in (job.get("effects_enabled") or [])]),
+            word_karaoke=("word_karaoke" in [str(e).lower() for e in (job.get("effects_enabled") or [])]),
         )
         if state:
             state.mark_done(Step.CAPTIONS, {"ass_path": ass})
@@ -5611,7 +5696,23 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 )
                 if bool(job.get("youtube_thumbnail", True)):
                     thumb_out = work / f"{slug}_thumb.png"
-                    _yt_opt.generate_thumbnail(meta, thumb_out, cfg, on_step=step)
+                    # Prefer a frame-from-video thumb (actual content, with
+                    # the hook painted on) over a generic AI render; fall
+                    # back to the AI thumb if the frame extractor fails.
+                    use_frame_thumb = bool(job.get("youtube_thumb_from_video", True))
+                    hook = str(job.get("hook_text", "")).strip() or meta.title
+                    made = None
+                    if use_frame_thumb:
+                        try:
+                            made = _yt_opt.generate_thumbnail_from_video(
+                                out, hook, thumb_out, on_step=step,
+                            )
+                        except Exception as e:
+                            step(f"      thumb-from-video failed ({str(e)[:120]}), AI fallback")
+                    if not made or not Path(thumb_out).is_file():
+                        _yt_opt.generate_thumbnail(meta, thumb_out, cfg, on_step=step)
+                    if Path(thumb_out).is_file():
+                        meta.thumbnail_path = str(thumb_out)
                 json_path, txt_path = _yt_opt.write_metadata_sidecars(meta, out)
                 step(f"      youtube: {json_path.name} + {txt_path.name}")
                 if state:

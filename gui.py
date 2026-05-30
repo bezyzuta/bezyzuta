@@ -129,6 +129,7 @@ def generate(
     log_level: str,
     youtube_metadata: bool,
     youtube_thumbnail: bool,
+    youtube_thumb_from_video: bool,
     youtube_lang: str,
 ):
     log = ""
@@ -204,6 +205,7 @@ def generate(
             "log_level": str(log_level or "INFO"),
             "youtube_metadata": bool(youtube_metadata),
             "youtube_thumbnail": bool(youtube_thumbnail),
+            "youtube_thumb_from_video": bool(youtube_thumb_from_video),
             "youtube_lang": str(youtube_lang or "auto"),
             "enable_voice": bool(enable_voice),
             "image_count": int(image_count),
@@ -697,8 +699,30 @@ def build_app() -> gr.Blocks:
                 label="Hook-Text",
                 lines=2,
                 placeholder="z.B. POV: Du wirst nicht glauben was passiert ist...",
-                info="Erscheint groß und mittig-oben für die ersten paar Sekunden. Leer = kein Hook. Mehrere Zeilen für Zeilenumbruch.",
+                info=("Erscheint groß und mittig-oben für die ersten paar Sekunden. Leer = kein Hook. "
+                      "Tipp: Klick '🎣 Hooks vorschlagen' für 4 KI-Varianten zum Auswählen."),
             )
+            with gr.Row():
+                hook_generate_btn = gr.Button("🎣 Hooks vorschlagen", scale=1)
+                hook_picker = gr.Radio(choices=[], value=None,
+                                       label="Vorschläge (Klick zum Übernehmen)",
+                                       scale=3, interactive=True)
+
+            def _gen_hooks(topic_v, lang_v, cfg_path_v, use_claude_v, claude_model_v):
+                try:
+                    cfg = Config.load(Path(cfg_path_v))
+                    cfg.use_claude_cli = bool(use_claude_v)
+                    if claude_model_v is not None:
+                        cfg.claude_cli_model = str(claude_model_v).strip()
+                    lang = (lang_v or "auto").lower()
+                    if lang not in ("de", "en"):
+                        lang = "de"
+                    from pipeline import generate_hook_variants
+                    hooks = generate_hook_variants(topic_v or "", cfg, n=4, language=lang)
+                except Exception as e:
+                    hooks = [f"(Fehler: {str(e)[:60]})"]
+                return gr.update(choices=hooks, value=None)
+
             hook_duration = gr.Slider(
                 1.0, 6.0, value=3.0, step=0.5,
                 label="Anzeigedauer (Sekunden)",
@@ -792,6 +816,7 @@ def build_app() -> gr.Blocks:
                     ("🔎 Ken-Burns (Mittel-Bilder zoomen langsam)", "ken_burns"),
                     ("➡️ Slide-In (Bilder fliegen von der Seite rein)", "slide_in"),
                     ("💬 Keyword-Pop (Untertitel-Wort flasht gelb bei Schlüsselwort)", "keyword_pop"),
+                    ("🎤 Per-Wort-Karaoke (TikTok-Style: ein Wort nach dem anderen, mit Pop)", "word_karaoke"),
                 ],
                 value=[],
                 label="Effekte erlauben (leer = aus)",
@@ -937,6 +962,13 @@ def build_app() -> gr.Blocks:
                     label="🖼️ Thumbnail-Bild dazu generieren",
                     info="Erzeugt zusätzlich {slug}_thumb.png via Cloudflare Flux / Pollinations.",
                 )
+                youtube_thumb_from_video = gr.Checkbox(
+                    value=True,
+                    label="🎬 Thumbnail aus dem Video (Action-Frame + Hook-Text)",
+                    info=("Empfohlen: nimmt einen Action-Frame aus deinem fertigen Video und "
+                          "schreibt den Hook in großem gelben Impact-Text drüber — typischer "
+                          "YouTube-Roblox-Thumb-Stil. Aus = klassisches KI-Thumbnail."),
+                )
                 youtube_lang = gr.Dropdown(
                     choices=[("Auto (Skript-Sprache übernehmen)", "auto"),
                              ("Deutsch", "de"), ("Englisch", "en")],
@@ -986,6 +1018,15 @@ def build_app() -> gr.Blocks:
         sfx_dir.change(_refresh_tracks, inputs=[sfx_dir], outputs=[sfx_track])
         sfx_refresh.click(_refresh_tracks, inputs=[sfx_dir], outputs=[sfx_track])
 
+        hook_generate_btn.click(
+            _gen_hooks,
+            inputs=[topic, tts_language, config_path, use_claude_cli, claude_cli_model],
+            outputs=[hook_picker],
+        )
+        # Picking a hook copies it into the hook_text field.
+        hook_picker.change(lambda h: gr.update(value=h or ""),
+                           inputs=[hook_picker], outputs=[hook_text])
+
         generate_btn.click(
             generate,
             inputs=[
@@ -1015,7 +1056,7 @@ def build_app() -> gr.Blocks:
                 multiclip_enabled, multiclip_count,
                 batch_count,
                 resume_enabled, log_level,
-                youtube_metadata, youtube_thumbnail, youtube_lang,
+                youtube_metadata, youtube_thumbnail, youtube_thumb_from_video, youtube_lang,
             ],
             outputs=[status_log, video_out],
         )

@@ -541,6 +541,144 @@ def generate_youtube_metadata(
 # ────────────────── Thumbnail generation ──────────────────
 
 
+def generate_thumbnail_from_video(
+    video_path: Path,
+    hook_text: str,
+    out_path: Path,
+    *,
+    on_step: Callable[[str], None] | None = None,
+) -> Path | None:
+    """Build a YouTube thumbnail from the FINISHED video: pick a strong
+    frame from the first half (action / motion), then paint `hook_text` in
+    big yellow with a thick black outline on top — exactly the typical
+    Roblox-YouTube thumbnail style. Falls back gracefully if Pillow or
+    ffmpeg are missing.
+
+    Picks the frame with the highest pixel-variance (proxy for "interesting
+    content, not a blank fade") among 8 candidates between 5%-55% of the
+    video length, so the thumbnail isn't a black intro frame and isn't from
+    the subscribe-banner outro.
+    """
+    def log(msg: str) -> None:
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageStat
+    except Exception as e:
+        log(f"      thumb-from-video: Pillow missing ({e})")
+        return None
+
+    import subprocess as _sp, tempfile, shutil
+    dur_proc = _sp.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(video_path)],
+        capture_output=True, text=True,
+    )
+    try:
+        dur = float((dur_proc.stdout or "0").strip())
+    except ValueError:
+        dur = 0.0
+    if dur < 1.0:
+        log("      thumb-from-video: video too short / unreadable duration")
+        return None
+
+    tmp = Path(tempfile.mkdtemp(prefix="thumb_"))
+    try:
+        candidates: list[tuple[float, Path]] = []
+        for i in range(8):
+            t = dur * (0.05 + 0.5 * (i / 7.0))
+            fp = tmp / f"f{i}.jpg"
+            r = _sp.run(["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{t:.2f}",
+                         "-i", str(video_path), "-frames:v", "1", "-q:v", "3",
+                         str(fp)], capture_output=True)
+            if r.returncode == 0 and fp.is_file() and fp.stat().st_size > 1024:
+                try:
+                    stat = ImageStat.Stat(Image.open(fp).convert("L"))
+                    candidates.append((stat.stddev[0], fp))
+                except Exception:
+                    pass
+        if not candidates:
+            log("      thumb-from-video: no usable frames")
+            return None
+        # Highest stddev = most visual variety. Beats picking a flat frame.
+        candidates.sort(key=lambda x: -x[0])
+        best = candidates[0][1]
+
+        im = Image.open(best).convert("RGB")
+        W, H = im.size
+        # Slight punch: contrast + saturation boost, like the viral grading.
+        from PIL import ImageEnhance
+        im = ImageEnhance.Contrast(im).enhance(1.12)
+        im = ImageEnhance.Color(im).enhance(1.25)
+        # Add a subtle dark bottom gradient so text stays readable on busy
+        # backgrounds — drawn as a stack of overlay strips.
+        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        odraw = ImageDraw.Draw(ov)
+        for k in range(int(H * 0.45), H):
+            a = int(180 * ((k - H * 0.45) / (H * 0.55)))
+            odraw.line([(0, k), (W, k)], fill=(0, 0, 0, min(200, a)))
+        im = Image.alpha_composite(im.convert("RGBA"), ov).convert("RGB")
+
+        # Find a system font; fall back to default (small) if none.
+        font_candidates = [
+            r"C:\Windows\Fonts\impact.ttf",
+            r"C:\Windows\Fonts\arialbd.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Impact.ttf",
+        ]
+        font_path = next((p for p in font_candidates if Path(p).is_file()), None)
+        text = (hook_text or "WATCH THIS").strip().upper()
+        # Wrap to ~2 lines max so very long hooks don't run off the edge.
+        words = text.split()
+        max_chars = max(8, int(W / 50))
+        lines: list[str] = []
+        cur = ""
+        for w in words:
+            if len(cur) + 1 + len(w) <= max_chars:
+                cur = (cur + " " + w).strip()
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+            if len(lines) == 2:
+                break
+        if cur and len(lines) < 2:
+            lines.append(cur)
+        # Pick the biggest font size that fits.
+        draw = ImageDraw.Draw(im)
+        size = max(40, int(W * 0.18))
+        while size > 20:
+            try:
+                font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+            except Exception:
+                font = ImageFont.load_default()
+            widths = [draw.textlength(l, font=font) for l in lines]
+            if max(widths) <= W * 0.92:
+                break
+            size -= 6
+        # Position toward the bottom-center, with breathing room.
+        line_h = int(size * 1.15)
+        total_h = line_h * len(lines)
+        y0 = int(H * 0.7) - total_h // 2
+        stroke_w = max(6, int(size * 0.10))
+        for i, ln in enumerate(lines):
+            tw = draw.textlength(ln, font=font)
+            x = (W - tw) // 2
+            y = y0 + i * line_h
+            draw.text((x, y), ln, font=font, fill=(255, 230, 0),
+                      stroke_width=stroke_w, stroke_fill=(0, 0, 0))
+
+        im.save(out_path, quality=92)
+        log(f"      thumb-from-video: {out_path.name} (frame stddev={candidates[0][0]:.0f})")
+        return out_path
+    finally:
+        try: shutil.rmtree(tmp, ignore_errors=True)
+        except Exception: pass
+
+
 def generate_thumbnail(
     meta: YouTubeMetadata,
     out_path: Path,
