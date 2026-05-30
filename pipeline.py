@@ -812,21 +812,26 @@ def fetch_image_from_grok_cli(prompt: str, out_path: Path, cfg: "Config", *,
     before = _grok_image_snapshot()
     # One image, square (matches the photo-card / overlay footprint). The
     # explicit instructions keep the agent from asking a follow-up question
-    # or generating several variations.
+    # or generating several variations. Single line — it's passed as an argv
+    # value, and image prompts are short (no Windows command-length concern).
     ask = (
-        "imagine " + prompt.strip() + "\n\n"
-        "Generate exactly ONE image in 1:1 square format. Produce the image "
-        "directly — do not ask any questions, do not generate variations."
+        "imagine " + " ".join(prompt.split())
+        + " — generate exactly ONE image in 1:1 square format, produce it "
+        "directly, do not ask questions, do not generate variations."
     )
-    cmd = [resolved, "-p"]
+    # Grok Build's `-p` (alias --single) takes the prompt as its VALUE, not on
+    # stdin (unlike `claude -p`). Any extra flags go before it so the prompt
+    # stays adjacent to -p.
     extra = (getattr(cfg, "grok_cli_extra_args", "") or "").strip()
+    extra_args = []
     if extra:
         import shlex
-        cmd += shlex.split(extra)
+        extra_args = shlex.split(extra)
+    cmd = [resolved] + extra_args + ["-p", ask]
 
     try:
         proc = subprocess.run(
-            cmd, input=ask, capture_output=True, text=True, timeout=timeout,
+            cmd, input="", capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"grok CLI timed out after {timeout}s") from e

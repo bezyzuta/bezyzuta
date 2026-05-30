@@ -105,7 +105,9 @@ class TestFetchImageFromGrokCli:
             with pytest.raises(RuntimeError, match="timed out"):
                 pipeline.fetch_image_from_grok_cli("a cat", tmp_path / "out.png", _Cfg())
 
-    def test_prompt_via_stdin_not_argv(self, tmp_path):
+    def test_prompt_passed_as_p_value(self, tmp_path):
+        """Grok Build's -p (alias --single) takes the prompt as its argv VALUE,
+        not on stdin — so the prompt must be the element right after -p."""
         home = tmp_path / "home"
         out = tmp_path / "out.png"
         side_effect, _img = _grok_run_that_writes(home)
@@ -116,8 +118,11 @@ class TestFetchImageFromGrokCli:
         cmd = run_mock.call_args[0][0]
         kwargs = run_mock.call_args[1]
         assert "-p" in cmd
-        assert "a royal roblox avatar" in kwargs.get("input", "")
-        assert all("a royal roblox avatar" not in str(a) for a in cmd)
+        # prompt is the value immediately after -p, and includes our text
+        p_val = cmd[cmd.index("-p") + 1]
+        assert "a royal roblox avatar" in p_val
+        # nothing shoved onto stdin
+        assert kwargs.get("input", "") == ""
 
     def test_extra_args_are_appended(self, tmp_path):
         home = tmp_path / "home"
