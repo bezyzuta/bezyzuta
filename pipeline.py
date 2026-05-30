@@ -116,6 +116,16 @@ class Config:
     use_claude_cli: bool
     claude_cli_model: str
     claude_cli_path: str
+    # Local Grok Build CLI as an IMAGE provider (the AI-render path). Uses the
+    # logged-in `grok` CLI + SuperGrok subscription auth — no API key, no per-
+    # image cost. Opt-in (slower than an API call, counts against subscription
+    # limits). When on, it's tried FIRST in the AI-render cascade, with
+    # Cloudflare Flux / Pollinations behind it. grok_cli_extra_args lets you
+    # tweak the headless invocation (e.g. an auto-approve flag) without a code
+    # change.
+    use_grok_cli: bool
+    grok_cli_path: str
+    grok_cli_extra_args: str
     # Optional override for the color-emoji font used to render caption
     # emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto on Linux).
     emoji_font_path: str
@@ -159,6 +169,9 @@ class Config:
             use_claude_cli=bool(data.get("use_claude_cli", False)),
             claude_cli_model=str(data.get("claude_cli_model", "")),
             claude_cli_path=str(data.get("claude_cli_path", "claude")),
+            use_grok_cli=bool(data.get("use_grok_cli", False)),
+            grok_cli_path=str(data.get("grok_cli_path", "grok")),
+            grok_cli_extra_args=str(data.get("grok_cli_extra_args", "")),
             emoji_font_path=str(data.get("emoji_font_path", "")),
             pixabay_api_key=data.get("pixabay_api_key") or os.environ.get("PIXABAY_API_KEY", ""),
             youtube_cookies_from_browser=str(data.get("youtube_cookies_from_browser", "")).strip(),
@@ -582,6 +595,9 @@ def _gemini_post(url: str, params: dict, body: dict, retries: int = 4,
 # to run a .cmd, the bare name fails).
 _CLAUDE_CLI_PATH: str | None = None
 
+# Same cache for the Grok Build CLI (image provider). None=untested.
+_GROK_CLI_PATH: str | None = None
+
 
 def _resolve_claude_cli(claude_path: str = "claude") -> str:
     """Return the absolute path to the claude executable, or "" if not found.
@@ -703,6 +719,142 @@ def claude_cli_complete(prompt: str, cfg: "Config", *, timeout: int = 180,
         # stdout was raw text, not JSON — use it directly.
         return out
     return out or None
+
+
+def _resolve_grok_cli(grok_path: str = "grok") -> str:
+    """Return the absolute path to the `grok` (Grok Build) executable, or ""
+    if not found. Cached. Mirrors _resolve_claude_cli — on Windows shutil.which
+    resolves to a .cmd/.exe which subprocess needs in full."""
+    global _GROK_CLI_PATH
+    if _GROK_CLI_PATH is not None:
+        return _GROK_CLI_PATH
+    import shutil
+    if grok_path and Path(grok_path).expanduser().is_file():
+        _GROK_CLI_PATH = str(Path(grok_path).expanduser())
+        return _GROK_CLI_PATH
+    found = shutil.which(grok_path) or shutil.which("grok")
+    if found:
+        _GROK_CLI_PATH = found
+        return _GROK_CLI_PATH
+    home = Path.home()
+    appdata = os.environ.get("APPDATA", str(home / "AppData" / "Roaming"))
+    candidates = [
+        Path(appdata) / "npm" / "grok.cmd",
+        Path(appdata) / "npm" / "grok.exe",
+        Path(appdata) / "npm" / "grok",
+        home / ".grok" / "bin" / "grok.exe",
+        home / ".grok" / "bin" / "grok",
+        home / ".local" / "bin" / "grok",
+        Path("/usr/local/bin/grok"),
+        Path("/opt/homebrew/bin/grok"),
+    ]
+    for c in candidates:
+        try:
+            if c.is_file():
+                _GROK_CLI_PATH = str(c)
+                return _GROK_CLI_PATH
+        except Exception:
+            continue
+    _GROK_CLI_PATH = ""
+    return _GROK_CLI_PATH
+
+
+# Image extensions Grok Build writes into its session images/ dir.
+_GROK_IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _grok_image_snapshot() -> dict[str, float]:
+    """Map of {image_path: mtime} for every image currently under ~/.grok.
+    Used to detect which file a `grok` run just produced — Grok Build saves
+    generated images into its own session dir (…/.grok/sessions/<cwd>/<uuid>/
+    images/N.jpg) and only announces the path in free-text, so we diff the
+    tree instead of parsing its (localized) prose."""
+    base = Path.home() / ".grok"
+    out: dict[str, float] = {}
+    if not base.is_dir():
+        return out
+    try:
+        for p in base.rglob("*"):
+            if p.suffix.lower() in _GROK_IMG_EXTS and p.is_file():
+                try:
+                    out[str(p)] = p.stat().st_mtime
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
+def fetch_image_from_grok_cli(prompt: str, out_path: Path, cfg: "Config", *,
+                              timeout: int = 240, on_step=None) -> Path:
+    """Generate one image via the local Grok Build CLI (`grok -p`), tapping the
+    user's SuperGrok subscription — no API key, no per-image billing. Writes the
+    result to `out_path` (square PNG) and returns it. Raises on ANY failure so
+    the caller falls back to Cloudflare / Pollinations.
+
+    Grok Build saves generated images into its own session dir and names the
+    path only in prose, so we snapshot ~/.grok before/after and pick up the new
+    file rather than dictating a path. Slower than an API call (full agent
+    spin-up, ~15s observed) and counts against the subscription's limits, so
+    it's opt-in via cfg.use_grok_cli. Local/personal use only — a product
+    backend would use the xAI image API instead."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+
+    resolved = _resolve_grok_cli(getattr(cfg, "grok_cli_path", "") or "grok")
+    if not resolved:
+        raise RuntimeError(
+            "grok CLI not found on PATH (Grok Build installed? `grok login` "
+            "done? set grok_cli_path in config.json)")
+
+    before = _grok_image_snapshot()
+    # One image, square (matches the photo-card / overlay footprint). The
+    # explicit instructions keep the agent from asking a follow-up question
+    # or generating several variations.
+    ask = (
+        "imagine " + prompt.strip() + "\n\n"
+        "Generate exactly ONE image in 1:1 square format. Produce the image "
+        "directly — do not ask any questions, do not generate variations."
+    )
+    cmd = [resolved, "-p"]
+    extra = (getattr(cfg, "grok_cli_extra_args", "") or "").strip()
+    if extra:
+        import shlex
+        cmd += shlex.split(extra)
+
+    try:
+        proc = subprocess.run(
+            cmd, input=ask, capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"grok CLI timed out after {timeout}s") from e
+    except Exception as e:
+        raise RuntimeError(f"grok CLI failed to start: {str(e)[:160]}") from e
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"grok CLI exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
+
+    after = _grok_image_snapshot()
+    # New files, or ones whose mtime advanced since the snapshot.
+    fresh = [Path(p) for p, m in after.items()
+             if p not in before or m > before.get(p, 0.0)]
+    if not fresh:
+        raise RuntimeError("grok CLI produced no new image under ~/.grok")
+    newest = max(fresh, key=lambda p: p.stat().st_mtime)
+    log(f"      grok image → {newest.name}")
+
+    # Normalize to a square PNG at out_path (same shape as photo cards). Reuses
+    # the shared center-crop helper, which also validates the bytes are a real
+    # image — a half-written file raises and we fall back.
+    try:
+        data = newest.read_bytes()
+    except OSError as e:
+        raise RuntimeError(f"grok image unreadable: {str(e)[:120]}") from e
+    if not _save_square_image(data, out_path):
+        raise RuntimeError("grok image could not be decoded")
+    return out_path
 
 
 def _complete_text(prompt: str, cfg: "Config", *, prefer_claude: bool,
@@ -5483,6 +5635,11 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
             consecutive_failures = 0
             cloudflare_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
+            grok_ready = bool(getattr(cfg, "use_grok_cli", False)
+                              and _resolve_grok_cli(getattr(cfg, "grok_cli_path", "") or "grok"))
+            if getattr(cfg, "use_grok_cli", False) and not grok_ready:
+                step("      WARN: use_grok_cli on, but `grok` CLI not found — "
+                     "using Cloudflare/Pollinations for AI images")
             beat_dur = float(job.get("image_change_secs", 3.5))
             for i, beat in enumerate(plan, 1):
                 source = beat.get("source", "ai")
@@ -5517,6 +5674,17 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                     except Exception as e:
                         primary_err = f"FreePhoto: {e}"
                         step(f"      free-photo miss ({str(e)[:120]}), AI render instead")
+
+                # AI render: Grok Build CLI first (subscription, opt-in), then
+                # Cloudflare Flux, then Pollinations.
+                if not ok and grok_ready:
+                    try:
+                        fetch_image_from_grok_cli(prompt, target_path, cfg, on_step=step)
+                        image_paths.append(target_path)
+                        ok = True
+                    except Exception as e:
+                        primary_err = f"{primary_err}; Grok: {e}" if primary_err else f"Grok: {e}"
+                        step(f"      Grok CLI miss ({str(e)[:120]}), falling back to Cloudflare/Pollinations")
 
                 if not ok and cloudflare_ready:
                     try:
