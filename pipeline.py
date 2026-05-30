@@ -3882,7 +3882,13 @@ def _video_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
     return (
         f"[{idx_input}:v]"
         f"trim=duration={image_dur:.2f},setpts=PTS-STARTPTS,"
-        f"scale=w={overlay_w}:h=-1:flags=bicubic,"
+        # Center-crop to a square, then scale to overlay_w x overlay_w so a
+        # B-roll clip occupies the SAME footprint as a photo card (photos are
+        # squared by _save_square_image). Without this, a portrait 9:16 Pexels
+        # clip scaled to overlay_w width would be ~1.78x as tall and cover the
+        # whole gameplay.
+        f"crop=w='min(iw\\,ih)':h='min(iw\\,ih)',"
+        f"scale=w={overlay_w}:h={overlay_w}:flags=bicubic,"
         f"format=yuva420p,pad=iw+18:ih+18:9:9:color=white@0.95,"
         f"fade=t=in:st=0:d={fade_in}:alpha=1,"
         f"fade=t=out:st={fade_out_start:.2f}:d={fade_out}:alpha=1,"
