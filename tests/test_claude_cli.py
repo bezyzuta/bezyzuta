@@ -24,10 +24,10 @@ class _Cfg:
 
 @pytest.fixture(autouse=True)
 def _reset_cli_cache():
-    """The availability check is module-cached; reset between tests."""
-    pipeline._CLAUDE_CLI_OK = None
+    """The resolved-path check is module-cached; reset between tests."""
+    pipeline._CLAUDE_CLI_PATH = None
     yield
-    pipeline._CLAUDE_CLI_OK = None
+    pipeline._CLAUDE_CLI_PATH = None
 
 
 def _completed(stdout="", returncode=0, stderr=""):

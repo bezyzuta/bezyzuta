@@ -526,7 +526,7 @@ def _clean_user_script(text: str) -> str:
 
 
 def _gemini_continuation(previous: str, cfg: "Config", add_words: int,
-                         language: str = "de") -> str:
+                         language: str = "de", on_step=None) -> str:
     """Ask Gemini for a chunk that extends `previous` by ~add_words words.
     Returns just the new text; caller concatenates."""
     template = CONTINUATION_PROMPT_EN if (language or "de").lower() == "en" else CONTINUATION_PROMPT_DE
@@ -539,7 +539,7 @@ def _gemini_continuation(previous: str, cfg: "Config", add_words: int,
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    text = _complete_text(prompt_text, cfg, prefer_claude=True, gemini_body=body)
+    text = _complete_text(prompt_text, cfg, prefer_claude=True, gemini_body=body, on_step=on_step)
     if not text:
         raise RuntimeError("continuation returned empty text")
     return text
@@ -572,19 +572,27 @@ def _gemini_post(url: str, params: dict, body: dict, retries: int = 4,
     raise RuntimeError(last_err)
 
 
-# Cache the result of "is the claude CLI present and runnable" so we don't
-# spawn a probe subprocess on every single call. None=untested.
-_CLAUDE_CLI_OK: bool | None = None
+# Cache the resolved claude CLI path. None=untested, ""=not found, else the
+# absolute path (incl. .cmd/.exe on Windows — subprocess needs the FULL path
+# to run a .cmd, the bare name fails).
+_CLAUDE_CLI_PATH: str | None = None
 
 
-def _claude_cli_available(claude_path: str = "claude") -> bool:
-    """Cheap one-time check that the `claude` CLI exists on PATH. Cached."""
-    global _CLAUDE_CLI_OK
-    if _CLAUDE_CLI_OK is not None:
-        return _CLAUDE_CLI_OK
+def _resolve_claude_cli(claude_path: str = "claude") -> str:
+    """Return the absolute path to the claude executable, or "" if not found.
+    Cached. On Windows shutil.which resolves "claude" → "...\\claude.cmd";
+    we must pass that full path to subprocess (running a bare "claude" .cmd
+    without the resolved path raises FileNotFoundError)."""
+    global _CLAUDE_CLI_PATH
+    if _CLAUDE_CLI_PATH is not None:
+        return _CLAUDE_CLI_PATH
     import shutil
-    _CLAUDE_CLI_OK = shutil.which(claude_path) is not None
-    return _CLAUDE_CLI_OK
+    # If the user gave an explicit path that exists, use it as-is.
+    if claude_path and Path(claude_path).expanduser().is_file():
+        _CLAUDE_CLI_PATH = str(Path(claude_path).expanduser())
+        return _CLAUDE_CLI_PATH
+    _CLAUDE_CLI_PATH = shutil.which(claude_path) or ""
+    return _CLAUDE_CLI_PATH
 
 
 def claude_cli_complete(prompt: str, cfg: "Config", *, timeout: int = 180,
@@ -608,15 +616,19 @@ def claude_cli_complete(prompt: str, cfg: "Config", *, timeout: int = 180,
             print(msg)
 
     claude_path = getattr(cfg, "claude_cli_path", "") or "claude"
-    if not _claude_cli_available(claude_path):
-        log("      claude CLI not found on PATH — falling back to Gemini")
+    resolved = _resolve_claude_cli(claude_path)
+    if not resolved:
+        log(f"      claude CLI '{claude_path}' nicht auf PATH gefunden — Gemini-Fallback. "
+            "(claude installiert? 'claude login' gemacht? ggf. vollen Pfad in "
+            "config.json claude_cli_path setzen.)")
         return None
 
     # Pass the prompt on stdin, not as an argv element: moment-picking
     # prompts embed a full transcript and can easily exceed Windows'
     # ~32KB command-line limit. `claude -p` reads the prompt from stdin
-    # when no positional prompt is given.
-    cmd = [claude_path, "-p", "--output-format", "json"]
+    # when no positional prompt is given. Use the RESOLVED path so a
+    # Windows .cmd actually executes.
+    cmd = [resolved, "-p", "--output-format", "json"]
     model = (getattr(cfg, "claude_cli_model", "") or "").strip()
     if model:
         cmd += ["--model", model]
@@ -672,14 +684,23 @@ def _complete_text(prompt: str, cfg: "Config", *, prefer_claude: bool,
     gemini_body is the full Gemini request body (with the prompt already
     embedded) used for the fallback path; gemini_model overrides the model
     in the URL when given."""
+    def _log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
     if prefer_claude and getattr(cfg, "use_claude_cli", False):
         text = claude_cli_complete(prompt, cfg, on_step=on_step)
         if text:
+            mdl = (getattr(cfg, "claude_cli_model", "") or "default").strip() or "default"
+            _log(f"      ✓ via Claude CLI ({mdl})")
             return text
-        # fall through to Gemini on any CLI failure
+        # fall through to Gemini on any CLI failure (reason already logged)
     if not cfg.gemini_api_key:
         raise RuntimeError("no text backend available (claude CLI failed and no gemini_api_key)")
     model = gemini_model or cfg.gemini_model
+    _log(f"      ✓ via Gemini ({model})")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     data = _gemini_post(url, {"key": cfg.gemini_api_key}, gemini_body)
     try:
@@ -727,10 +748,14 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
             except Exception: pass
         else:
             print(msg)
-    if not cfg.gemini_api_key:
+    if not cfg.gemini_api_key and not getattr(cfg, "use_claude_cli", False):
         raise RuntimeError("no script backend configured (gemini_api_key missing)")
-    log(f"      script via Gemini ({cfg.gemini_model}, lang={language})")
-    script = generate_script_via_gemini(topic, cfg, target_seconds, language=language)
+    if getattr(cfg, "use_claude_cli", False):
+        mdl = (getattr(cfg, "claude_cli_model", "") or "default").strip() or "default"
+        log(f"      script: Claude CLI ({mdl}) bevorzugt, Gemini als Fallback (lang={language})")
+    else:
+        log(f"      script via Gemini ({cfg.gemini_model}, lang={language})")
+    script = generate_script_via_gemini(topic, cfg, target_seconds, language=language, on_step=on_step)
 
     # Short jobs don't need top-up — Gemini reliably nails ≤60s targets.
     if target_seconds < 90:
@@ -753,7 +778,7 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
             f"target {target_words}w (~{target_seconds:.0f}s) — "
             f"top-up {attempt}/{max_topups}, requesting ~{deficit_words}w")
         try:
-            addition = _gemini_continuation(script, cfg, deficit_words, language=language)
+            addition = _gemini_continuation(script, cfg, deficit_words, language=language, on_step=on_step)
         except Exception as e:
             log(f"      top-up failed: {e} — keeping current script")
             break
@@ -767,7 +792,7 @@ def generate_script(topic: str, cfg: "Config", target_seconds: float = 30.0,
 
 
 def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 30.0,
-                               language: str = "de") -> str:
+                               language: str = "de", on_step=None) -> str:
     # Name kept for back-compat; actually dispatches Claude-CLI-or-Gemini.
     if not cfg.gemini_api_key and not getattr(cfg, "use_claude_cli", False):
         raise RuntimeError("topic given but gemini_api_key missing in config (and GEMINI_API_KEY env not set)")
@@ -810,7 +835,7 @@ def generate_script_via_gemini(topic: str, cfg: Config, target_seconds: float = 
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
-    text = _complete_text(prompt_text, cfg, prefer_claude=True, gemini_body=body)
+    text = _complete_text(prompt_text, cfg, prefer_claude=True, gemini_body=body, on_step=on_step)
     if not text:
         raise RuntimeError("script generation returned no text")
     if len(text) < 120:
