@@ -162,6 +162,29 @@ class TestFetchFreePhoto:
         with pytest.raises(RuntimeError):
             pipeline.fetch_image_from_pixabay("x", tmp_path / "o.png", CfgNoKey())
 
+    def test_free_photo_prefers_pexels_when_key_set(self, tmp_path):
+        # With ONLY a pexels key, that's tried first; openverse never reached.
+        pex_search = MagicMock()
+        pex_search.raise_for_status = lambda: None
+        pex_search.json = lambda: {"photos": [{"src": {"large": "http://p/img.jpg"}}]}
+        pex_img = MagicMock()
+        pex_img.raise_for_status = lambda: None
+        pex_img.content = _png_bytes()
+        seen = []
+        def fake_get(url, **kw):
+            seen.append(url)
+            if "api.pexels.com/v1/search" in url:
+                return pex_search
+            return pex_img
+        class CfgPexels:
+            pexels_api_key = "PX_KEY"
+            pixabay_api_key = ""
+        with patch("requests.get", side_effect=fake_get):
+            p = pipeline.fetch_free_photo("gold", tmp_path / "o.png", cfg=CfgPexels())
+        assert p.is_file()
+        assert any("api.pexels.com/v1/search" in u for u in seen)
+        assert not any("openverse" in u for u in seen)
+
 
 class TestContinuousAutoCount:
     """The continuous mode should pick more images for longer videos so they

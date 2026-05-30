@@ -3511,6 +3511,44 @@ def _save_square_image(data: bytes, out_path: Path) -> bool:
         return False
 
 
+def fetch_image_from_pexels(query: str, out_path: Path, cfg: "Config") -> Path:
+    """Free real photo from Pexels (same API + key as the video endpoint).
+    Often best-quality of the free sources — modern, well-shot, datacenter-
+    friendly. Reuses cfg.pexels_api_key."""
+    key = (getattr(cfg, "pexels_api_key", "") or "").strip()
+    if not key:
+        raise RuntimeError("pexels: no api key configured")
+    q = (query or "").strip()
+    if not q:
+        raise RuntimeError("pexels: empty query")
+    headers = {"Authorization": key, "User-Agent": _PHOTO_UA}
+    params = {"query": q, "per_page": 12, "orientation": "portrait"}
+    try:
+        r = requests.get("https://api.pexels.com/v1/search",
+                         params=params, headers=headers, timeout=30)
+        r.raise_for_status()
+        photos = (r.json() or {}).get("photos") or []
+    except Exception as e:
+        raise RuntimeError(f"pexels photo search failed: {str(e)[:160]}") from e
+    if not photos:
+        raise RuntimeError(f"pexels: no photo results for {q!r}")
+    last_err = None
+    for ph in photos:
+        # Prefer large size; pexels gives multiple sizes per photo.
+        src = (ph.get("src") or {})
+        url = src.get("large") or src.get("large2x") or src.get("original")
+        if not url:
+            continue
+        try:
+            ir = requests.get(url, headers={"User-Agent": _PHOTO_UA}, timeout=30)
+            ir.raise_for_status()
+            if _save_square_image(ir.content, out_path):
+                return out_path
+        except Exception as e:
+            last_err = str(e)[:140]
+    raise RuntimeError(f"pexels: no usable photo for {q!r} ({last_err})")
+
+
 def fetch_image_from_pixabay(query: str, out_path: Path, cfg: "Config") -> Path:
     """Free real photos via Pixabay. Needs a free API key (cfg.pixabay_api_key)
     — but it's the most reliable no-cost source: datacenter-friendly,
@@ -3727,16 +3765,18 @@ def fetch_image_from_wikimedia(query: str, out_path: Path,
 
 def fetch_free_photo(query: str, out_path: Path, cfg: "Config" = None,
                      on_step=None) -> Path:
-    """Try the free photo sources in order: Pixabay (if a free key is set —
-    most reliable) → Openverse → Wikimedia Commons. Logs each source's real
-    error so failures are diagnosable instead of a silent "miss". Raises only
-    if all sources fail, so the caller can fall back to an AI render."""
+    """Try the free photo sources in order: Pexels (if key — best quality)
+    → Pixabay (if key) → Openverse → Wikimedia Commons. Logs each source's
+    real error instead of a silent "miss". Raises only when all sources
+    fail, so the caller can fall back to an AI render."""
     def log(msg):
         if on_step:
             try: on_step(msg)
             except Exception: pass
 
     sources = []
+    if cfg is not None and (getattr(cfg, "pexels_api_key", "") or "").strip():
+        sources.append(("pexels", lambda: fetch_image_from_pexels(query, out_path, cfg)))
     if cfg is not None and (getattr(cfg, "pixabay_api_key", "") or "").strip():
         sources.append(("pixabay", lambda: fetch_image_from_pixabay(query, out_path, cfg)))
     sources.append(("openverse", lambda: fetch_image_from_openverse(query, out_path)))
