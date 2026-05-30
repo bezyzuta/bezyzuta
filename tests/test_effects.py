@@ -95,3 +95,26 @@ class TestEffectsVf:
             {"color_grade": True, "flashes": [1.0], "shakes": [(2.0, 2.4)]}, 1080, 1920)
         # order: shake (crop) → eq → drawbox
         assert vf.index("crop=") < vf.index("eq=") < vf.index("drawbox")
+
+    def test_punch_zoom(self):
+        vf = pipeline._effects_final_vf({"punches": [1.0, 2.0]}, 1080, 1920)
+        assert "iw/(1+0.12" in vf and "scale=1080:1920" in vf
+
+
+class TestEffectPlanBatch2:
+    def test_global_flags(self):
+        plan = pipeline.generate_effect_plan(
+            "s", 30.0, ["ken_burns", "slide_in"], _Cfg(), ai_direction=False)
+        assert plan["ken_burns"] is True and plan["slide_in"] is True
+
+    def test_punch_is_timed(self):
+        payload = '[{"position":0.5,"type":"punch"}]'
+        with patch("pipeline._complete_text", return_value=payload):
+            plan = pipeline.generate_effect_plan("script", 100.0, ["punch"], _Cfg())
+        assert 50.0 in plan["punches"]
+
+    def test_ken_burns_in_image_chain(self):
+        on = pipeline._image_chain(2, 0, 3.0, 0.0, 800, 0.0, ken_burns=True)
+        off = pipeline._image_chain(2, 0, 3.0, 0.0, 800, 0.0, ken_burns=False)
+        assert "0.06*(t/" in on        # drifting width
+        assert "0.06*(t/" not in off

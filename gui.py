@@ -778,10 +778,15 @@ def build_app() -> gr.Blocks:
                     ("🎨 Viral Color-Grade (Sättigung/Kontrast/Vignette)", "color_grade"),
                     ("⚪ Flash (weißer Blitz bei Schock/Reveal)", "flash"),
                     ("📳 Camera-Shake (Wackeln bei Impact-Momenten)", "shake"),
+                    ("👊 Punch-In (schneller Zoom-Stoß zur Betonung)", "punch"),
+                    ("🔎 Ken-Burns (Mittel-Bilder zoomen langsam)", "ken_burns"),
+                    ("➡️ Slide-In (Bilder fliegen von der Seite rein)", "slide_in"),
+                    ("💬 Keyword-Pop (Untertitel-Wort flasht gelb bei Schlüsselwort)", "keyword_pop"),
                 ],
                 value=[],
                 label="Effekte erlauben (leer = aus)",
-                info="Color-Grade gilt fürs ganze Video. Flash/Shake setzt die KI an dramatische Stellen.",
+                info=("Color-Grade/Ken-Burns/Slide-In/Keyword-Pop gelten global. "
+                      "Flash/Shake/Punch setzt die KI an dramatische Stellen im Skript."),
             )
             effects_ai = gr.Checkbox(
                 value=True,

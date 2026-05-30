@@ -2929,7 +2929,8 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               long_form: bool = False,
               caption_emojis: bool = False,
               caption_position: str = "bottom",
-              emoji_overlay: bool = False) -> Path:
+              emoji_overlay: bool = False,
+              keyword_pop: bool = False) -> Path:
     """Bold karaoke captions; styling exposed for the GUI.
     Optional hook_text shown big at the top for the first hook_duration seconds.
     pop_captions: every chunk pops in with a scale animation (TikTok-style).
@@ -3023,9 +3024,15 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
                 emo = _emoji_for_caption(raw)
                 if emo:
                     text = f"{text}\\N{emo}"
+            # keyword_pop: chunks that hit a trigger word get a stronger,
+            # briefly-yellow emphasis pop — draws the eye to the punchline.
+            this_pop = pop_tag
+            if keyword_pop and not long_form and _emoji_for_caption(raw):
+                this_pop = ("\\fscx150\\fscy150\\c&H00FFFF&"
+                            "\\t(0,180,\\fscx100\\fscy100\\c&HFFFFFF&)")
             lines.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Pop,,0,0,0,,"
-                f"{{{pop_tag}\\fad(80,80)}}{text}"
+                f"{{{this_pop}\\fad(80,80)}}{text}"
             )
 
     if subscribe_overlay and total_duration > 1.0:
@@ -3609,20 +3616,27 @@ _TILT_ANGLES_DEG = [-3.0, 2.5, -2.0, 3.0, -2.5]
 
 
 def _image_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
-                 overlay_w: int, angle_deg: float) -> str:
-    """Filter chain for one image overlay: white border, tilt, pop-in scale, fades."""
+                 overlay_w: int, angle_deg: float, ken_burns: bool = False) -> str:
+    """Filter chain for one image overlay: white border, tilt, pop-in scale, fades.
+    ken_burns: after the pop, the image keeps zooming slowly (~6%) for the
+    whole time it's shown, so the middle never feels static."""
     fade_in, fade_out, pop_dur = 0.2, 0.3, 0.25
     angle_rad = angle_deg * 3.14159265 / 180.0
     pop_start_w = int(overlay_w * 1.18)
     pop_delta = pop_start_w - overlay_w
     fade_out_start = max(0.0, image_dur - fade_out)
+    # Post-pop width: fixed, or a slow Ken-Burns drift up to +6%.
+    if ken_burns and image_dur > 0.1:
+        settled_w = f"{overlay_w}*(1+0.06*(t/{image_dur:.2f}))"
+    else:
+        settled_w = f"{overlay_w}"
     return (
         f"[{idx_input}:v]"
         f"trim=duration={image_dur:.2f},setpts=PTS-STARTPTS,"
         f"format=rgba,"
         f"pad=iw+18:ih+18:9:9:color=white@0.95,"
         f"rotate={angle_rad:.4f}:c=black@0:ow=hypot(iw\\,ih):oh=ow,"
-        f"scale=w='if(lt(t\\,{pop_dur:.2f})\\,{pop_start_w}-{pop_delta}*(t/{pop_dur:.2f})\\,{overlay_w})'"
+        f"scale=w='if(lt(t\\,{pop_dur:.2f})\\,{pop_start_w}-{pop_delta}*(t/{pop_dur:.2f})\\,{settled_w})'"
         f":h=-1:eval=frame:flags=bicubic,"
         f"fade=t=in:st=0:d={fade_in}:alpha=1,"
         f"fade=t=out:st={fade_out_start:.2f}:d={fade_out}:alpha=1,"
@@ -3678,6 +3692,16 @@ def _effects_final_vf(effects: dict | None, target_w: int, target_h: int) -> str
             f"scale={target_w}:{target_h}"
         )
 
+    # Punch-in: quick centered zoom (~12%) at the LLM-chosen moments.
+    punches = effects.get("punches") or []
+    if punches:
+        win = "+".join(f"between(t\\,{ts:.2f}\\,{ts + 0.25:.2f})" for ts in punches)
+        z = f"(1+0.12*gt({win}\\,0))"
+        chain.append(
+            f"crop=w='iw/{z}':h='ih/{z}':x='(iw-ow)/2':y='(ih-oh)/2',"
+            f"scale={target_w}:{target_h}"
+        )
+
     # Viral color grade: punchier contrast/saturation + gentle vignette.
     if effects.get("color_grade"):
         chain.append("eq=contrast=1.08:saturation=1.28:brightness=0.012")
@@ -3701,10 +3725,11 @@ Erlaubte Effekte: {allowed}
 Finde 3-6 dramatische Momente im Skript und ordne jedem einen Effekt zu:
 - "flash" = kurzer weisser Blitz, fuer Schock/Reveal/"ploetzlich"-Momente
 - "shake" = kurzes Wackeln, fuer Impact/Action/"krass"-Momente
+- "punch" = schneller Zoom-Stoss, fuer Betonung/Pointe/"DAS musst du sehen"
 
 Fuer jeden Moment:
 - "position": Wert 0.0..1.0 (Anteil am Video, in Erzaehl-Reihenfolge)
-- "type": "flash" oder "shake" (nur aus den erlaubten Effekten!)
+- "type": "flash", "shake" oder "punch" (nur aus den erlaubten Effekten!)
 
 Skript:
 \"\"\"
@@ -3726,8 +3751,13 @@ def generate_effect_plan(script: str, duration: float, enabled: list,
             try: on_step(msg)
             except Exception: pass
     enabled = [str(e).lower() for e in (enabled or [])]
-    plan = {"color_grade": "color_grade" in enabled, "flashes": [], "shakes": []}
-    allowed_timed = [e for e in ("flash", "shake") if e in enabled]
+    plan = {
+        "color_grade": "color_grade" in enabled,
+        "ken_burns": "ken_burns" in enabled,
+        "slide_in": "slide_in" in enabled,
+        "flashes": [], "shakes": [], "punches": [],
+    }
+    allowed_timed = [e for e in ("flash", "shake", "punch") if e in enabled]
     if not allowed_timed or duration <= 0:
         return plan
 
@@ -3768,8 +3798,12 @@ def generate_effect_plan(script: str, duration: float, enabled: list,
             plan["flashes"].append(round(ts, 2))
         elif typ == "shake":
             plan["shakes"].append((round(ts, 2), round(ts + 0.4, 2)))
-    log(f"      effekt-regie: {len(plan['flashes'])} flash, {len(plan['shakes'])} shake"
-        f"{', color-grade' if plan['color_grade'] else ''}")
+        elif typ == "punch":
+            plan["punches"].append(round(ts, 2))
+    extras = [k for k in ("color_grade", "ken_burns", "slide_in") if plan[k]]
+    log(f"      effekt-regie: {len(plan['flashes'])} flash, {len(plan['shakes'])} shake, "
+        f"{len(plan['punches'])} punch"
+        f"{(' + ' + ', '.join(extras)) if extras else ''}")
     return plan
 
 
@@ -3878,6 +3912,9 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             len(image_paths), duration or 25.0, image_duration,
             continuous=images_continuous, gap=image_gap,
         )
+        eff = effects or {}
+        ken_burns = bool(eff.get("ken_burns"))
+        slide_in = bool(eff.get("slide_in"))
         parts.append(f"[0:v]{cover_chain}[bg0]")
         cur = "bg0"
         for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
@@ -3885,11 +3922,17 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
             parts.append(_image_chain(
                 idx_input=2 + i, image_idx=i,
                 image_dur=end - start, start=start,
-                overlay_w=overlay_w, angle_deg=angle,
+                overlay_w=overlay_w, angle_deg=angle, ken_burns=ken_burns,
             ))
             nxt = f"bg{i+1}"
+            if slide_in:
+                # image slides in from the left over ~0.3s at its start time
+                x_expr = (f"'if(lt(t-{start:.2f}\\,0.3)\\,"
+                          f"-w+(W/2+w/2)*((t-{start:.2f})/0.3)\\,(W-w)/2)'")
+            else:
+                x_expr = "(W-w)/2"
             parts.append(
-                f"[{cur}][img{i}]overlay=(W-w)/2:{v_expr}:format=auto:eof_action=pass[{nxt}]"
+                f"[{cur}][img{i}]overlay={x_expr}:{v_expr}:format=auto:eof_action=pass[{nxt}]"
             )
             cur = nxt
         parts.append(f"[{cur}]subtitles={ass_path.name}[capbase]")
@@ -5088,6 +5131,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             caption_emojis=bool(job.get("caption_emojis", False)),
             caption_position=cap_pos,
             emoji_overlay=emoji_overlay_active,
+            keyword_pop=("keyword_pop" in [str(e).lower() for e in (job.get("effects_enabled") or [])]),
         )
         if state:
             state.mark_done(Step.CAPTIONS, {"ass_path": ass})
