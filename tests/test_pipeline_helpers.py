@@ -312,3 +312,25 @@ class TestGrowVoiceoverToTarget:
         new_vo, new_dur, _ = pipeline._grow_voiceover_to_target(
             "wort " * 100, vo, 100.0, NoBackend(), 600.0, "en", tmp_path)
         assert new_dur == 100.0 and new_vo == vo
+
+
+class TestVoiceTempo:
+    def test_noop_at_1x(self, tmp_path):
+        # 1.0 (and within epsilon) must not touch the file / call ffmpeg.
+        p = tmp_path / "voice.mp3"
+        p.write_bytes(b"fake")
+        assert pipeline.apply_voice_tempo(p, 1.0) == p
+        assert pipeline.apply_voice_tempo(p, 1.004) == p
+        assert p.read_bytes() == b"fake"  # untouched
+
+    def test_runs_ffmpeg_for_slow(self, tmp_path):
+        # 0.85 should invoke ffmpeg with an atempo filter at that value. We mock
+        # run() (no real ffmpeg) and Path.replace (no tmp file is produced).
+        p = tmp_path / "voice.mp3"
+        with patch("pipeline.run") as run_mock, \
+             patch("pathlib.Path.replace"):
+            pipeline.apply_voice_tempo(p, 0.85)
+        assert run_mock.called
+        cmd = run_mock.call_args[0][0]
+        assert "-filter:a" in cmd
+        assert any("atempo=0.850" in str(a) for a in cmd)

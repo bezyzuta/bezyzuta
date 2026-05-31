@@ -4425,6 +4425,25 @@ def apply_playback_speed(video_path: Path, speed: float) -> None:
     tmp.replace(video_path)
 
 
+def apply_voice_tempo(voice_path: Path, tempo: float) -> Path:
+    """Slow down / speed up just the VOICEOVER audio in place, pitch-preserved.
+    tempo < 1.0 = slower (calmer, good for long-form), > 1.0 = faster.
+    1.0 = no-op. atempo handles 0.5..2.0 in one pass. Done BEFORE the script
+    length is measured, so the long-form auto-extend still targets real time."""
+    tempo = max(0.5, min(2.0, float(tempo)))
+    if abs(tempo - 1.0) < 0.01:
+        return voice_path
+    tmp = voice_path.with_suffix(".tempo.mp3")
+    run([
+        "ffmpeg", "-y", "-i", str(voice_path),
+        "-filter:a", f"atempo={tempo:.3f}",
+        "-c:a", "libmp3lame", "-q:a", "2",
+        str(tmp),
+    ])
+    tmp.replace(voice_path)
+    return voice_path
+
+
 def _effects_final_vf(effects: dict | None, target_w: int, target_h: int) -> str:
     """Build a comma-chain of ffmpeg video filters for the global/timed
     effects, to append to the final composed frame. Returns "" if nothing is
@@ -5652,6 +5671,15 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         step("[2/5] voiceover")
         vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
         vo = trim_leading_silence(vo_raw, work / "voice.mp3")
+        # Optional voice tempo (pitch-preserved). < 1.0 = calmer/slower, good
+        # for long-form where the fast short-style delivery gets tiring. Applied
+        # BEFORE measuring duration so the long-form auto-extend targets the
+        # real, slowed-down time.
+        voice_tempo = float(job.get("voice_tempo", 1.0))
+        if abs(voice_tempo - 1.0) > 0.01:
+            step(f"      voice tempo: {voice_tempo:.2f}x "
+                 f"({'langsamer' if voice_tempo < 1 else 'schneller'})")
+            apply_voice_tempo(vo, voice_tempo)
         vo_dur = probe_duration(vo)
         # Long-form length is only correct once we measure the REAL spoken
         # duration: the wps estimate that sized the script is unreliable (the
@@ -5943,9 +5971,12 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             continuous = bool(job.get("images_continuous", False)) and is_portrait_out
             if continuous and not user_prompts:
                 change_secs = max(1.0, float(job.get("image_change_secs", 3.5)))
-                n_images = max(4, min(int(round((vo_dur or 25.0) / change_secs)), 14))
+                # Cap scales with length so long-form can use many images
+                # (every ~change_secs) without exploding on a 10-minute video.
+                cont_cap = max(14, min(int((vo_dur or 25.0) / 6.0), 120))
+                n_images = max(4, min(int(round((vo_dur or 25.0) / change_secs)), cont_cap))
             else:
-                n_images = max(1, min(int(job.get("image_count", 3)), 14))
+                n_images = max(1, min(int(job.get("image_count", 3)), 50))
 
             allow_photos = bool(job.get("image_allow_photos", True))
             allow_videos = (bool(job.get("image_allow_videos", False))

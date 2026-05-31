@@ -69,6 +69,7 @@ def generate(
     target_duration: float,
     clip_segments: int,
     playback_speed: float,
+    voice_tempo: float,
     scene_pick_mode: str,
     manual_ranges: str,
     auto_reframe: bool,
@@ -195,6 +196,7 @@ def generate(
             "target_duration": float(target_duration),
             "clip_segments": int(clip_segments),
             "playback_speed": float(playback_speed),
+            "voice_tempo": float(voice_tempo),
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "manual_ranges": str(manual_ranges or ""),
             "auto_reframe": bool(auto_reframe),
@@ -514,6 +516,13 @@ def build_app() -> gr.Blocks:
                           "1.0 = normal, 1.1 = 10% schneller, 1.25 = deutlich schneller, "
                           "0.9 = leicht entschleunigt. Bild + Ton bleiben synchron."),
                 )
+                voice_tempo = gr.Slider(
+                    0.7, 1.2, value=1.0, step=0.05,
+                    label="🗣️ Sprechtempo (nur Stimme)",
+                    info=("Nur die Stimme, Tonhöhe bleibt gleich. 1.0 = normal, "
+                          "0.85 = ruhiger (gut für lange Videos), 0.9 = leicht "
+                          "langsamer. Für Shorts 1.0 lassen."),
+                )
             with gr.Accordion("🎬 Szenen-Auswahl", open=False):
                 scene_pick_mode = gr.Radio(
                     choices=[("Standard — gleichmäßig verteilt", "even"),
@@ -731,13 +740,13 @@ def build_app() -> gr.Blocks:
         # ───────────── Bild-Overlays ─────────────
         with gr.Accordion("🖼️ Bild-Overlays", open=False):
             with gr.Row():
-                image_count = gr.Slider(1, 5, value=3, step=1, label="Anzahl Bilder")
-                image_duration = gr.Slider(0.8, 3.0, value=1.5, step=0.1, label="Bild-Dauer (Sekunden)")
+                image_count = gr.Slider(1, 50, value=3, step=1, label="Anzahl Bilder")
+                image_duration = gr.Slider(0.8, 5.0, value=1.5, step=0.1, label="Bild-Dauer (Sekunden)")
             with gr.Row():
                 image_size = gr.Slider(
-                    0.5, 1.0, value=0.92, step=0.02,
+                    0.5, 1.0, value=1.0, step=0.02,
                     label="📐 Bild-Größe (Breite)",
-                    info="Anteil der Bildbreite. 0.92 = groß (empfohlen), 0.85 = kleiner.",
+                    info="Anteil der Bildbreite. 1.0 = volle Breite (empfohlen), 0.85 = kleiner.",
                 )
                 image_vpos = gr.Slider(
                     -0.25, 0.25, value=-0.03, step=0.01,
@@ -1034,7 +1043,7 @@ def build_app() -> gr.Blocks:
                 config_path, use_claude_cli, claude_cli_model,
                 source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, extend_script, target_duration,
-                clip_segments, playback_speed, scene_pick_mode, manual_ranges, auto_reframe,
+                clip_segments, playback_speed, voice_tempo, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_exaggeration, tts_cfg_weight,
