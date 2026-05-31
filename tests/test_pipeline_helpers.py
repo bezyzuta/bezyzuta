@@ -334,3 +334,25 @@ class TestVoiceTempo:
         cmd = run_mock.call_args[0][0]
         assert "-filter:a" in cmd
         assert any("atempo=0.850" in str(a) for a in cmd)
+
+
+class TestUnloadTTSModel:
+    def test_noop_when_not_loaded(self):
+        pipeline._CHATTERBOX_MODEL = None
+        pipeline._unload_tts_model()
+        assert pipeline._CHATTERBOX_MODEL is None
+        pipeline._CHATTERBOX_MODEL = False  # "tried, failed" sentinel
+        pipeline._unload_tts_model()
+        assert pipeline._CHATTERBOX_MODEL is False
+
+    def test_drops_loaded_model(self):
+        class FakeModel:
+            def __init__(self): self.moved = None
+            def to(self, dev): self.moved = dev
+        m = FakeModel()
+        pipeline._CHATTERBOX_MODEL = m
+        try:
+            pipeline._unload_tts_model()
+            assert pipeline._CHATTERBOX_MODEL is None
+        finally:
+            pipeline._CHATTERBOX_MODEL = None

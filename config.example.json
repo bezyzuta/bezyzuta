@@ -35,6 +35,8 @@
   "_comment_image_style": "AI-image look. 'auto' (recommended) = the planner picks the medium per beat: Roblox-render when the line is about a game character, photoreal/cinematic when it's about a real person, money, a city, an emotion, etc. — no more forced Roblox avatars on every image. Force one look for the whole video with 'roblox' (all Roblox), 'realistic' (no Roblox at all), or 'cinematic'; or put any custom style phrase here to append it to every prompt.",
   "image_roblox_max": 2,
   "_comment_image_roblox_max": "In 'auto' mode: the MAX number of AI images that may be actual Roblox 3D renders. Any beyond this are rewritten into real-world photoreal scenes (e.g. 'a lonely Roblox avatar' -> 'a lonely person'). Set 0 to never use Roblox in auto, raise it if you want more. Ignored when image_style forces a look. Default 2.",
+  "image_cooldown_secs": 0,
+  "_comment_image_cooldown": "Seconds to pause between AI image generations. 0 = off (default). If a long image run (many images) makes the PC hard-shutdown — that's a thermal/power protection trip, not a software crash — set this to 2-5 to let the GPU cool between renders. Also check GPU temps and PSU/power-cable seating; software can't power off a PC, only push marginal hardware over its limit.",
   "emoji_font_path": "",
   "_comment_emoji_font": "Optional path to a color emoji font for caption emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto Color Emoji on Linux). Example: 'C:\\\\Windows\\\\Fonts\\\\seguiemj.ttf'.",
   "pixabay_api_key": "",

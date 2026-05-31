@@ -135,6 +135,10 @@ class Config:
     # beyond this are rewritten into photoreal real-world scenes. 0 = never
     # Roblox even in auto. Ignored when image_style forces a look.
     image_roblox_max: int
+    # Seconds to pause between AI image generations. 0 = off (default). Raise it
+    # (e.g. 2-5) if a long image run trips a thermal / power shutdown on a
+    # marginal PSU/cooling setup — gives the GPU time to cool between renders.
+    image_cooldown_secs: float
     # Optional override for the color-emoji font used to render caption
     # emojis. Empty = auto-detect (Segoe UI Emoji on Windows, Noto on Linux).
     emoji_font_path: str
@@ -183,6 +187,7 @@ class Config:
             grok_cli_extra_args=str(data.get("grok_cli_extra_args", "")),
             image_style=str(data.get("image_style", "auto")).strip() or "auto",
             image_roblox_max=int(data.get("image_roblox_max", 2)),
+            image_cooldown_secs=float(data.get("image_cooldown_secs", 0.0)),
             emoji_font_path=str(data.get("emoji_font_path", "")),
             pixabay_api_key=data.get("pixabay_api_key") or os.environ.get("PIXABAY_API_KEY", ""),
             youtube_cookies_from_browser=str(data.get("youtube_cookies_from_browser", "")).strip(),
@@ -288,6 +293,32 @@ def _release_gpu_memory() -> None:
             torch.cuda.synchronize()
     except Exception:
         pass
+
+
+def _unload_tts_model() -> None:
+    """Drop the resident Chatterbox TTS model (~3-4 GB VRAM) and free it.
+    The voiceover is already rendered to disk by the time we reach the image
+    stage, so keeping the model loaded just pins VRAM and adds thermal/power
+    load during the long image-generation loop for no benefit. Re-loaded lazily
+    if needed again (e.g. the long-form voice-extend path runs before images)."""
+    global _CHATTERBOX_MODEL
+    if _CHATTERBOX_MODEL in (None, False):
+        return
+    try:
+        model = _CHATTERBOX_MODEL
+        _CHATTERBOX_MODEL = None
+        try:
+            import torch  # type: ignore
+            # Move any tensors off the GPU before dropping the reference.
+            if hasattr(model, "to"):
+                try: model.to("cpu")
+                except Exception: pass
+        except Exception:
+            pass
+        del model
+    except Exception:
+        _CHATTERBOX_MODEL = None
+    _release_gpu_memory()
 
 
 def run(cmd: list, **kw) -> subprocess.CompletedProcess:
@@ -5946,6 +5977,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
     image_paths: list = []
     image_duration = float(job.get("image_duration", 1.5))
+    # The voiceover is on disk now; free the ~3-4 GB Chatterbox model before the
+    # image loop so VRAM, power draw and GPU temperature drop during the long
+    # (up to 50-image) generation stage. Cheap if already unloaded / Piper.
+    _unload_tts_model()
     if state and state.is_done(Step.IMAGES):
         cached_paths = state.get_artifact(Step.IMAGES, "paths") or []
         image_paths = [Path(p) for p in cached_paths if Path(p).is_file()]
@@ -6084,6 +6119,15 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                             f"{len(plan) - i} image(s); pipeline continues without them"
                         )
                         break
+
+                # Optional cooldown between images. On a marginal PSU/cooling
+                # setup a long unbroken GPU image run can trip a thermal/over-
+                # current shutdown; a short pause lets the GPU breathe. Opt-in
+                # via cfg.image_cooldown_secs (0 = off, default). Local-image-gen
+                # only — pointless for network sources (Cloudflare/Pollinations).
+                cooldown = float(getattr(cfg, "image_cooldown_secs", 0.0) or 0.0)
+                if ok and cooldown > 0 and i < len(plan):
+                    time.sleep(min(cooldown, 10.0))
 
     if state and not state.is_done(Step.IMAGES):
         state.mark_done(Step.IMAGES, {
