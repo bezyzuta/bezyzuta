@@ -589,57 +589,71 @@ def _script_tail(text: str, words: int = 380) -> str:
     return " ".join(parts[-words:]) if len(parts) > words else (text or "")
 
 
-def _extend_script_to_target(script: str, cfg: "Config", target_seconds: float,
-                             language: str, on_step=None,
-                             accept_frac: float = 0.92, max_rounds: int = 14) -> str:
-    """Grow `script` until its estimated speech duration is within accept_frac
-    of target_seconds, by requesting bounded continuation chunks in a loop.
-    Robust to the LLM under-delivering on any single call: it keeps going while
-    progress is made and stops on a stall (two near-empty continuations) or
-    when the per-round LLM call fails. Works with both Claude CLI and Gemini
-    (via _gemini_continuation → _complete_text)."""
+def _continuation_block(context: str, cfg: "Config", want_words: int,
+                        language: str, on_step=None, max_rounds: int = 14) -> str:
+    """Produce ~want_words of NEW continuation text for `context`, looping
+    bounded chunks because the LLM under-delivers on any single call. Returns
+    just the new text (caller concatenates). Stops on a stall (two near-empty
+    rounds) or a per-call error."""
     def log(msg):
         if on_step:
             try: on_step(msg)
             except Exception: pass
-        else:
-            print(msg)
 
-    wps = _WPS_EN if (language or "de").lower() == "en" else _WPS_DE
-    target_words = int(target_seconds * wps)
-    accept_words = int(target_words * accept_frac)
+    added_parts: list[str] = []
+    added = 0
     stalls = 0
-    for rnd in range(1, max_rounds + 1):
-        current_words = len(script.split())
-        if current_words >= accept_words:
+    ctx = context
+    for _ in range(max_rounds):
+        if added >= want_words:
             break
-        deficit = target_words - current_words
-        if deficit < 40:
+        ask = min(want_words - added, _CONTINUATION_CHUNK_WORDS)
+        if ask < 40:
             break
-        ask = min(deficit, _CONTINUATION_CHUNK_WORDS)
-        current_secs = current_words / wps
-        log(f"      extend round {rnd}/{max_rounds}: {current_words}w "
-            f"(~{current_secs:.0f}s) → target {target_words}w "
-            f"(~{target_seconds:.0f}s), requesting ~{ask}w")
         try:
-            addition = _gemini_continuation(_script_tail(script), cfg, ask,
-                                            language=language, on_step=on_step)
+            chunk = _gemini_continuation(_script_tail(ctx), cfg, ask,
+                                         language=language, on_step=on_step)
         except Exception as e:
-            log(f"      extend round failed: {str(e)[:120]} — keeping current script")
+            log(f"      continuation call failed: {str(e)[:120]} — stopping")
             break
-        added = len(addition.split())
-        if added < 25:
-            # Model returned almost nothing — give it one more shot, then stop.
+        w = len(chunk.split())
+        if w < 25:
             stalls += 1
             if stalls >= 2:
-                log(f"      extend stalled (two near-empty rounds) — stopping at "
-                    f"{len(script.split())}w")
                 break
             continue
         stalls = 0
-        script = script.rstrip() + " " + addition.lstrip()
+        added_parts.append(chunk.strip())
+        ctx = ctx.rstrip() + " " + chunk
+        added += w
+    return " ".join(added_parts)
+
+
+def _extend_script_to_target(script: str, cfg: "Config", target_seconds: float,
+                             language: str, on_step=None,
+                             accept_frac: float = 0.92) -> str:
+    """Grow `script` until its ESTIMATED speech duration is within accept_frac
+    of target_seconds. Note: the estimate uses a fixed wps and is only a first
+    approximation — the authoritative length correction happens after TTS in
+    _grow_voiceover_to_target, which measures the real spoken duration."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+
+    wps = _WPS_EN if (language or "de").lower() == "en" else _WPS_DE
+    target_words = int(target_seconds * accept_frac * wps)
+    current_words = len(script.split())
+    deficit = target_words - current_words
+    if deficit < 40:
+        return script
+    log(f"      extending script: {current_words}w → ~{target_words}w "
+        f"(target ~{target_seconds:.0f}s)")
+    block = _continuation_block(script, cfg, deficit, language, on_step=on_step)
+    if block:
+        script = script.rstrip() + " " + block.lstrip()
     final_words = len(script.split())
-    log(f"      final script: {final_words}w (~{final_words / wps:.0f}s, "
+    log(f"      final script: {final_words}w (~{final_words / wps:.0f}s est, "
         f"target ~{target_seconds:.0f}s)")
     return script
 
@@ -1618,6 +1632,102 @@ def trim_leading_silence(in_path: Path, out_path: Path,
         str(out_path),
     ])
     return out_path
+
+
+def _concat_audio(parts: list[Path], out_path: Path) -> Path:
+    """Concatenate mp3 audio files in order into out_path (re-encoded so the
+    join is clean regardless of per-file encoder settings)."""
+    parts = [p for p in parts if p and Path(p).is_file()]
+    if not parts:
+        raise RuntimeError("concat_audio: no input files")
+    if len(parts) == 1:
+        if Path(parts[0]) != Path(out_path):
+            run(["ffmpeg", "-y", "-i", str(parts[0]),
+                 "-c:a", "libmp3lame", "-q:a", "2", str(out_path)])
+        return out_path
+    listing = out_path.with_suffix(".concat.txt")
+    listing.write_text(
+        "\n".join(f"file '{Path(p).resolve().as_posix()}'" for p in parts),
+        encoding="utf-8",
+    )
+    run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+        "-c:a", "libmp3lame", "-q:a", "2", str(out_path),
+    ])
+    try: listing.unlink()
+    except Exception: pass
+    return out_path
+
+
+def _grow_voiceover_to_target(script: str, vo: Path, vo_dur: float, cfg: "Config",
+                              target_seconds: float, language: str, work: Path,
+                              on_step=None, accept_frac: float = 0.92,
+                              max_rounds: int = 8) -> tuple[Path, float, str]:
+    """Close the loop on long-form length using the REAL spoken duration.
+
+    The wps estimate is unreliable (Chatterbox at the viral preset speaks far
+    faster than the 2.5 wps guess), so a script sized to 600s-of-estimate can
+    come out as ~350s of actual audio. Here we measure the rendered voiceover,
+    compute the speaker's true wps, extend the script by the genuinely-missing
+    words, synthesize ONLY the addition, and append it to the audio — repeating
+    until the real audio reaches accept_frac × target.
+
+    Returns (voice_path, voice_duration, full_script). No-op (returns inputs)
+    when already long enough or when there's no text backend."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+
+    if target_seconds < 90:
+        return vo, vo_dur, script
+    have_backend = bool(cfg.gemini_api_key or getattr(cfg, "use_claude_cli", False))
+    if not have_backend:
+        return vo, vo_dur, script
+
+    accept_secs = target_seconds * accept_frac
+    parts = [vo]
+    full_script = script
+    for rnd in range(1, max_rounds + 1):
+        if vo_dur >= accept_secs:
+            break
+        # Real measured speech rate from everything spoken so far.
+        spoken_words = len(full_script.split())
+        real_wps = spoken_words / vo_dur if vo_dur > 1 else (
+            _WPS_EN if language == "en" else _WPS_DE)
+        deficit_secs = target_seconds - vo_dur
+        need_words = int(deficit_secs * real_wps)
+        if need_words < 40:
+            break
+        log(f"      voice {vo_dur:.0f}s < target {target_seconds:.0f}s "
+            f"(real {real_wps:.1f} w/s) — round {rnd}/{max_rounds}, "
+            f"writing ~{need_words}w more")
+        addition = _continuation_block(full_script, cfg, need_words, language,
+                                       on_step=on_step)
+        if not addition.strip():
+            log("      no more script produced — stopping voice growth")
+            break
+        full_script = full_script.rstrip() + " " + addition.lstrip()
+        # Synthesize ONLY the new text and append its audio.
+        try:
+            piece_raw = synthesize_voiceover(addition, cfg, work / f"voice_ext_{rnd}_raw.mp3")
+            piece = trim_leading_silence(piece_raw, work / f"voice_ext_{rnd}.mp3")
+        except Exception as e:
+            log(f"      voice extension TTS failed: {str(e)[:120]} — stopping")
+            break
+        piece_dur = probe_duration(piece)
+        if piece_dur < 0.5:
+            break
+        parts.append(piece)
+        vo_dur += piece_dur
+
+    if len(parts) == 1:
+        return vo, vo_dur, full_script
+    merged = _concat_audio(parts, work / "voice_full.mp3")
+    merged_dur = probe_duration(merged)
+    log(f"      final voice: {merged_dur:.0f}s (target ~{target_seconds:.0f}s, "
+        f"{len(parts)} segments)")
+    return merged, merged_dur, full_script
 
 
 _MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
@@ -5543,10 +5653,29 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
         vo = trim_leading_silence(vo_raw, work / "voice.mp3")
         vo_dur = probe_duration(vo)
+        # Long-form length is only correct once we measure the REAL spoken
+        # duration: the wps estimate that sized the script is unreliable (the
+        # voice can speak ~4.5 w/s, not the assumed 2.5), so a "600s script"
+        # may render as ~350s of audio. If the user enabled auto-extend, grow
+        # the script + audio using the measured rate until it hits the target.
+        if (target_duration >= 90 and vo_dur < 0.9 * target_duration
+                and bool(job.get("extend_script", False))):
+            vo_lang = (getattr(cfg, "tts_language", "auto") or "auto").lower()
+            if vo_lang not in ("de", "en"):
+                vo_lang = _detect_language(script)
+            step(f"      voice {vo_dur:.0f}s under target {target_duration:.0f}s — "
+                 f"extending to match (measured speech rate)")
+            vo, vo_dur, script = _grow_voiceover_to_target(
+                script, vo, vo_dur, cfg, target_duration, vo_lang, work, on_step=step)
+            (work / "script.txt").write_text(script, encoding="utf-8")
         if state:
             state.mark_done(Step.VOICEOVER, {
                 "voice_path": vo, "voice_duration": vo_dur,
             })
+            if state.is_done(Step.SCRIPT):
+                state.mark_done(Step.SCRIPT, {
+                    "script_path": work / "script.txt", "script_text": script,
+                })
     else:
         step("[2/5] voice disabled — generating silent base track")
         vo_dur = float(target_duration)

@@ -187,13 +187,15 @@ class TestExtendScriptToTarget:
             return "wort " * words_per_call
         return _cont
 
-    def test_loops_until_target_reached(self):
-        # 300w start, target 600s @ 2.4 wps = 1440w; accept 92% = 1324w.
+    def test_loops_until_near_target(self):
+        # 300w start, target 600s @ 2.4 wps. The estimate pass is a rough
+        # pre-size (chunk-boundary rounding), so accept ~85%+ of target words;
+        # the exact length is corrected later by _grow_voiceover_to_target.
         start = "wort " * 300
         with patch("pipeline._gemini_continuation", side_effect=self._chunked(200)):
             out = pipeline._extend_script_to_target(start, _Cfg(), 600.0, "de")
         words = len(out.split())
-        assert words >= int(1440 * 0.92), f"only reached {words}w"
+        assert words >= int(600 * 2.4 * 0.85), f"only reached {words}w"
 
     def test_single_call_would_be_too_short(self):
         # Sanity: ONE 200-word top-up on a 300w script is nowhere near 1440w —
@@ -231,3 +233,82 @@ class TestExtendScriptToTarget:
         with patch("pipeline._gemini_continuation", side_effect=_spy):
             pipeline._extend_script_to_target("wort " * 300, _Cfg(), 600.0, "de")
         assert seen and max(seen) <= pipeline._CONTINUATION_CHUNK_WORDS
+
+
+class TestGrowVoiceoverToTarget:
+    """The post-TTS feedback loop: extend using the MEASURED spoken duration,
+    not a wps guess. This is what actually makes a 600s request hit ~600s."""
+
+    def _patches(self, real_wps):
+        """Patch the TTS/audio helpers so each synthesized chunk's duration is
+        words / real_wps. Mirrors a real voice that speaks at real_wps."""
+        from unittest.mock import patch as _p
+
+        def fake_synth(text, cfg, out):
+            self._durs[str(out)] = len(text.split()) / real_wps
+            return out
+
+        def fake_trim(inp, out, **kw):
+            self._durs[str(out)] = self._durs.get(str(inp), 0.0)
+            return out
+
+        def fake_probe(p):
+            return self._durs.get(str(p), 0.0)
+
+        def fake_concat(parts, out):
+            self._durs[str(out)] = sum(self._durs.get(str(p), 0.0) for p in parts)
+            return out
+
+        return [
+            _p("pipeline.synthesize_voiceover", side_effect=fake_synth),
+            _p("pipeline.trim_leading_silence", side_effect=fake_trim),
+            _p("pipeline.probe_duration", side_effect=fake_probe),
+            _p("pipeline._concat_audio", side_effect=fake_concat),
+        ]
+
+    def test_grows_fast_voice_to_target(self, tmp_path):
+        # Voice speaks 4.5 w/s. Initial 1586w script → ~352s. Target 600s.
+        self._durs = {}
+        real_wps = 4.5
+        script = "wort " * 1586
+        vo = tmp_path / "voice.mp3"
+        self._durs[str(vo)] = 1586 / real_wps  # ~352s
+
+        def cont(previous, cfg, add_words, language="de", on_step=None):
+            return "wort " * min(add_words, pipeline._CONTINUATION_CHUNK_WORDS)
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(real_wps):
+                stack.enter_context(p)
+            stack.enter_context(patch("pipeline._gemini_continuation", side_effect=cont))
+            new_vo, new_dur, new_script = pipeline._grow_voiceover_to_target(
+                script, vo, 1586 / real_wps, _Cfg(), 600.0, "en", tmp_path)
+        assert new_dur >= 600 * 0.92, f"only reached {new_dur:.0f}s"
+        assert len(new_script.split()) > 1586
+
+    def test_noop_when_already_long(self, tmp_path):
+        self._durs = {}
+        vo = tmp_path / "voice.mp3"
+        with patch("pipeline._gemini_continuation",
+                   side_effect=AssertionError("should not extend")):
+            new_vo, new_dur, new_script = pipeline._grow_voiceover_to_target(
+                "wort " * 1500, vo, 590.0, _Cfg(), 600.0, "en", tmp_path)
+        assert new_dur == 590.0 and new_vo == vo
+
+    def test_noop_for_short_targets(self, tmp_path):
+        vo = tmp_path / "voice.mp3"
+        with patch("pipeline._gemini_continuation",
+                   side_effect=AssertionError("should not run for <90s")):
+            new_vo, new_dur, _ = pipeline._grow_voiceover_to_target(
+                "wort " * 50, vo, 20.0, _Cfg(), 30.0, "en", tmp_path)
+        assert new_dur == 20.0
+
+    def test_noop_without_backend(self, tmp_path):
+        class NoBackend:
+            use_claude_cli = False
+            gemini_api_key = ""
+        vo = tmp_path / "voice.mp3"
+        new_vo, new_dur, _ = pipeline._grow_voiceover_to_target(
+            "wort " * 100, vo, 100.0, NoBackend(), 600.0, "en", tmp_path)
+        assert new_dur == 100.0 and new_vo == vo
