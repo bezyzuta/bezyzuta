@@ -4478,7 +4478,8 @@ def apply_voice_tempo(voice_path: Path, tempo: float) -> Path:
 def _effects_final_vf(effects: dict | None, target_w: int, target_h: int) -> str:
     """Build a comma-chain of ffmpeg video filters for the global/timed
     effects, to append to the final composed frame. Returns "" if nothing is
-    enabled. Order: shake (geometry) → color grade → flash (on top)."""
+    enabled. Order: geometry (shake/punch/creep) → color grade → pixel/overlay
+    (glitch → flashes/pulses on top)."""
     if not effects:
         return ""
     chain: list[str] = []
@@ -4505,10 +4506,40 @@ def _effects_final_vf(effects: dict | None, target_w: int, target_h: int) -> str
             f"scale={target_w}:{target_h}"
         )
 
+    # Creep-zoom (horror): a SLOW centered zoom that ramps up across each
+    # window, building dread — distinct from punch's instant pop. Default
+    # window ~2.5s, ramps 1.0 → ~1.15.
+    creeps = effects.get("creeps") or []
+    if creeps:
+        terms = []
+        for s, e in creeps:
+            dur = max(0.2, e - s)
+            terms.append(
+                f"if(between(t\\,{s:.2f}\\,{e:.2f})\\,0.15*((t-{s:.2f})/{dur:.2f})\\,0)")
+        z = f"(1+{'+'.join(terms)})"
+        chain.append(
+            f"crop=w='iw/{z}':h='ih/{z}':x='(iw-ow)/2':y='(ih-oh)/2',"
+            f"scale={target_w}:{target_h}"
+        )
+
     # Viral color grade: punchier contrast/saturation + gentle vignette.
     if effects.get("color_grade"):
         chain.append("eq=contrast=1.08:saturation=1.28:brightness=0.012")
         chain.append("vignette=PI/4.5")
+
+    # Horror grade: cold, desaturated, crushed shadows + heavy vignette.
+    # Mutually useful alongside color_grade but typically used instead of it.
+    if effects.get("horror_grade"):
+        chain.append("eq=contrast=1.14:saturation=0.55:brightness=-0.04:gamma=0.90")
+        chain.append("colorbalance=bs=0.10:ms=-0.04:rs=-0.05")  # cold blue shadows
+        chain.append("vignette=PI/3.2")
+
+    # Glitch (horror): brief RGB channel split — "something's wrong"/supernatural.
+    glitches = effects.get("glitches") or []
+    if glitches:
+        win = "+".join(f"between(t\\,{ts:.2f}\\,{ts + 0.18:.2f})" for ts in glitches)
+        chain.append(
+            f"rgbashift=rh=7:bh=-7:rv=3:bv=-3:enable='gt({win}\\,0)'")
 
     # Flash: full-frame white blips at the LLM-chosen timestamps.
     flashes = effects.get("flashes") or []
@@ -4517,29 +4548,52 @@ def _effects_final_vf(effects: dict | None, target_w: int, target_h: int) -> str
         chain.append(
             f"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.85:t=fill:enable='gt({win}\\,0)'"
         )
+
+    # Red flash (horror): blood/jumpscare tint — lighter alpha so the frame
+    # shows through red rather than blanking white.
+    red_flashes = effects.get("red_flashes") or []
+    if red_flashes:
+        win = "+".join(f"between(t\\,{ts:.2f}\\,{ts + 0.12:.2f})" for ts in red_flashes)
+        chain.append(
+            f"drawbox=x=0:y=0:w=iw:h=ih:color=red@0.45:t=fill:enable='gt({win}\\,0)'"
+        )
+
+    # Dark pulse (horror): screen briefly darkens — dread / a presence appears.
+    dark_pulses = effects.get("dark_pulses") or []
+    if dark_pulses:
+        win = "+".join(f"between(t\\,{ts:.2f}\\,{ts + 0.5:.2f})" for ts in dark_pulses)
+        chain.append(
+            f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.5:t=fill:enable='gt({win}\\,0)'"
+        )
     return ",".join(chain)
 
 
-_EFFECT_PLAN_PROMPT = """Du bist Editor fuer virale Roblox-Shorts und entscheidest die "Effekt-Regie".
+_EFFECT_PLAN_PROMPT = """Du bist Editor fuer virale Roblox-Videos und entscheidest die "Effekt-Regie".
 
 Skript-Dauer: ca. {duration} Sekunden.
 Erlaubte Effekte: {allowed}
 
-Finde 3-6 dramatische Momente im Skript und ordne jedem einen Effekt zu:
+Finde {n_min}-{n_max} dramatische Momente im Skript und ordne jedem einen Effekt zu. Bedeutung der Effekte:
 - "flash" = kurzer weisser Blitz, fuer Schock/Reveal/"ploetzlich"-Momente
 - "shake" = kurzes Wackeln, fuer Impact/Action/"krass"-Momente
 - "punch" = schneller Zoom-Stoss, fuer Betonung/Pointe/"DAS musst du sehen"
+- "red_flash" = roter Blitz, fuer Horror-Jumpscare/Blut/Gefahr ("er war direkt hinter mir")
+- "dark_pulse" = Bild wird kurz dunkel, fuer Bedrohung/"das Licht ging aus"/eine Praesenz erscheint
+- "glitch" = kurzer Bild-Glitch (RGB-Versatz), fuer uebernatuerlich/"etwas stimmte nicht"/Realitaet bricht
+- "creep" = langsamer, schleichender Zoom, fuer aufbauende Anspannung/"es kam naeher und naeher"
+
+WICHTIG: Setze die Effekte GENAU auf die gemeinte Stelle im Skript. Bei Horror-Geschichten: red_flash/dark_pulse/glitch/creep an die gruseligen Hoehepunkte, nicht zufaellig. Nutze NUR die erlaubten Effekte.
 
 Fuer jeden Moment:
 - "position": Wert 0.0..1.0 (Anteil am Video, in Erzaehl-Reihenfolge)
-- "type": "flash", "shake" oder "punch" (nur aus den erlaubten Effekten!)
+- "type": einer der erlaubten Effekte
 
 Skript:
 \"\"\"
 {script}
 \"\"\"
 
-Antworte NUR mit gueltigem JSON-Array, z.B. [{{"position":0.15,"type":"flash"}},{{"position":0.6,"type":"shake"}}]. KEINE Markdown."""
+Antworte NUR mit gueltigem JSON-Array, z.B. [{{"position":0.15,"type":"red_flash"}},{{"position":0.6,"type":"creep"}}]. KEINE Markdown."""
 
 
 def generate_effect_plan(script: str, duration: float, enabled: list,
@@ -4556,19 +4610,27 @@ def generate_effect_plan(script: str, duration: float, enabled: list,
     enabled = [str(e).lower() for e in (enabled or [])]
     plan = {
         "color_grade": "color_grade" in enabled,
+        "horror_grade": "horror_grade" in enabled,
         "ken_burns": "ken_burns" in enabled,
         "slide_in": "slide_in" in enabled,
         "flashes": [], "shakes": [], "punches": [],
+        "red_flashes": [], "dark_pulses": [], "glitches": [], "creeps": [],
     }
-    allowed_timed = [e for e in ("flash", "shake", "punch") if e in enabled]
+    # Map each timed effect type → the plan key it appends to and how its
+    # window is built from a center timestamp.
+    _TIMED = ("flash", "shake", "punch", "red_flash", "dark_pulse", "glitch", "creep")
+    allowed_timed = [e for e in _TIMED if e in enabled]
     if not allowed_timed or duration <= 0:
         return plan
 
     beats = []
     have_llm = bool(getattr(cfg, "use_claude_cli", False) or cfg.gemini_api_key)
     if ai_direction and have_llm and script.strip():
+        # More moments allowed for longer videos (horror stories run long).
+        n_max = max(6, min(int(duration // 12), 20))
         prompt = _EFFECT_PLAN_PROMPT.format(
-            duration=int(duration), allowed=", ".join(allowed_timed), script=script)
+            duration=int(duration), allowed=", ".join(allowed_timed),
+            n_min=3, n_max=n_max, script=script)
         body = {"contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024,
                                      "thinkingConfig": {"thinkingBudget": 0}}}
@@ -4597,15 +4659,26 @@ def generate_effect_plan(script: str, duration: float, enabled: list,
             beats.append((allowed_timed[i % len(allowed_timed)], ts))
 
     for typ, ts in beats:
+        ts = round(ts, 2)
         if typ == "flash":
-            plan["flashes"].append(round(ts, 2))
+            plan["flashes"].append(ts)
         elif typ == "shake":
-            plan["shakes"].append((round(ts, 2), round(ts + 0.4, 2)))
+            plan["shakes"].append((ts, round(ts + 0.4, 2)))
         elif typ == "punch":
-            plan["punches"].append(round(ts, 2))
-    extras = [k for k in ("color_grade", "ken_burns", "slide_in") if plan[k]]
+            plan["punches"].append(ts)
+        elif typ == "red_flash":
+            plan["red_flashes"].append(ts)
+        elif typ == "dark_pulse":
+            plan["dark_pulses"].append(ts)
+        elif typ == "glitch":
+            plan["glitches"].append(ts)
+        elif typ == "creep":
+            plan["creeps"].append((ts, round(ts + 2.5, 2)))
+    extras = [k for k in ("color_grade", "horror_grade", "ken_burns", "slide_in") if plan[k]]
     log(f"      effekt-regie: {len(plan['flashes'])} flash, {len(plan['shakes'])} shake, "
-        f"{len(plan['punches'])} punch"
+        f"{len(plan['punches'])} punch, {len(plan['red_flashes'])} red-flash, "
+        f"{len(plan['dark_pulses'])} dark-pulse, {len(plan['glitches'])} glitch, "
+        f"{len(plan['creeps'])} creep"
         f"{(' + ' + ', '.join(extras)) if extras else ''}")
     return plan
 

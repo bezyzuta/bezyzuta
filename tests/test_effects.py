@@ -118,3 +118,57 @@ class TestEffectPlanBatch2:
         off = pipeline._image_chain(2, 0, 3.0, 0.0, 800, 0.0, ken_burns=False)
         assert "0.06*(t/" in on        # drifting width
         assert "0.06*(t/" not in off
+
+
+class TestHorrorEffects:
+    """Horror effect types: red_flash, dark_pulse, glitch, creep, horror_grade."""
+
+    def test_red_flash_drawbox(self):
+        vf = pipeline._effects_final_vf({"red_flashes": [3.0]}, 1080, 1920)
+        assert "color=red@" in vf and "between(t\\,3.00" in vf
+
+    def test_dark_pulse_drawbox(self):
+        vf = pipeline._effects_final_vf({"dark_pulses": [7.2]}, 1080, 1920)
+        assert "color=black@" in vf and "between(t\\,7.20" in vf
+
+    def test_glitch_rgbashift(self):
+        vf = pipeline._effects_final_vf({"glitches": [5.0]}, 1080, 1920)
+        assert "rgbashift=" in vf and "between(t\\,5.00" in vf
+
+    def test_creep_slow_zoom(self):
+        vf = pipeline._effects_final_vf({"creeps": [(8.0, 10.5)]}, 1080, 1920)
+        # ramps with t, distinct from punch's instant 0.12 pop
+        assert "0.15*((t-8.00)" in vf and "scale=1080:1920" in vf
+
+    def test_horror_grade_is_cold_desaturated(self):
+        vf = pipeline._effects_final_vf({"horror_grade": True}, 1080, 1920)
+        assert "saturation=0.55" in vf and "colorbalance=" in vf and "vignette" in vf
+
+    def test_empty_horror_lists_emit_nothing(self):
+        vf = pipeline._effects_final_vf(
+            {"red_flashes": [], "dark_pulses": [], "glitches": [], "creeps": []},
+            1080, 1920)
+        assert vf == ""
+
+    def test_plan_places_all_horror_types(self):
+        payload = ('[{"position":0.1,"type":"red_flash"},'
+                   '{"position":0.3,"type":"dark_pulse"},'
+                   '{"position":0.5,"type":"glitch"},'
+                   '{"position":0.7,"type":"creep"}]')
+        enabled = ["red_flash", "dark_pulse", "glitch", "creep", "horror_grade"]
+        with patch("pipeline._complete_text", return_value=payload):
+            plan = pipeline.generate_effect_plan("scary story", 100.0, enabled, _Cfg())
+        assert plan["red_flashes"] == [10.0]
+        assert plan["dark_pulses"] == [30.0]
+        assert plan["glitches"] == [50.0]
+        assert plan["creeps"] == [(70.0, 72.5)]
+        assert plan["horror_grade"] is True
+
+    def test_plan_respects_allowed_horror_only(self):
+        # glitch requested but only red_flash enabled → glitch dropped.
+        payload = ('[{"position":0.2,"type":"glitch"},'
+                   '{"position":0.6,"type":"red_flash"}]')
+        with patch("pipeline._complete_text", return_value=payload):
+            plan = pipeline.generate_effect_plan("s", 50.0, ["red_flash"], _Cfg())
+        assert plan["glitches"] == []
+        assert plan["red_flashes"] == [30.0]

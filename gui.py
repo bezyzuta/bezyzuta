@@ -826,11 +826,17 @@ def build_app() -> gr.Blocks:
                     ("➡️ Slide-In (Bilder fliegen von der Seite rein)", "slide_in"),
                     ("💬 Keyword-Pop (Untertitel-Wort flasht gelb bei Schlüsselwort)", "keyword_pop"),
                     ("🎤 Per-Wort-Karaoke (TikTok-Style: ein Wort nach dem anderen, mit Pop)", "word_karaoke"),
+                    ("🩸 Horror: Roter Blitz (Jumpscare/Gefahr)", "red_flash"),
+                    ("🌑 Horror: Dunkel-Puls (Bedrohung/Licht geht aus)", "dark_pulse"),
+                    ("📺 Horror: Glitch (übernatürlich/etwas stimmt nicht)", "glitch"),
+                    ("🫣 Horror: Creep-Zoom (langsam schleichende Anspannung)", "creep"),
+                    ("🎬 Horror: Color-Grade (kalt, entsättigt, dunkle Vignette)", "horror_grade"),
                 ],
                 value=[],
                 label="Effekte erlauben (leer = aus)",
-                info=("Color-Grade/Ken-Burns/Slide-In/Keyword-Pop gelten global. "
-                      "Flash/Shake/Punch setzt die KI an dramatische Stellen im Skript."),
+                info=("Color-Grade/Horror-Grade/Ken-Burns/Slide-In/Keyword-Pop gelten global. "
+                      "Flash/Shake/Punch und die Horror-Effekte (Roter Blitz/Dunkel-Puls/"
+                      "Glitch/Creep-Zoom) setzt die KI an die passenden Stellen im Skript."),
             )
             effects_ai = gr.Checkbox(
                 value=True,
