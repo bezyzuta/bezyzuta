@@ -614,12 +614,18 @@ def build_app() -> gr.Blocks:
                 "normalisiert) — du musst nichts schneiden. Das geklonte `.clone.wav` wird daneben gecacht.\n"
                 "4. **Sprache auf Englisch** stellen (Cloning wirkt nur über Chatterbox)."
             )
-            voice_ref_audio = gr.Textbox(
+            voice_ref_audio = gr.Dropdown(
+                choices=[
+                    ("— Chatterbox Default-Stimme (kein Cloning) —", ""),
+                    ("Besmir (clone.wav, aufbereitet)", r"C:\Users\bezy\Desktop\Agenten\voice.clone.wav"),
+                    ("Besmir (Rohaufnahme besmir.wav)", r"C:\Users\bezy\Desktop\Agenten\besmir.wav"),
+                ],
                 value=_defaults.get("tts_reference_audio", ""),
-                label="🎤 Deine Stimm-Aufnahme zum Klonen (Pfad, optional — nur EN)",
-                placeholder=r"z.B. C:\Users\bezy\Desktop\voices\meine_stimme.m4a",
-                info=("Beliebige Aufnahme deiner Stimme — wird automatisch fürs Cloning "
-                      "aufbereitet. Vorbefüllt aus config.json (tts_reference_audio). "
+                allow_custom_value=True,
+                label="🎤 Stimme zum Klonen (auswählen oder Pfad eintippen — nur EN)",
+                info=("Deine Klon-Stimmen zur Auswahl, oder einen beliebigen Pfad "
+                      "eintippen. '.clone.wav' wird direkt genutzt, eine Rohaufnahme "
+                      "wird automatisch aufbereitet. Vorbefüllt aus config.json. "
                       "Leer = Chatterbox' Default-Stimme."),
             )
             with gr.Row():
