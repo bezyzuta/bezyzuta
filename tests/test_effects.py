@@ -144,6 +144,25 @@ class TestHorrorEffects:
         vf = pipeline._effects_final_vf({"horror_grade": True}, 1080, 1920)
         assert "saturation=0.55" in vf and "colorbalance=" in vf and "vignette" in vf
 
+    def test_filter_option_names_are_valid(self):
+        # Guards against invalid ffmpeg options (e.g. colorbalance has no 'ms';
+        # an invalid option aborts the whole compose with exit != 0). Validate
+        # the option keys for the filters whose params we hand-wrote.
+        import re
+        vf = pipeline._effects_final_vf(
+            {"horror_grade": True, "glitches": [5.0], "color_grade": True}, 1080, 1920)
+        valid = {
+            "colorbalance": {"rs", "gs", "bs", "rm", "gm", "bm", "rh", "gh", "bh", "pl"},
+            "rgbashift": {"rh", "rv", "gh", "gv", "bh", "bv", "ah", "av", "edge", "enable"},
+            "eq": {"contrast", "brightness", "saturation", "gamma", "gamma_r",
+                   "gamma_g", "gamma_b", "gamma_weight", "enable"},
+        }
+        for fname, allowed in valid.items():
+            for m in re.finditer(rf"{fname}=([^,\[]+)", vf):
+                for kv in m.group(1).split(":"):
+                    key = kv.split("=")[0].strip()
+                    assert key in allowed, f"invalid {fname} option: {key!r}"
+
     def test_empty_horror_lists_emit_nothing(self):
         vf = pipeline._effects_final_vf(
             {"red_flashes": [], "dark_pulses": [], "glitches": [], "creeps": []},

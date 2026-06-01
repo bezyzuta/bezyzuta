@@ -4531,7 +4531,9 @@ def _effects_final_vf(effects: dict | None, target_w: int, target_h: int) -> str
     # Mutually useful alongside color_grade but typically used instead of it.
     if effects.get("horror_grade"):
         chain.append("eq=contrast=1.14:saturation=0.55:brightness=-0.04:gamma=0.90")
-        chain.append("colorbalance=bs=0.10:ms=-0.04:rs=-0.05")  # cold blue shadows
+        # colorbalance options are per-channel: rs/gs/bs (shadows), rm/gm/bm
+        # (midtones), rh/gh/bh (highlights). Cold look = +blue / -red shadows.
+        chain.append("colorbalance=rs=-0.05:bs=0.10:rm=-0.03:bm=0.05")
         chain.append("vignette=PI/3.2")
 
     # Glitch (horror): brief RGB channel split — "something's wrong"/supernatural.
