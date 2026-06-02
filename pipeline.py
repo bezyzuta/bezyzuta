@@ -6198,6 +6198,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         if state:
             state.mark_done(Step.TRANSCRIBE, {"word_count": 0})
     is_portrait_out = cfg.target_h > cfg.target_w
+    # Continuous per-beat images are normally a portrait-only look. Faceless
+    # mode is landscape but explicitly wants them too (it IS the look), so
+    # treat it as eligible.
+    allow_continuous = is_portrait_out or bool(job.get("faceless_mode", False))
     # Caption position: shorts default to "top" (text above the center
     # images, like viral Roblox shorts); landscape long-form is forced to
     # bottom inside write_ass regardless.
@@ -6315,7 +6319,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             # voiceover length so a fresh image lands every ~image_change_secs,
             # like the reference (images change every 2-4s). Otherwise honor
             # the GUI's fixed count.
-            continuous = bool(job.get("images_continuous", False)) and is_portrait_out
+            continuous = bool(job.get("images_continuous", False)) and allow_continuous
             if continuous and not user_prompts:
                 change_secs = max(1.0, float(job.get("image_change_secs", 3.5)))
                 # Cap scales with length so long-form can use many images
@@ -6472,7 +6476,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     # timestamp (00_07.png …) for manual CapCut editing — runs ALONGSIDE the
     # normal render, never instead of it (Danny-Why faceless workflow).
     if image_paths and bool(job.get("export_timestamp_images", False)):
-        ts_continuous = bool(job.get("images_continuous", False)) and is_portrait_out
+        ts_continuous = bool(job.get("images_continuous", False)) and allow_continuous
         ts_schedule = _image_schedule(len(image_paths), target, image_duration,
                                       continuous=ts_continuous,
                                       gap=float(job.get("image_gap_secs", 0.5)))
@@ -6500,7 +6504,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             # compose_short uses for the image overlays — otherwise the SFX
             # fires at the old gapped-schedule times and lands ~1s after the
             # image actually changes.
-            sfx_continuous = bool(job.get("images_continuous", False)) and is_portrait_out
+            sfx_continuous = bool(job.get("images_continuous", False)) and allow_continuous
             schedule = _image_schedule(len(image_paths), target, image_duration,
                                        continuous=sfx_continuous,
                                        gap=float(job.get("image_gap_secs", 0.5)))
@@ -6666,7 +6670,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             progress_duration=vo_dur,
             crop_offset=crop_offset,
             image_tilt=bool(job.get("image_tilt", True)),
-            images_continuous=bool(job.get("images_continuous", False)) and is_portrait_out,
+            images_continuous=bool(job.get("images_continuous", False)) and allow_continuous,
             image_gap=float(job.get("image_gap_secs", 0.5)),
             image_size=float(job.get("image_size", 0.92)),
             image_vpos=float(job.get("image_vpos", -0.03)),

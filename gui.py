@@ -154,13 +154,14 @@ def generate(
         # file values are ignored when this flag is set, which is the
         # intended behavior — the GUI is the source of truth.
         _fmt = (output_format or "portrait").lower()
-        if _fmt == "landscape":
-            cfg.target_w, cfg.target_h = 1920, 1080
-        else:  # portrait or faceless
-            cfg.target_w, cfg.target_h = 1080, 1920
         # Faceless Story preset: hand-drawn style (unless the user explicitly
-        # picked a non-auto style) + continuous per-beat images.
+        # picked a non-auto style) + continuous per-beat images. Rendered in
+        # landscape 16:9 like a normal long-form YouTube video.
         _faceless = _fmt == "faceless"
+        if _fmt in ("landscape", "faceless"):
+            cfg.target_w, cfg.target_h = 1920, 1080
+        else:  # portrait
+            cfg.target_w, cfg.target_h = 1080, 1920
         # Claude-CLI provider toggle (overrides config.json for this run).
         cfg.use_claude_cli = bool(use_claude_cli)
         if claude_cli_model is not None:
@@ -233,6 +234,10 @@ def generate(
             # Faceless format forces continuous per-beat images; otherwise honor
             # the checkbox.
             "images_continuous": bool(images_continuous) or _faceless,
+            # Faceless = landscape story video that STILL wants per-beat images
+            # (normal landscape doesn't). This flag lets the pipeline allow
+            # continuous images in landscape just for this mode.
+            "faceless_mode": bool(_faceless),
             "export_timestamp_images": bool(export_timestamp_images),
             "image_change_secs": float(image_change_secs),
             "image_gap_secs": float(image_gap_secs),
@@ -420,7 +425,7 @@ def build_app() -> gr.Blocks:
             choices=[
                 ("📱 Short — 9:16 Hochformat (1080×1920)", "portrait"),
                 ("🎬 Lang-Video — 16:9 Querformat (1920×1080)", "landscape"),
-                ("📝 Faceless Story — 9:16, handgezeichneter Stil", "faceless"),
+                ("📝 Faceless Story — 16:9 Querformat, handgezeichneter Stil", "faceless"),
             ],
             value="portrait",
             label="🖼️ Output-Format",
