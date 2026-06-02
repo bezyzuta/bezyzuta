@@ -121,3 +121,66 @@ class TestFetchVideoFromHiggsfield:
              patch("subprocess.run", side_effect=subprocess.TimeoutExpired("higgsfield", 600)):
             with pytest.raises(RuntimeError, match="timed out"):
                 pipeline.fetch_video_from_higgsfield("x", tmp_path / "o.mp4", _Cfg())
+
+
+class _ImgCfg:
+    def __init__(self, **kw):
+        self.use_higgsfield_images = kw.get("use_higgsfield_images", True)
+        self.higgsfield_cli_path = kw.get("higgsfield_cli_path", "higgsfield")
+        self.higgsfield_image_model = kw.get("higgsfield_image_model", "nano_banana_2")
+        self.higgsfield_image_extra_args = kw.get("higgsfield_image_extra_args", "")
+
+
+def _png_bytes(size=(800, 800)):
+    from PIL import Image
+    import io, os
+    buf = io.BytesIO()
+    Image.frombytes("RGB", size, os.urandom(size[0] * size[1] * 3)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+class TestFetchImageFromHiggsfield:
+    def test_success_square(self, tmp_path):
+        out = tmp_path / "img.png"
+        stdout = '[{"status":"completed","result_url":"https://cdn/x.png"}]'
+        resp = MagicMock(); resp.raise_for_status = lambda: None; resp.content = _png_bytes()
+        with patch("shutil.which", return_value="/usr/bin/higgsfield"), \
+             patch("subprocess.run", return_value=_completed(stdout=stdout)) as run_mock, \
+             patch("pipeline.requests.get", return_value=resp):
+            r = pipeline.fetch_image_from_higgsfield("a stickman", out, _ImgCfg())
+        assert r == out and out.is_file()
+        cmd = run_mock.call_args[0][0]
+        assert "create" in cmd and "nano_banana_2" in cmd and "a stickman" in cmd
+        from PIL import Image
+        with Image.open(out) as im:
+            assert im.width == im.height  # square for non-faceless
+
+    def test_success_faceless_16_9(self, tmp_path):
+        out = tmp_path / "img.png"
+        stdout = '[{"status":"completed","result_url":"https://cdn/x.png"}]'
+        resp = MagicMock(); resp.raise_for_status = lambda: None; resp.content = _png_bytes((1000, 1000))
+        with patch("shutil.which", return_value="/usr/bin/higgsfield"), \
+             patch("subprocess.run", return_value=_completed(stdout=stdout)), \
+             patch("pipeline.requests.get", return_value=resp):
+            pipeline.fetch_image_from_higgsfield("a stickman", out, _ImgCfg(), faceless_wide=True)
+        from PIL import Image
+        with Image.open(out) as im:
+            assert abs(im.width / im.height - 16 / 9) < 0.02
+
+    def test_cli_missing_raises(self, tmp_path):
+        with patch("shutil.which", return_value=None):
+            with pytest.raises(RuntimeError, match="higgsfield CLI not found"):
+                pipeline.fetch_image_from_higgsfield("x", tmp_path / "o.png", _ImgCfg())
+
+    def test_non_image_result_raises(self, tmp_path):
+        stdout = '[{"status":"completed","result_url":"https://cdn/x.mp4"}]'
+        with patch("shutil.which", return_value="/usr/bin/higgsfield"), \
+             patch("subprocess.run", return_value=_completed(stdout=stdout)):
+            with pytest.raises(RuntimeError, match="not an image"):
+                pipeline.fetch_image_from_higgsfield("x", tmp_path / "o.png", _ImgCfg())
+
+    def test_nonzero_exit_raises(self, tmp_path):
+        with patch("shutil.which", return_value="/usr/bin/higgsfield"), \
+             patch("subprocess.run", return_value=_completed(returncode=1, stderr="boom")):
+            with pytest.raises(RuntimeError, match="exited 1"):
+                pipeline.fetch_image_from_higgsfield("x", tmp_path / "o.png", _ImgCfg())

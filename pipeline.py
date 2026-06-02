@@ -134,6 +134,13 @@ class Config:
     higgsfield_cli_path: str
     higgsfield_video_model: str
     higgsfield_extra_args: str
+    # Higgsfield as an AI-IMAGE provider (e.g. nano_banana_2). When
+    # use_higgsfield_images is on, it's tried FIRST for AI image beats (before
+    # Grok/Cloudflare/Pollinations) — good for the faceless stickman/doodle
+    # videos. Separate from the video integration above.
+    use_higgsfield_images: bool
+    higgsfield_image_model: str
+    higgsfield_image_extra_args: str
     # AI-image style. "auto" (default) = the scene planner picks the medium per
     # beat (Roblox-render for game characters, photoreal for real/abstract
     # subjects). "roblox"/"realistic"/"cinematic" force one look for the whole
@@ -197,6 +204,9 @@ class Config:
             higgsfield_cli_path=str(data.get("higgsfield_cli_path", "higgsfield")),
             higgsfield_video_model=str(data.get("higgsfield_video_model", "")),
             higgsfield_extra_args=str(data.get("higgsfield_extra_args", "")),
+            use_higgsfield_images=bool(data.get("use_higgsfield_images", False)),
+            higgsfield_image_model=str(data.get("higgsfield_image_model", "nano_banana_2")),
+            higgsfield_image_extra_args=str(data.get("higgsfield_image_extra_args", "")),
             image_style=str(data.get("image_style", "auto")).strip() or "auto",
             image_roblox_max=int(data.get("image_roblox_max", 2)),
             image_cooldown_secs=float(data.get("image_cooldown_secs", 0.0)),
@@ -4496,6 +4506,75 @@ def fetch_video_from_higgsfield(query: str, out_path: Path, cfg: "Config", *,
     return out_path
 
 
+def fetch_image_from_higgsfield(prompt: str, out_path: Path, cfg: "Config", *,
+                                faceless_wide: bool = False,
+                                timeout: int = 240, on_step=None) -> Path:
+    """Generate one IMAGE via the Higgsfield CLI (e.g. nano_banana_2), tapping
+    the user's logged-in subscription (no API key). Writes the result to
+    `out_path` (PNG). Raises on ANY failure so the caller can fall back.
+
+    Model: cfg.higgsfield_image_model (config.json), default 'nano_banana_2'.
+    Flow: `generate create <model> --prompt "..." --wait --json` blocks and
+    prints a JSON array with a result_url; we download + crop it (16:9 for
+    faceless landscape, else square — matching the rest of the image pipeline)."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+
+    resolved = _resolve_higgsfield_cli(getattr(cfg, "higgsfield_cli_path", "") or "higgsfield")
+    if not resolved:
+        raise RuntimeError(
+            "higgsfield CLI not found (installed? `higgsfield auth login` done? "
+            "set higgsfield_cli_path in config.json)")
+    model = (getattr(cfg, "higgsfield_image_model", "") or "nano_banana_2").strip()
+    q = (prompt or "").strip()
+    if not q:
+        raise RuntimeError("higgsfield: empty prompt")
+
+    wait_min = max(1, int(timeout // 60))
+    cmd = [resolved, "generate", "create", model,
+           "--prompt", q, "--wait", "--wait-timeout", f"{wait_min}m", "--json"]
+    extra = (getattr(cfg, "higgsfield_image_extra_args", "") or "").strip()
+    if extra:
+        import shlex
+        cmd += shlex.split(extra)
+
+    log(f"      higgsfield: generating image ({model})…")
+    try:
+        proc = subprocess.run(cmd, input="", capture_output=True, text=True,
+                              timeout=timeout + 60)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"higgsfield timed out after {timeout}s") from e
+    except Exception as e:
+        raise RuntimeError(f"higgsfield failed to start: {str(e)[:160]}") from e
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"higgsfield exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
+
+    url = _higgsfield_result_url(proc.stdout or "")
+    if not url:
+        raise RuntimeError("higgsfield: no completed result_url in output")
+    if not url.lower().split("?")[0].endswith((".png", ".jpg", ".jpeg", ".webp")):
+        raise RuntimeError(f"higgsfield: result is not an image ({url[-40:]})")
+
+    try:
+        ir = requests.get(url, timeout=120)
+        ir.raise_for_status()
+        data = ir.content
+    except Exception as e:
+        raise RuntimeError(f"higgsfield image download failed: {str(e)[:160]}") from e
+
+    # Crop to the shape the rest of the pipeline expects: 16:9 for faceless
+    # landscape (fills the frame), otherwise square (matches the photo cards).
+    saved = (_save_aspect_image(data, out_path) if faceless_wide
+             else _save_square_image(data, out_path))
+    if not saved:
+        raise RuntimeError("higgsfield image could not be decoded/saved")
+    log(f"      higgsfield image → {out_path.name}")
+    return out_path
+
+
 def fetch_image_from_openverse(query: str, out_path: Path,
                                max_results: int = 8) -> Path:
     """Fetch a free, openly-licensed real photo matching `query` from the
@@ -6561,6 +6640,11 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             cloudflare_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
             grok_ready = bool(getattr(cfg, "use_grok_cli", False)
                               and _resolve_grok_cli(getattr(cfg, "grok_cli_path", "") or "grok"))
+            hf_img_ready = bool(getattr(cfg, "use_higgsfield_images", False)
+                                and _resolve_higgsfield_cli(getattr(cfg, "higgsfield_cli_path", "") or "higgsfield"))
+            if getattr(cfg, "use_higgsfield_images", False) and not hf_img_ready:
+                step("      WARN: use_higgsfield_images on, but `higgsfield` CLI not found — "
+                     "using Grok/Cloudflare/Pollinations for AI images")
             if getattr(cfg, "use_grok_cli", False) and not grok_ready:
                 step("      WARN: use_grok_cli on, but `grok` CLI not found — "
                      "using Cloudflare/Pollinations for AI images")
@@ -6612,11 +6696,20 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                         primary_err = f"FreePhoto: {e}"
                         step(f"      free-photo miss ({str(e)[:120]}), AI render instead")
 
-                # AI render: Grok Build CLI first (subscription, opt-in), then
-                # Cloudflare Flux, then Pollinations. Faceless landscape wants
-                # 16:9 — Cloudflare can be asked directly; Grok/Pollinations
-                # output is re-cropped to 16:9 afterwards (see _faceless_recrop).
+                # AI render cascade: Higgsfield (e.g. nano_banana_2) first if
+                # enabled, then Grok Build CLI, then Cloudflare Flux, then
+                # Pollinations. Faceless landscape wants 16:9 — Cloudflare is
+                # asked directly; Higgsfield/Grok/Pollinations are re-cropped.
                 cf_w, cf_h = (1280, 720) if faceless_wide else (1024, 1024)
+                if not ok and hf_img_ready:
+                    try:
+                        fetch_image_from_higgsfield(prompt, target_path, cfg,
+                                                    faceless_wide=faceless_wide, on_step=step)
+                        image_paths.append(target_path)
+                        ok = True
+                    except Exception as e:
+                        primary_err = f"{primary_err}; Higgsfield: {e}" if primary_err else f"Higgsfield: {e}"
+                        step(f"      Higgsfield image miss ({str(e)[:120]}), falling back")
                 if not ok and grok_ready:
                     try:
                         fetch_image_from_grok_cli(prompt, target_path, cfg, on_step=step)
