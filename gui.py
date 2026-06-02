@@ -922,7 +922,7 @@ def build_app() -> gr.Blocks:
             subscribe_overlay = gr.Checkbox(
                 value=False,
                 label="🔔 Subscribe-Button am Ende",
-                info='Rotes "ABONNIEREN" Banner in den letzten 2,5 Sekunden.',
+                info='Rotes "SUBSCRIBE" Banner in den letzten 2,5 Sekunden.',
             )
             subscribe_sting_file = gr.Textbox(
                 value="",

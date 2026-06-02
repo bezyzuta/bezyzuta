@@ -3450,7 +3450,7 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               hook_duration: float = 3.0,
               pop_captions: bool = False,
               subscribe_overlay: bool = False,
-              subscribe_text: str = "ABONNIEREN",
+              subscribe_text: str = "SUBSCRIBE",
               total_duration: float = 0.0,
               enable_captions: bool = True,
               long_form: bool = False,
@@ -3582,7 +3582,7 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     if subscribe_overlay and total_duration > 1.0:
         sub_start = max(0.0, total_duration - 2.5)
         sub_end = total_duration
-        sub_txt = subscribe_text.strip().upper().replace("{", "(").replace("}", ")") or "ABONNIEREN"
+        sub_txt = subscribe_text.strip().upper().replace("{", "(").replace("}", ")") or "SUBSCRIBE"
         lines.append(
             f"Dialogue: 2,{_ass_time(sub_start)},{_ass_time(sub_end)},Sub,,0,0,0,,"
             f"{{\\fad(180,0)\\fscx115\\fscy115\\t(0,250,\\fscx100\\fscy100)}}{sub_txt}"
@@ -6548,7 +6548,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             hook_duration=float(job.get("hook_duration", 3.0)),
             pop_captions=bool(job.get("pop_captions", False)),
             subscribe_overlay=bool(job.get("subscribe_overlay", False)),
-            subscribe_text=str(job.get("subscribe_text", "ABONNIEREN")),
+            subscribe_text=str(job.get("subscribe_text", "SUBSCRIBE")),
             total_duration=vo_dur,
             enable_captions=bool(job.get("enable_captions", True)),
             # Landscape output = the GUI's "Lang-Video" format → readable
