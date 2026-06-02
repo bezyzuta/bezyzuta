@@ -597,6 +597,43 @@ def _clean_user_script(text: str) -> str:
     return text
 
 
+def _sanitize_script_for_tts(text: str) -> str:
+    """Strip non-spoken artifacts so the TTS only ever reads clean prose.
+    Removes timestamps (0:07 / 00:07 / 1:02:03), Danny-Why "00_07 - " prefixes,
+    markdown headers/emphasis, and bracketed stage directions. Conservative:
+    must never delete a normal hyphen, a colon in real speech, or apostrophes."""
+    if not text:
+        return text
+    out_lines = []
+    for line in text.split("\n"):
+        s = line
+        # "00_07 - " / "00:07 - " / "0:07 — " timestamp prefix at line start.
+        s = re.sub(r"^\s*\d{1,2}[:_]\d{2}(?:[:_]\d{2})?\s*[-–—]\s*", "", s)
+        # Bare leading timestamp at line start: "0:07", "00:07", "1:02:03".
+        s = re.sub(r"^\s*\d{1,2}:\d{2}(?::\d{2})?\b[.\)]?\s*", "", s)
+        # Markdown header markers at line start ("# ", "## "...).
+        s = re.sub(r"^\s*#{1,6}\s+", "", s)
+        # Bullet "- " / "* " at line start ONLY when it precedes a timestamp.
+        s = re.sub(r"^\s*[-*]\s+(?=\d{1,2}[:_]\d{2})", "", s)
+        out_lines.append(s)
+    text = "\n".join(out_lines)
+    # Bracketed stage directions: [pause], [music] (length-capped so a long
+    # legit bracketed phrase isn't nuked) and (SFX: ...) / (MUSIC ...) etc.
+    text = re.sub(r"\[[^\]\n]{0,60}\]", "", text)
+    text = re.sub(r"\((?:SFX|SOUND|MUSIC|BEAT|PAUSE|CUT|VFX|B-?ROLL)[^)\n]*\)",
+                  "", text, flags=re.IGNORECASE)
+    # Inline timestamps mid-line ("... (0:42) ...", " at 1:23").
+    text = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", "", text)
+    # Markdown emphasis: asterisks wholesale; underscores only as _word_ wrappers
+    # (never a bare hyphen or snake_case mid-word underscore).
+    text = re.sub(r"\*{1,3}", "", text)
+    text = re.sub(r"(?<!\w)_(?=\w)|(?<=\w)_(?!\w)", "", text)
+    # Collapse whitespace left behind.
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _gemini_continuation(previous: str, cfg: "Config", add_words: int,
                          language: str = "de", on_step=None) -> str:
     """Ask Gemini for a chunk that extends `previous` by ~add_words words.
@@ -1506,6 +1543,10 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     poisons the whole process — and the user would have to restart the
     GUI to recover.
     """
+    # Universal guard: strip timestamps / markdown / stage directions so the
+    # voice never reads "00_07" as "double-oh oh-seven". Covers every caller
+    # (main script, long-form extension chunks, future ones).
+    text = _sanitize_script_for_tts(text)
     lang = (getattr(cfg, "tts_language", "auto") or "auto").lower()
     detected = _detect_language(text)
     if lang == "auto":
@@ -3657,9 +3698,13 @@ def _roblox_cap(cfg) -> int:
 
 def _enforce_roblox_cap(beats: list[dict], cfg) -> list[dict]:
     """Keep at most _roblox_cap(cfg) Roblox-render AI beats; rewrite the rest
-    into photoreal scenes. Mutates and returns the beat list."""
+    into non-Roblox scenes. The rewritten beat is re-finalized through the
+    CHOSEN style (so a stickman video stays stickman, not photoreal). Mutates
+    and returns the beat list."""
     cap = _roblox_cap(cfg)
-    realistic = _IMAGE_STYLE_PRESETS["realistic"]
+    # When a style is forced (realistic/cinematic/flat), let it drive the look;
+    # only fall back to the realistic preset in 'auto' mode.
+    style = (getattr(cfg, "image_style", "auto") or "auto").strip().lower()
     seen = 0
     for b in beats:
         if b.get("source") != "ai":
@@ -3672,7 +3717,12 @@ def _enforce_roblox_cap(beats: list[dict], cfg) -> list[dict]:
             continue
         new_motif = _derobloxify(motif)
         b["motif"] = new_motif
-        b["prompt"] = f"{new_motif}, {realistic}, {_IMAGE_STYLE_SUFFIX}"
+        if style in ("auto", "roblox"):
+            # auto: the cap exists to add photoreal variety, so force realistic.
+            b["prompt"] = f"{new_motif}, {_IMAGE_STYLE_PRESETS['realistic']}, {_IMAGE_STYLE_SUFFIX}"
+        else:
+            # A forced style (incl. flat stickman/doodle) owns the look.
+            b["prompt"] = _finalize_scene_prompt(new_motif, cfg)
     return beats
 
 
@@ -4073,6 +4123,52 @@ def _save_square_image(data: bytes, out_path: Path) -> bool:
                       (w - side) // 2 + side, (h - side) // 2 + side))
         if side > 1024:
             im = im.resize((1024, 1024), Image.LANCZOS)
+        im.save(out_path)
+        return out_path.is_file() and out_path.stat().st_size > 512
+    except Exception:
+        return False
+
+
+def _faceless_recrop(path: Path, ar: float = 16 / 9) -> None:
+    """Best-effort re-crop an already-saved image file to `ar` in place. Used
+    for faceless landscape when the generator (Grok / a size-ignoring API) put
+    out a square — center-crop it to 16:9 so it fills the frame. Silent no-op
+    on any error (the image still works, just not perfectly wide)."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return
+    tmp = path.with_suffix(".recrop.png")
+    if _save_aspect_image(data, tmp, ar=ar):
+        try:
+            tmp.replace(path)
+        except OSError:
+            try: tmp.unlink()
+            except OSError: pass
+
+
+def _save_aspect_image(data: bytes, out_path: Path, ar: float = 16 / 9,
+                       max_w: int = 1280) -> bool:
+    """Center-crop image bytes to aspect ratio `ar` (default 16:9) and save as
+    PNG. Used for faceless full-frame images so they fill a widescreen frame
+    instead of being squared (which left white bars on the sides)."""
+    if not data or len(data) < 1024:
+        return False
+    try:
+        from PIL import Image
+        import io
+        im = Image.open(io.BytesIO(data)).convert("RGBA")
+        w, h = im.size
+        if w / h > ar:           # too wide → crop width
+            new_w = int(round(h * ar))
+            x0 = (w - new_w) // 2
+            im = im.crop((x0, 0, x0 + new_w, h))
+        else:                    # too tall → crop height
+            new_h = int(round(w / ar))
+            y0 = (h - new_h) // 2
+            im = im.crop((0, y0, w, y0 + new_h))
+        if im.width > max_w:
+            im = im.resize((max_w, int(round(max_w / ar))), Image.LANCZOS)
         im.save(out_path)
         return out_path.is_file() and out_path.stat().st_size > 512
     except Exception:
@@ -4686,6 +4782,26 @@ def _image_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
     )
 
 
+def _fullframe_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
+                     target_w: int, target_h: int, is_video: bool = False) -> str:
+    """Full-frame image/clip chain for faceless videos: cover the ENTIRE frame
+    (no white border, no tilt, no pop-in), just a clean fade in/out. Eliminates
+    the side bars that a centered square overlay produced on a 16:9 frame."""
+    fade_in, fade_out = 0.25, 0.35
+    fade_out_start = max(0.0, image_dur - fade_out)
+    src = (f"[{idx_input}:v]trim=duration={image_dur:.2f},setpts=PTS-STARTPTS,"
+           if is_video else f"[{idx_input}:v]")
+    return (
+        f"{src}"
+        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:flags=bicubic,"
+        f"crop={target_w}:{target_h},format=rgba,"
+        f"fade=t=in:st=0:d={fade_in}:alpha=1,"
+        f"fade=t=out:st={fade_out_start:.2f}:d={fade_out}:alpha=1,"
+        f"tpad=start_duration={start:.2f}:color=black@0"
+        f"[img{image_idx}]"
+    )
+
+
 def apply_playback_speed(video_path: Path, speed: float) -> None:
     """Re-time `video_path` in place: video and audio both sped up by
     `speed` (1.0 = no-op, 1.1 = 10% faster, 0.9 = 10% slower).
@@ -4959,7 +5075,8 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                   image_vpos: float = -0.03,
                   emoji_events: list | None = None,
                   caption_position: str = "bottom",
-                  effects: dict | None = None) -> Path:
+                  effects: dict | None = None,
+                  faceless: bool = False) -> Path:
     image_paths = list(image_paths or [])
     emoji_events = list(emoji_events or [])
     if mute_source_audio:
@@ -5056,15 +5173,25 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         eff = effects or {}
         ken_burns = bool(eff.get("ken_burns"))
         slide_in = bool(eff.get("slide_in"))
-        parts.append(f"[0:v]{cover_chain}[bg0]")
+        parts.append(f"[{'0:v'}]{cover_chain}[bg0]")
         cur = "bg0"
         for i, (img_path, (start, end)) in enumerate(zip(image_paths, schedule)):
             is_video = Path(str(img_path)).suffix.lower() == ".mp4"
-            if is_video:
+            if faceless:
+                # Faceless: each image fills the WHOLE frame (no card, no border,
+                # no tilt) and is overlaid at 0,0 — no side bars.
+                parts.append(_fullframe_chain(
+                    idx_input=2 + i, image_idx=i,
+                    image_dur=end - start, start=start,
+                    target_w=cfg.target_w, target_h=cfg.target_h, is_video=is_video,
+                ))
+                x_expr, this_v = "0", "0"
+            elif is_video:
                 parts.append(_video_chain(
                     idx_input=2 + i, image_idx=i,
                     image_dur=end - start, start=start, overlay_w=overlay_w,
                 ))
+                x_expr, this_v = "(W-w)/2", v_expr
             else:
                 angle = _TILT_ANGLES_DEG[i % len(_TILT_ANGLES_DEG)] if image_tilt else 0.0
                 parts.append(_image_chain(
@@ -5072,15 +5199,15 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                     image_dur=end - start, start=start,
                     overlay_w=overlay_w, angle_deg=angle, ken_burns=ken_burns,
                 ))
+                this_v = v_expr
+                if slide_in:
+                    x_expr = (f"'if(lt(t-{start:.2f}\\,0.3)\\,"
+                              f"-w+(W/2+w/2)*((t-{start:.2f})/0.3)\\,(W-w)/2)'")
+                else:
+                    x_expr = "(W-w)/2"
             nxt = f"bg{i+1}"
-            if slide_in:
-                # image slides in from the left over ~0.3s at its start time
-                x_expr = (f"'if(lt(t-{start:.2f}\\,0.3)\\,"
-                          f"-w+(W/2+w/2)*((t-{start:.2f})/0.3)\\,(W-w)/2)'")
-            else:
-                x_expr = "(W-w)/2"
             parts.append(
-                f"[{cur}][img{i}]overlay={x_expr}:{v_expr}:format=auto:eof_action=pass[{nxt}]"
+                f"[{cur}][img{i}]overlay={x_expr}:{this_v}:format=auto:eof_action=pass[{nxt}]"
             )
             cur = nxt
         parts.append(f"[{cur}]subtitles={ass_path.name}[capbase]")
@@ -6371,13 +6498,16 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             else:
                 n_images = max(1, min(int(job.get("image_count", 3)), 50))
 
-            allow_photos = bool(job.get("image_allow_photos", True))
+            # Faceless = a pure hand-drawn slideshow: NO real photos, NO stock
+            # video — every beat must be an AI render in the chosen flat style.
+            allow_photos = bool(job.get("image_allow_photos", True)) and not faceless_mode
             # Videos need a source: Pexels stock (key) OR Higgsfield AI video.
             higgsfield_ready = bool(
                 getattr(cfg, "use_higgsfield", False)
                 and (getattr(cfg, "higgsfield_video_model", "") or "").strip()
                 and _resolve_higgsfield_cli(getattr(cfg, "higgsfield_cli_path", "") or "higgsfield"))
             allow_videos = (bool(job.get("image_allow_videos", False))
+                            and not faceless_mode
                             and (bool(getattr(cfg, "pexels_api_key", "")) or higgsfield_ready))
             if getattr(cfg, "use_higgsfield", False) and not higgsfield_ready:
                 step("      WARN: use_higgsfield on, but CLI not found or "
@@ -6398,6 +6528,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                                            allow_videos=allow_videos, on_step=step)
 
             consecutive_failures = 0
+            # Faceless landscape → generate/keep images at 16:9 so they fill the
+            # widescreen frame (no squared cards, no side bars).
+            faceless_wide = faceless_mode and not is_portrait_out
             cloudflare_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
             grok_ready = bool(getattr(cfg, "use_grok_cli", False)
                               and _resolve_grok_cli(getattr(cfg, "grok_cli_path", "") or "grok"))
@@ -6453,10 +6586,15 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                         step(f"      free-photo miss ({str(e)[:120]}), AI render instead")
 
                 # AI render: Grok Build CLI first (subscription, opt-in), then
-                # Cloudflare Flux, then Pollinations.
+                # Cloudflare Flux, then Pollinations. Faceless landscape wants
+                # 16:9 — Cloudflare can be asked directly; Grok/Pollinations
+                # output is re-cropped to 16:9 afterwards (see _faceless_recrop).
+                cf_w, cf_h = (1280, 720) if faceless_wide else (1024, 1024)
                 if not ok and grok_ready:
                     try:
                         fetch_image_from_grok_cli(prompt, target_path, cfg, on_step=step)
+                        if faceless_wide:
+                            _faceless_recrop(target_path)
                         image_paths.append(target_path)
                         ok = True
                     except Exception as e:
@@ -6467,6 +6605,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                     try:
                         fetch_image_from_cloudflare(
                             prompt, target_path, cfg,
+                            width=cf_w, height=cf_h,
                             seed=random.randint(1, 1_000_000),
                         )
                         image_paths.append(target_path)
@@ -6478,8 +6617,11 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 if not ok:
                     try:
                         fetch_image_from_pollinations(
-                            prompt, target_path, seed=random.randint(1, 1_000_000)
+                            prompt, target_path, seed=random.randint(1, 1_000_000),
+                            width=cf_w, height=cf_h,
                         )
+                        if faceless_wide:
+                            _faceless_recrop(target_path)
                         image_paths.append(target_path)
                         ok = True
                     except Exception as e:
@@ -6719,6 +6861,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             emoji_events=emoji_png_events,
             caption_position=eff_cap_pos,
             effects=effects_plan,
+            faceless=faceless_mode,
         )
         speed = float(job.get("playback_speed", 1.0))
         if abs(speed - 1.0) > 0.01:

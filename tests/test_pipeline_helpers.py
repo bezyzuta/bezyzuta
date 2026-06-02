@@ -432,3 +432,80 @@ class TestColorBackground:
             pipeline.make_color_background(5.0, out, 1080, 1920, color="#0d0d0d")
         joined = " ".join(str(a) for a in run_mock.call_args[0][0])
         assert "color=c=#0d0d0d:s=1080x1920" in joined
+
+
+class TestSanitizeScriptForTTS:
+    def test_strips_timestamp_prefixes(self):
+        out = pipeline._sanitize_script_for_tts("00:07 - Hello there")
+        assert out == "Hello there"
+        out2 = pipeline._sanitize_script_for_tts("00_15 - The end")
+        assert out2 == "The end"
+
+    def test_strips_bare_leading_timestamp(self):
+        assert pipeline._sanitize_script_for_tts("0:07 It was dark") == "It was dark"
+
+    def test_strips_inline_timestamp(self):
+        out = pipeline._sanitize_script_for_tts("Then at 1:23 it happened")
+        assert "1:23" not in out and "Then at" in out and "it happened" in out
+
+    def test_strips_markdown_header_and_emphasis(self):
+        assert pipeline._sanitize_script_for_tts("# Chapter One") == "Chapter One"
+        assert pipeline._sanitize_script_for_tts("This is **really** big") == "This is really big"
+
+    def test_strips_stage_directions(self):
+        out = pipeline._sanitize_script_for_tts("He ran [pause] then stopped (SFX: boom)")
+        assert "[pause]" not in out and "SFX" not in out
+        assert "He ran" in out and "then stopped" in out
+
+    def test_keeps_normal_hyphen_and_colon(self):
+        # Must NOT delete a real hyphen or a colon in speech.
+        s = "It's a well-known fact: he won"
+        assert pipeline._sanitize_script_for_tts(s) == s
+
+    def test_empty(self):
+        assert pipeline._sanitize_script_for_tts("") == ""
+
+
+class TestFacelessAspect:
+    def test_save_aspect_crops_to_16_9(self, tmp_path):
+        from PIL import Image
+        import io, os
+        buf = io.BytesIO()
+        Image.frombytes("RGB", (1000, 1000), os.urandom(1000 * 1000 * 3)).save(buf, "PNG")
+        out = tmp_path / "o.png"
+        assert pipeline._save_aspect_image(buf.getvalue(), out)
+        with Image.open(out) as im:
+            assert abs(im.width / im.height - 16 / 9) < 0.02
+
+    def test_fullframe_chain_no_border_covers_frame(self):
+        ff = pipeline._fullframe_chain(2, 0, 3.0, 1.0, 1920, 1080)
+        assert "color=white" not in ff      # no card border
+        assert "crop=1920:1080" in ff       # covers the whole frame
+        assert "rotate" not in ff           # no tilt
+
+    def test_fullframe_chain_video_trims(self):
+        ff = pipeline._fullframe_chain(2, 0, 3.0, 1.0, 1920, 1080, is_video=True)
+        assert "trim=duration=3.00" in ff
+
+
+class TestRobloxCapRespectsStyle:
+    def test_flat_style_rewrite_stays_stickman(self):
+        class C:
+            image_style = "ms_paint_stickman"
+            image_roblox_max = 1
+        beats = [{"source": "ai", "motif": "a roblox blocky avatar", "query": "", "prompt": "x"}
+                 for _ in range(3)]
+        out = pipeline._enforce_roblox_cap(beats, C())
+        # Beats beyond the cap are rewritten but must keep the stickman look.
+        rewritten = [b for b in out if "MS Paint" in b["prompt"]]
+        assert len(rewritten) >= 2
+        assert not any("photorealistic" in b["prompt"] for b in out)
+
+    def test_auto_style_rewrite_is_photoreal(self):
+        class C:
+            image_style = "auto"
+            image_roblox_max = 1
+        beats = [{"source": "ai", "motif": "a roblox blocky avatar", "query": "", "prompt": "x"}
+                 for _ in range(3)]
+        out = pipeline._enforce_roblox_cap(beats, C())
+        assert any("photorealistic" in b["prompt"] for b in out)
