@@ -104,6 +104,7 @@ def generate(
     skip_images: bool,
     image_tilt: bool,
     images_continuous: bool,
+    export_timestamp_images: bool,
     image_change_secs: float,
     image_gap_secs: float,
     image_allow_photos: bool,
@@ -152,10 +153,14 @@ def generate(
         # whole pipeline (crop, scale, captions, overlays) follows. Config
         # file values are ignored when this flag is set, which is the
         # intended behavior — the GUI is the source of truth.
-        if (output_format or "portrait").lower() == "landscape":
+        _fmt = (output_format or "portrait").lower()
+        if _fmt == "landscape":
             cfg.target_w, cfg.target_h = 1920, 1080
-        else:
+        else:  # portrait or faceless
             cfg.target_w, cfg.target_h = 1080, 1920
+        # Faceless Story preset: hand-drawn style (unless the user explicitly
+        # picked a non-auto style) + continuous per-beat images.
+        _faceless = _fmt == "faceless"
         # Claude-CLI provider toggle (overrides config.json for this run).
         cfg.use_claude_cli = bool(use_claude_cli)
         if claude_cli_model is not None:
@@ -164,6 +169,10 @@ def generate(
         # keeps whatever's in config.json.
         if image_style:
             cfg.image_style = str(image_style).strip()
+        # Faceless format forces a hand-drawn style unless the user already
+        # picked a flat one — default to MS-Paint stickman.
+        if _faceless and (cfg.image_style or "auto").lower() not in ("ms_paint_stickman", "doodle_sketch"):
+            cfg.image_style = "ms_paint_stickman"
     except Exception as e:
         yield f"Config-Fehler: {e}", None
         return
@@ -221,7 +230,10 @@ def generate(
             "image_vpos": float(image_vpos),
             "no_image": bool(skip_images),
             "image_tilt": bool(image_tilt),
-            "images_continuous": bool(images_continuous),
+            # Faceless format forces continuous per-beat images; otherwise honor
+            # the checkbox.
+            "images_continuous": bool(images_continuous) or _faceless,
+            "export_timestamp_images": bool(export_timestamp_images),
             "image_change_secs": float(image_change_secs),
             "image_gap_secs": float(image_gap_secs),
             "image_allow_photos": bool(image_allow_photos),
@@ -408,12 +420,15 @@ def build_app() -> gr.Blocks:
             choices=[
                 ("📱 Short — 9:16 Hochformat (1080×1920)", "portrait"),
                 ("🎬 Lang-Video — 16:9 Querformat (1920×1080)", "landscape"),
+                ("📝 Faceless Story — 9:16, handgezeichneter Stil", "faceless"),
             ],
             value="portrait",
             label="🖼️ Output-Format",
             info=("Hochformat = YouTube/TikTok-Short, schmaler vertikaler Crop, "
                   "Auto-Reframe wirkt. Querformat = normales YouTube-Video, "
-                  "kein Crop, Auto-Reframe wird ignoriert."),
+                  "kein Crop. Faceless = Story-Video im Danny-Why-Stil "
+                  "(Strichmännchen/Doodle, durchgehende Bilder) — setzt Bild-Stil "
+                  "+ Optionen automatisch."),
         )
 
         with gr.Accordion("⚙️ Config-Datei", open=False):
@@ -811,6 +826,14 @@ def build_app() -> gr.Blocks:
                       "alle paar Sekunden, lückenlos. Anzahl wird automatisch aus der Länge "
                       "berechnet (Bild-Anzahl-Slider wird dann ignoriert). Nur Hochformat."),
             )
+            export_timestamp_images = gr.Checkbox(
+                value=False,
+                label="🗂️ Bilder zusätzlich nach Zeitstempel exportieren (für CapCut)",
+                info=("Legt parallel zum fertigen Video alle generierten Bilder in einen "
+                      "Ordner '<slug>_timestamp_images' — benannt nach ihrer Einblende-Zeit "
+                      "(00_07.png, 00_15.png …), wie im Danny-Why-Workflow. Du kannst sie "
+                      "dann manuell in CapCut auf die Timeline ziehen."),
+            )
             image_change_secs = gr.Slider(
                 1.0, 6.0, value=3.5, step=0.5,
                 label="⏱️ Sekunden pro Bild (bei durchgehend)",
@@ -1087,6 +1110,7 @@ def build_app() -> gr.Blocks:
                 image_style,
                 custom_image_prompts, uploaded_images,
                 skip_images, image_tilt, images_continuous,
+                export_timestamp_images,
                 image_change_secs, image_gap_secs, image_allow_photos, image_allow_videos,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 caption_position,

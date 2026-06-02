@@ -4563,6 +4563,51 @@ def _image_schedule(n: int, duration: float, image_dur: float,
     return out
 
 
+def _ts_filename(seconds: float, ext: str) -> str:
+    """Format a start time as a MM_SS filename stem (Danny-Why style), e.g.
+    7.0 -> '00_07', 75.4 -> '01_15'. Clamps negatives to 0."""
+    s = max(0, int(round(seconds)))
+    return f"{s // 60:02d}_{s % 60:02d}{ext}"
+
+
+def export_timestamped_images(image_paths: list, schedule: list,
+                              out_dir: Path, on_step=None) -> Path:
+    """Copy each generated image/clip into out_dir named after its on-screen
+    START time (00_07.png, 00_15.png, ...) — the Danny-Why CapCut workflow:
+    drag each onto the timeline at its timestamp. Runs ALONGSIDE the normal
+    video render, never instead of it. Returns out_dir.
+
+    On a timestamp collision (two beats round to the same second) a -2/-3
+    suffix is added so nothing is silently overwritten."""
+    import shutil
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    used: dict[str, int] = {}
+    written = 0
+    for img, (start, _end) in zip(image_paths, schedule):
+        src = Path(img)
+        if not src.is_file():
+            continue
+        ext = src.suffix.lower() or ".png"
+        name = _ts_filename(start, ext)
+        if name in used:
+            used[name] += 1
+            name = f"{name[:-len(ext)]}-{used[name]}{ext}"
+        else:
+            used[name] = 1
+        try:
+            shutil.copy2(src, out_dir / name)
+            written += 1
+        except OSError as e:
+            log(f"      timestamp-export: konnte {src.name} nicht kopieren ({str(e)[:80]})")
+    log(f"      Zeitstempel-Bilder exportiert: {written} → {out_dir}")
+    return out_dir
+
+
 _TILT_ANGLES_DEG = [-3.0, 2.5, -2.0, 3.0, -2.5]
 
 
@@ -6422,6 +6467,20 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             "paths": [str(p) for p in image_paths],
             "count": len(image_paths),
         })
+
+    # Optional: also export the generated images named by their on-screen
+    # timestamp (00_07.png …) for manual CapCut editing — runs ALONGSIDE the
+    # normal render, never instead of it (Danny-Why faceless workflow).
+    if image_paths and bool(job.get("export_timestamp_images", False)):
+        ts_continuous = bool(job.get("images_continuous", False)) and is_portrait_out
+        ts_schedule = _image_schedule(len(image_paths), target, image_duration,
+                                      continuous=ts_continuous,
+                                      gap=float(job.get("image_gap_secs", 0.5)))
+        ts_dir = Path(cfg.output_dir).expanduser() / f"{slug}_timestamp_images"
+        try:
+            export_timestamped_images(image_paths, ts_schedule, ts_dir, on_step=step)
+        except Exception as e:
+            step(f"      WARN: Zeitstempel-Export fehlgeschlagen: {str(e)[:120]}")
 
     # Background music: mix AFTER transcription (so captions stay clean)
     audio_for_compose = vo

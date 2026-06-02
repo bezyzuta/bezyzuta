@@ -356,3 +356,53 @@ class TestUnloadTTSModel:
             assert pipeline._CHATTERBOX_MODEL is None
         finally:
             pipeline._CHATTERBOX_MODEL = None
+
+
+class TestTimestampImageExport:
+    def test_ts_filename_format(self):
+        assert pipeline._ts_filename(0, ".png") == "00_00.png"
+        assert pipeline._ts_filename(7.0, ".png") == "00_07.png"
+        assert pipeline._ts_filename(75.4, ".png") == "01_15.png"
+        assert pipeline._ts_filename(605, ".mp4") == "10_05.mp4"
+        assert pipeline._ts_filename(-3, ".png") == "00_00.png"  # clamps
+
+    def test_export_names_by_timestamp(self, tmp_path):
+        imgs = []
+        for i in range(3):
+            f = tmp_path / f"image_{i}.png"
+            f.write_bytes(b"x" * 500)
+            imgs.append(f)
+        schedule = [(0.0, 3.0), (7.0, 10.0), (15.0, 18.0)]
+        out = tmp_path / "export"
+        pipeline.export_timestamped_images(imgs, schedule, out)
+        assert {p.name for p in out.iterdir()} == {"00_00.png", "00_07.png", "00_15.png"}
+
+    def test_export_handles_collision(self, tmp_path):
+        # Two beats that round to the same second must not overwrite.
+        imgs = []
+        for i in range(2):
+            f = tmp_path / f"image_{i}.png"
+            f.write_bytes(b"x" * 500)
+            imgs.append(f)
+        schedule = [(7.0, 8.0), (7.2, 8.2)]
+        out = tmp_path / "export"
+        pipeline.export_timestamped_images(imgs, schedule, out)
+        names = sorted(p.name for p in out.iterdir())
+        assert len(names) == 2
+        assert "00_07.png" in names
+
+    def test_export_skips_missing_files(self, tmp_path):
+        real = tmp_path / "image_0.png"
+        real.write_bytes(b"x" * 500)
+        imgs = [real, tmp_path / "gone.png"]
+        schedule = [(0.0, 3.0), (5.0, 8.0)]
+        out = tmp_path / "export"
+        pipeline.export_timestamped_images(imgs, schedule, out)
+        assert {p.name for p in out.iterdir()} == {"00_00.png"}
+
+    def test_export_preserves_mp4_extension(self, tmp_path):
+        clip = tmp_path / "image_0.mp4"
+        clip.write_bytes(b"x" * 500)
+        out = tmp_path / "export"
+        pipeline.export_timestamped_images([clip], [(7.0, 10.0)], out)
+        assert (out / "00_07.mp4").is_file()
