@@ -65,6 +65,32 @@ class TestCinematicImagePrompts:
         out = pipeline._finalize_scene_prompt("a hero", _C())
         assert "anime watercolor" in out
 
+    def test_faceless_stickman_uses_flat_suffix(self):
+        # The MS-Paint preset must NOT carry the cinematic suffix (rim lighting,
+        # saturated colors, depth of field) — that would fight the flat look.
+        class _C:
+            image_style = "ms_paint_stickman"
+        out = pipeline.derive_image_prompt("a person in an empty room", _C())
+        assert "MS Paint" in out and "stickman" in out
+        assert "dramatic rim lighting" not in out
+        assert "vibrant saturated colors" not in out
+        assert "depth of field" not in out
+        assert "no watermark" in out  # minimal flat suffix still applied
+
+    def test_faceless_doodle_uses_flat_suffix(self):
+        class _C:
+            image_style = "doodle_sketch"
+        out = pipeline._finalize_scene_prompt("a person thinking", _C())
+        assert "doodle" in out or "sketch" in out
+        assert "dramatic rim lighting" not in out
+
+    def test_faceless_styles_force_zero_roblox(self):
+        for style in ("ms_paint_stickman", "doodle_sketch"):
+            class _C:
+                image_style = style
+                image_roblox_max = 5
+            assert pipeline._roblox_cap(_C()) == 0
+
     def test_scene_prompt_template_asks_for_motif_only(self):
         # The template must instruct beat-matching and motif-only output.
         assert "ILLUSTRIEREN" in pipeline.SCENE_PROMPT

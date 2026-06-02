@@ -3517,6 +3517,10 @@ _IMAGE_STYLE_SUFFIX = (
     "high detail, depth of field, no text, no watermark, no logos"
 )
 
+# Minimal suffix for FLAT styles (stickman / doodle) where the cinematic suffix
+# above (rim lighting, saturated colors, depth of field) would fight the look.
+_IMAGE_STYLE_SUFFIX_FLAT = "centered, no text, no watermark, no logos"
+
 # Optional hard style override, keyed off cfg.image_style. "auto" (default) lets
 # the scene planner pick the medium per beat. The named presets force one look
 # for the whole video; any other non-empty value is used verbatim as the style.
@@ -3524,7 +3528,32 @@ _IMAGE_STYLE_PRESETS = {
     "roblox": "cinematic 3D render, Roblox blocky avatar character, dark atmospheric background, octane render",
     "realistic": "photorealistic, ultra-realistic photography, natural lighting, shot on a DSLR, 4k",
     "cinematic": "cinematic film still, dramatic composition, moody lighting, photorealistic",
+    # Faceless / explainer styles (Danny-Why-style). These are FLAT — they use
+    # _IMAGE_STYLE_SUFFIX_FLAT so the cinematic tokens don't pollute them.
+    "ms_paint_stickman": (
+        "The image must look like an extremely simple, poorly drawn stickman "
+        "figure made in MS Paint. Sharp black lines, flat pure white background, "
+        "absolutely no shading, no 3D effects, no professional digital art "
+        "elements. It should look like it was drawn by a complete amateur in 10 seconds."
+    ),
+    "doodle_sketch": (
+        "The image must be in a clean, hand-drawn doodle or pencil sketch style. "
+        "Simple linework, white or very light background, minimalistic but "
+        "aesthetic. It should look like a neat sketch from a notebook, not messy, "
+        "but still maintaining a simple, flat minimalist cartoon vibe."
+    ),
 }
+
+# Styles that are flat/hand-drawn → use the minimal suffix, never the cinematic
+# one. Also drives the Roblox cap (these force 0 Roblox renders).
+_FLAT_IMAGE_STYLES = {"ms_paint_stickman", "doodle_sketch"}
+
+
+def _quality_suffix_for(cfg) -> str:
+    """Pick the render-quality suffix that matches the chosen style: the flat
+    minimal one for stickman/doodle, otherwise the cinematic default."""
+    style = (getattr(cfg, "image_style", "auto") or "auto").strip().lower()
+    return _IMAGE_STYLE_SUFFIX_FLAT if style in _FLAT_IMAGE_STYLES else _IMAGE_STYLE_SUFFIX
 
 
 def _style_directive(cfg) -> str:
@@ -3541,7 +3570,7 @@ def derive_image_prompt(seed_text: str, cfg=None) -> str:
     directive = _style_directive(cfg) if cfg is not None else ""
     if directive:
         parts.append(directive)
-    parts.append(_IMAGE_STYLE_SUFFIX)
+    parts.append(_quality_suffix_for(cfg) if cfg is not None else _IMAGE_STYLE_SUFFIX)
     return ", ".join(p for p in parts if p)
 
 
@@ -3694,15 +3723,17 @@ def generate_scene_prompts_cloudflare(script: str, n: int, cfg: Config) -> list[
 def _finalize_scene_prompt(motif: str, cfg=None) -> str:
     """Append the mandatory quality suffix (and any forced cfg.image_style
     directive) to an LLM-generated motif, unless already present. With
-    image_style=auto the motif keeps the medium the planner chose for it."""
+    image_style=auto the motif keeps the medium the planner chose for it.
+    Flat styles (stickman/doodle) use the minimal suffix, not the cinematic one."""
     motif = motif.strip()
-    if _IMAGE_STYLE_SUFFIX in motif:
+    suffix = _quality_suffix_for(cfg) if cfg is not None else _IMAGE_STYLE_SUFFIX
+    if suffix in motif or _IMAGE_STYLE_SUFFIX in motif:
         return motif
     directive = _style_directive(cfg) if cfg is not None else ""
     parts = [motif]
     if directive:
         parts.append(directive)
-    parts.append(_IMAGE_STYLE_SUFFIX)
+    parts.append(suffix)
     return ", ".join(p for p in parts if p)
 
 

@@ -98,6 +98,7 @@ def generate(
     image_duration: float,
     image_size: float,
     image_vpos: float,
+    image_style: str,
     custom_image_prompts: str,
     uploaded_images,
     skip_images: bool,
@@ -159,6 +160,10 @@ def generate(
         cfg.use_claude_cli = bool(use_claude_cli)
         if claude_cli_model is not None:
             cfg.claude_cli_model = str(claude_cli_model).strip()
+        # Image-style picker (overrides config.json for this run). Empty/None
+        # keeps whatever's in config.json.
+        if image_style:
+            cfg.image_style = str(image_style).strip()
     except Exception as e:
         yield f"Config-Fehler: {e}", None
         return
@@ -759,6 +764,21 @@ def build_app() -> gr.Blocks:
                     label="↕️ Bild vertikal (− hoch / 0 Mitte / + runter)",
                     info="0 = genau Mitte. Negativ schiebt nach oben, positiv nach unten.",
                 )
+            image_style = gr.Dropdown(
+                choices=[
+                    ("🤖 Auto — KI wählt pro Bild (Roblox-Render / fotoreal)", "auto"),
+                    ("🧱 Roblox — alle Bilder als 3D-Roblox-Render", "roblox"),
+                    ("📷 Realistisch — fotorealistisch, kein Roblox", "realistic"),
+                    ("🎞️ Cinematisch — Film-Still-Look", "cinematic"),
+                    ("✏️ MS-Paint Strichmännchen (Faceless-Style)", "ms_paint_stickman"),
+                    ("✒️ Doodle / Sketch (Faceless-Style)", "doodle_sketch"),
+                ],
+                value="auto",
+                label="🎨 Bild-Stil",
+                info=("Wie alle KI-Bilder aussehen. 'Auto' = pro Beat passend. "
+                      "Die Faceless-Styles (Strichmännchen/Doodle) sind für "
+                      "Explainer-/Story-Videos im Danny-Why-Stil."),
+            )
             custom_image_prompts = gr.Textbox(
                 value="",
                 label="Eigene Bild-Prompts (optional, eine Zeile pro Bild)",
@@ -1064,6 +1084,7 @@ def build_app() -> gr.Blocks:
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
                 enable_captions,
                 image_count, image_duration, image_size, image_vpos,
+                image_style,
                 custom_image_prompts, uploaded_images,
                 skip_images, image_tilt, images_continuous,
                 image_change_secs, image_gap_secs, image_allow_photos, image_allow_videos,
