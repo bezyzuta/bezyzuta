@@ -444,9 +444,23 @@ class TestSanitizeScriptForTTS:
     def test_strips_bare_leading_timestamp(self):
         assert pipeline._sanitize_script_for_tts("0:07 It was dark") == "It was dark"
 
-    def test_strips_inline_timestamp(self):
-        out = pipeline._sanitize_script_for_tts("Then at 1:23 it happened")
-        assert "1:23" not in out and "Then at" in out and "it happened" in out
+    def test_strips_inline_timestamp_only_in_timestamp_context(self):
+        # Parenthesized / bracketed timestamps ARE artifacts → stripped.
+        assert "0:42" not in pipeline._sanitize_script_for_tts("It happened (0:42).")
+        # But a bare D:DD in plain prose is indistinguishable from a real time
+        # (a score, a clock time, a verse) and MUST be preserved.
+        keep = pipeline._sanitize_script_for_tts("Then at 1:23 it happened")
+        assert "1:23" in keep
+
+    def test_preserves_real_times_and_scores(self):
+        for s in ["John 3:16 is famous", "a 2:1 ratio", "meet me at 5:30",
+                  "the score was 3:2", "It took 5:00 minutes"]:
+            assert pipeline._sanitize_script_for_tts(s) == s
+
+    def test_keeps_legit_bracketed_speech(self):
+        # Only keyword stage-directions are removed; real bracketed words stay.
+        assert pipeline._sanitize_script_for_tts(
+            "This is [absolutely insane] dude") == "This is [absolutely insane] dude"
 
     def test_strips_markdown_header_and_emphasis(self):
         assert pipeline._sanitize_script_for_tts("# Chapter One") == "Chapter One"

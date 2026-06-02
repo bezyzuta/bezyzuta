@@ -259,7 +259,9 @@ def generate(
             "subscribe_sting_file": str(subscribe_sting_file or "").strip(),
             "subscribe_sting_volume": float(subscribe_sting_volume),
             "whisper_device": str(whisper_device or "auto"),
-            "multiclip_enabled": bool(multiclip_enabled),
+            # Multiclip needs a gameplay source to cut from — meaningless and
+            # crash-prone in faceless mode, so force it off there.
+            "multiclip_enabled": bool(multiclip_enabled) and not _faceless,
             "multiclip_count": int(multiclip_count),
             "enable_music": bool(enable_music),
             "music_dir": str(music_dir or ""),

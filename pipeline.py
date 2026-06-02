@@ -604,31 +604,45 @@ def _sanitize_script_for_tts(text: str) -> str:
     must never delete a normal hyphen, a colon in real speech, or apostrophes."""
     if not text:
         return text
-    out_lines = []
-    for line in text.split("\n"):
-        s = line
-        # "00_07 - " / "00:07 - " / "0:07 — " timestamp prefix at line start.
-        s = re.sub(r"^\s*\d{1,2}[:_]\d{2}(?:[:_]\d{2})?\s*[-–—]\s*", "", s)
-        # Bare leading timestamp at line start: "0:07", "00:07", "1:02:03".
-        s = re.sub(r"^\s*\d{1,2}:\d{2}(?::\d{2})?\b[.\)]?\s*", "", s)
+
+    def _strip_line(s: str) -> str:
+        # "00_07 - " / "00:07 - " / "0:07 — " timestamp+dash prefix at line start,
+        # applied repeatedly so a single-line "0:07 - A 0:14 - B" loses each one.
+        prev = None
+        while prev != s:
+            prev = s
+            s = re.sub(r"^\s*\d{1,2}[:_]\d{2}(?:[:_]\d{2})?\s*[-–—]\s*", "", s)
+            # Bare leading timestamp at line start: "0:07", "00:07", "1:02:03".
+            s = re.sub(r"^\s*\d{1,2}:\d{2}(?::\d{2})?\b[.\)]?\s*", "", s)
         # Markdown header markers at line start ("# ", "## "...).
         s = re.sub(r"^\s*#{1,6}\s+", "", s)
         # Bullet "- " / "* " at line start ONLY when it precedes a timestamp.
         s = re.sub(r"^\s*[-*]\s+(?=\d{1,2}[:_]\d{2})", "", s)
-        out_lines.append(s)
-    text = "\n".join(out_lines)
-    # Bracketed stage directions: [pause], [music] (length-capped so a long
-    # legit bracketed phrase isn't nuked) and (SFX: ...) / (MUSIC ...) etc.
-    text = re.sub(r"\[[^\]\n]{0,60}\]", "", text)
-    text = re.sub(r"\((?:SFX|SOUND|MUSIC|BEAT|PAUSE|CUT|VFX|B-?ROLL)[^)\n]*\)",
-                  "", text, flags=re.IGNORECASE)
-    # Inline timestamps mid-line ("... (0:42) ...", " at 1:23").
-    text = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", "", text)
+        return s
+
+    text = "\n".join(_strip_line(line) for line in text.split("\n"))
+    # Stage directions — keyword-gated in BOTH bracket styles so legit speech
+    # like "[absolutely insane]" or "(my brother)" survives; only [SFX...],
+    # [music], (PAUSE), (cut to ...) etc. are removed.
+    _direction = r"(?:SFX|SOUND|MUSIC|BEAT|PAUSE|CUT|VFX|B-?ROLL|INTRO|OUTRO|TRANSITION)"
+    text = re.sub(rf"\[\s*{_direction}[^\]\n]*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[\s*(?:pause|music|beat)\s*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(rf"\(\s*{_direction}[^)\n]*\)", "", text, flags=re.IGNORECASE)
+    # Inline timestamps — ONLY in clear timestamp contexts, so real speech like
+    # "John 3:16", "a 2:1 ratio" or "meet me at 5:30" is preserved:
+    #   • parenthesized "(0:42)" / "[1:23]"
+    #   • dash-bracketed segment markers "- 0:42 -"
+    text = re.sub(r"[\(\[]\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\)\]]", "", text)
+    text = re.sub(r"(?<=[-–—])\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?=[-–—])", " ", text)
     # Markdown emphasis: asterisks wholesale; underscores only as _word_ wrappers
     # (never a bare hyphen or snake_case mid-word underscore).
     text = re.sub(r"\*{1,3}", "", text)
     text = re.sub(r"(?<!\w)_(?=\w)|(?<=\w)_(?!\w)", "", text)
-    # Collapse whitespace left behind.
+    # Tidy orphaned punctuation/separators left behind by removals.
+    text = re.sub(r"\(\s*\)", "", text)             # empty parens "()"
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)    # " ," → ","
+    text = re.sub(r"[-–—]\s+[-–—]", "", text)       # collapse "- -" left by removals
+    text = re.sub(r"(?m)^\s*[-–—]\s+", "", text)    # leftover leading dash on a line
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -6068,7 +6082,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         raw = None
         step("[1/5] Faceless-Modus: kein Gameplay-Download (einfacher Hintergrund)")
         if state:
-            state.mark_done(Step.DOWNLOAD, {"raw_path": ""})
+            # No "*_path" key: an empty path string would make is_done() think a
+            # file exists (Path("").exists() is True) and feed Path(".") into the
+            # scene-picker on a non-faceless resume.
+            state.mark_done(Step.DOWNLOAD, {"faceless": True})
     elif pre_downloaded and Path(pre_downloaded).is_file():
         raw = Path(pre_downloaded)
         step(f"[1/5] reusing pre-downloaded source: {raw.name}")
@@ -6232,14 +6249,21 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     if faceless_mode:
         # No gameplay: build a plain colored background to host the images.
         clip_segments = 1
-        bg_color = (job.get("faceless_bg_color") or "white").strip() or "white"
-        step(f"[3/5] Faceless-Hintergrund ({bg_color}, {target:.1f}s)")
-        clip = make_color_background(target, work / "clip.mp4",
-                                     cfg.target_w, cfg.target_h, color=bg_color)
-        if state:
-            state.mark_done(Step.SCENE_PICK, {
-                "clip_path": clip, "target": target, "clip_segments": clip_segments,
-            })
+        if state and state.is_done(Step.SCENE_PICK):
+            clip = Path(state.get_artifact(Step.SCENE_PICK, "clip_path"))
+            cached_target = state.get_artifact(Step.SCENE_PICK, "target")
+            if cached_target is not None:
+                target = float(cached_target)
+            step(f"[3/5] resume: Faceless-Hintergrund gecacht ({clip.name})")
+        else:
+            bg_color = (job.get("faceless_bg_color") or "white").strip() or "white"
+            step(f"[3/5] Faceless-Hintergrund ({bg_color}, {target:.1f}s)")
+            clip = make_color_background(target, work / "clip.mp4",
+                                         cfg.target_w, cfg.target_h, color=bg_color)
+            if state:
+                state.mark_done(Step.SCENE_PICK, {
+                    "clip_path": clip, "target": target, "clip_segments": clip_segments,
+                })
     elif state and state.is_done(Step.SCENE_PICK):
         clip = Path(state.get_artifact(Step.SCENE_PICK, "clip_path"))
         # Recover the post-mutation values so downstream stages match cache.
@@ -6514,7 +6538,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                      "higgsfield_video_model unset — using Pexels for video beats")
             if user_prompts:
                 step(f"      using {len(user_prompts)} user-provided image prompt(s)")
-                plan = [{"source": "ai", "prompt": p, "query": ""} for p in user_prompts[:n_images]]
+                # Finalize through the chosen style so user prompts also get the
+                # stickman/doodle directive in faceless mode (not raw → mixed look).
+                plan = [{"source": "ai", "motif": p, "query": "",
+                         "prompt": _finalize_scene_prompt(p, cfg)} for p in user_prompts[:n_images]]
                 if len(plan) < n_images:
                     step(f"      filling remaining {n_images - len(plan)} beat(s) via LLM")
                     plan.extend(generate_scene_plan(script, n_images - len(plan), cfg,
@@ -6848,7 +6875,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             image_paths=image_paths,
             duration=target,
             image_duration=image_duration,
-            mute_source_audio=using_bgm,
+            # The faceless color background has NO audio stream, so the amix
+            # path (which references [0:a]) would abort ffmpeg — always mute it.
+            mute_source_audio=using_bgm or faceless_mode,
             progress_bar=bool(job.get("progress_bar", False)),
             progress_color=str(job.get("progress_color", "red")),
             progress_duration=vo_dur,
