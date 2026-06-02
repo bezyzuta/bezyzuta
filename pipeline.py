@@ -126,6 +126,14 @@ class Config:
     use_grok_cli: bool
     grok_cli_path: str
     grok_cli_extra_args: str
+    # Higgsfield CLI as an AI-VIDEO provider for the video beats (subscription,
+    # browser-login, no API key). When on (and a model is set), it's tried
+    # FIRST for video beats, with Pexels stock B-roll as fallback. Opt-in:
+    # video generation is slow (~1-3 min/clip) and costs subscription credits.
+    use_higgsfield: bool
+    higgsfield_cli_path: str
+    higgsfield_video_model: str
+    higgsfield_extra_args: str
     # AI-image style. "auto" (default) = the scene planner picks the medium per
     # beat (Roblox-render for game characters, photoreal for real/abstract
     # subjects). "roblox"/"realistic"/"cinematic" force one look for the whole
@@ -185,6 +193,10 @@ class Config:
             use_grok_cli=bool(data.get("use_grok_cli", False)),
             grok_cli_path=str(data.get("grok_cli_path", "grok")),
             grok_cli_extra_args=str(data.get("grok_cli_extra_args", "")),
+            use_higgsfield=bool(data.get("use_higgsfield", False)),
+            higgsfield_cli_path=str(data.get("higgsfield_cli_path", "higgsfield")),
+            higgsfield_video_model=str(data.get("higgsfield_video_model", "")),
+            higgsfield_extra_args=str(data.get("higgsfield_extra_args", "")),
             image_style=str(data.get("image_style", "auto")).strip() or "auto",
             image_roblox_max=int(data.get("image_roblox_max", 2)),
             image_cooldown_secs=float(data.get("image_cooldown_secs", 0.0)),
@@ -723,6 +735,9 @@ _CLAUDE_CLI_PATH: str | None = None
 
 # Same cache for the Grok Build CLI (image provider). None=untested.
 _GROK_CLI_PATH: str | None = None
+
+# Same cache for the Higgsfield CLI (AI video/image provider). None=untested.
+_HIGGSFIELD_CLI_PATH: str | None = None
 
 
 def _resolve_claude_cli(claude_path: str = "claude") -> str:
@@ -4174,6 +4189,152 @@ def fetch_video_from_pexels(query: str, out_path: Path, cfg: "Config",
     return out_path
 
 
+def _resolve_higgsfield_cli(hf_path: str = "higgsfield") -> str:
+    """Absolute path to the `higgsfield` executable, or "" if not found.
+    Cached. Mirrors _resolve_grok_cli (Windows .cmd/.exe needs the full path)."""
+    global _HIGGSFIELD_CLI_PATH
+    if _HIGGSFIELD_CLI_PATH is not None:
+        return _HIGGSFIELD_CLI_PATH
+    import shutil
+    if hf_path and Path(hf_path).expanduser().is_file():
+        _HIGGSFIELD_CLI_PATH = str(Path(hf_path).expanduser())
+        return _HIGGSFIELD_CLI_PATH
+    found = shutil.which(hf_path) or shutil.which("higgsfield")
+    if found:
+        _HIGGSFIELD_CLI_PATH = found
+        return _HIGGSFIELD_CLI_PATH
+    home = Path.home()
+    appdata = os.environ.get("APPDATA", str(home / "AppData" / "Roaming"))
+    for c in (
+        Path(appdata) / "npm" / "higgsfield.cmd",
+        Path(appdata) / "npm" / "higgsfield.exe",
+        Path(appdata) / "npm" / "higgsfield",
+        home / ".local" / "bin" / "higgsfield",
+        Path("/usr/local/bin/higgsfield"),
+        Path("/opt/homebrew/bin/higgsfield"),
+    ):
+        try:
+            if c.is_file():
+                _HIGGSFIELD_CLI_PATH = str(c)
+                return _HIGGSFIELD_CLI_PATH
+        except Exception:
+            continue
+    _HIGGSFIELD_CLI_PATH = ""
+    return _HIGGSFIELD_CLI_PATH
+
+
+def _higgsfield_result_url(stdout: str) -> str:
+    """Pull the first result_url out of `higgsfield generate create --json`
+    output. The CLI prints a JSON array of job objects, each with a
+    'result_url' and 'status'. Returns "" if none completed."""
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return ""
+    for job in data:
+        if not isinstance(job, dict):
+            continue
+        url = job.get("result_url")
+        status = str(job.get("status", "")).lower()
+        if url and (status in ("completed", "succeeded", "success", "done") or not status):
+            return str(url)
+    return ""
+
+
+def fetch_video_from_higgsfield(query: str, out_path: Path, cfg: "Config", *,
+                                timeout: int = 600, on_step=None) -> Path:
+    """Generate one AI B-roll video clip via the Higgsfield CLI, tapping the
+    user's logged-in subscription (no API key). Writes the result mp4 to
+    `out_path`. Raises on ANY failure so the caller falls back to Pexels.
+
+    Model: cfg.higgsfield_video_model (config.json) — set it to the CLI's
+    video job_set_type (e.g. from `higgsfield generate list` after a manual
+    video job). Job flow: `generate create <model> --prompt "..." --wait
+    --json` blocks until done and prints a JSON array with a result_url; we
+    download that. Higgsfield video can take 1-3 min/clip, hence the long
+    default timeout. Costs subscription credits, so it's opt-in."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+
+    resolved = _resolve_higgsfield_cli(getattr(cfg, "higgsfield_cli_path", "") or "higgsfield")
+    if not resolved:
+        raise RuntimeError(
+            "higgsfield CLI not found (installed? `higgsfield auth login` done? "
+            "set higgsfield_cli_path in config.json)")
+    model = (getattr(cfg, "higgsfield_video_model", "") or "").strip()
+    if not model:
+        raise RuntimeError(
+            "higgsfield_video_model not set in config.json (run a video job once, "
+            "then `higgsfield generate list` to see the model name)")
+    q = (query or "").strip()
+    if not q:
+        raise RuntimeError("higgsfield: empty prompt")
+
+    # Aspect ratio param name varies per model; pass it best-effort. If the
+    # model rejects an unknown flag the whole call errors and we fall back —
+    # so only send the prompt + portrait hint that the examples document.
+    wait_min = max(1, int(timeout // 60))
+    cmd = [resolved, "generate", "create", model,
+           "--prompt", q, "--wait", "--wait-timeout", f"{wait_min}m", "--json"]
+    extra = (getattr(cfg, "higgsfield_extra_args", "") or "").strip()
+    if extra:
+        import shlex
+        cmd += shlex.split(extra)
+
+    log(f"      higgsfield: generating video ({model}, up to {wait_min}m)…")
+    try:
+        proc = subprocess.run(cmd, input="", capture_output=True, text=True,
+                              timeout=timeout + 60)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"higgsfield timed out after {timeout}s") from e
+    except Exception as e:
+        raise RuntimeError(f"higgsfield failed to start: {str(e)[:160]}") from e
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"higgsfield exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}")
+
+    url = _higgsfield_result_url(proc.stdout or "")
+    if not url:
+        raise RuntimeError("higgsfield: no completed result_url in output")
+    if not url.lower().split("?")[0].endswith((".mp4", ".mov", ".webm")):
+        raise RuntimeError(f"higgsfield: result is not a video ({url[-40:]})")
+
+    raw = out_path.with_suffix(".hf_raw.mp4")
+    try:
+        with requests.get(url, stream=True, timeout=180) as ir:
+            ir.raise_for_status()
+            with open(raw, "wb") as fh:
+                for chunk in ir.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+    except Exception as e:
+        raise RuntimeError(f"higgsfield download failed: {str(e)[:160]}") from e
+    if not raw.is_file() or raw.stat().st_size < 8192:
+        raise RuntimeError("higgsfield: empty download")
+
+    # Strip audio + re-encode lightly so the compose-time overlay decodes fast
+    # (same treatment as Pexels clips).
+    try:
+        run([
+            "ffmpeg", "-y", "-i", str(raw),
+            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path),
+        ])
+    finally:
+        try: raw.unlink()
+        except Exception: pass
+    if not out_path.is_file() or out_path.stat().st_size < 4096:
+        raise RuntimeError("higgsfield: transcode produced empty mp4")
+    log(f"      higgsfield video → {out_path.name}")
+    return out_path
+
+
 def fetch_image_from_openverse(query: str, out_path: Path,
                                max_results: int = 8) -> Path:
     """Fetch a free, openly-licensed real photo matching `query` from the
@@ -6089,8 +6250,16 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 n_images = max(1, min(int(job.get("image_count", 3)), 50))
 
             allow_photos = bool(job.get("image_allow_photos", True))
+            # Videos need a source: Pexels stock (key) OR Higgsfield AI video.
+            higgsfield_ready = bool(
+                getattr(cfg, "use_higgsfield", False)
+                and (getattr(cfg, "higgsfield_video_model", "") or "").strip()
+                and _resolve_higgsfield_cli(getattr(cfg, "higgsfield_cli_path", "") or "higgsfield"))
             allow_videos = (bool(job.get("image_allow_videos", False))
-                            and bool(getattr(cfg, "pexels_api_key", "")))
+                            and (bool(getattr(cfg, "pexels_api_key", "")) or higgsfield_ready))
+            if getattr(cfg, "use_higgsfield", False) and not higgsfield_ready:
+                step("      WARN: use_higgsfield on, but CLI not found or "
+                     "higgsfield_video_model unset — using Pexels for video beats")
             if user_prompts:
                 step(f"      using {len(user_prompts)} user-provided image prompt(s)")
                 plan = [{"source": "ai", "prompt": p, "query": ""} for p in user_prompts[:n_images]]
@@ -6126,17 +6295,30 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 ok = False
                 primary_err: str | None = None
 
-                # Video beats → Pexels stock B-roll, fallback to photo→AI.
+                # Video beats → Higgsfield AI video first (opt-in), then Pexels
+                # stock B-roll, then fall back to photo→AI.
                 if source == "video" and query:
-                    try:
-                        fetch_video_from_pexels(query, target_path, cfg, max_dur=beat_dur + 0.6)
-                        image_paths.append(target_path)
-                        ok = True
-                    except Exception as e:
-                        primary_err = f"Pexels: {e}"
-                        step(f"      pexels miss ({str(e)[:120]}), versuche Foto")
-                        source = "photo"
-                        target_path = target_path.with_suffix(".png")
+                    if higgsfield_ready:
+                        try:
+                            # Prefer the richer AI motif as the prompt; the
+                            # search query is the fallback descriptor.
+                            hf_prompt = (beat.get("motif") or "").strip() or query
+                            fetch_video_from_higgsfield(hf_prompt, target_path, cfg, on_step=step)
+                            image_paths.append(target_path)
+                            ok = True
+                        except Exception as e:
+                            primary_err = f"Higgsfield: {e}"
+                            step(f"      higgsfield miss ({str(e)[:120]}), versuche Pexels")
+                    if not ok:
+                        try:
+                            fetch_video_from_pexels(query, target_path, cfg, max_dur=beat_dur + 0.6)
+                            image_paths.append(target_path)
+                            ok = True
+                        except Exception as e:
+                            primary_err = f"{primary_err}; Pexels: {e}" if primary_err else f"Pexels: {e}"
+                            step(f"      pexels miss ({str(e)[:120]}), versuche Foto")
+                            source = "photo"
+                            target_path = target_path.with_suffix(".png")
 
                 # Photo beats → free stock/photo sources first, AI fallback.
                 if not ok and source == "photo" and query:
