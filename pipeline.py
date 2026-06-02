@@ -1230,6 +1230,26 @@ def make_silent_track(duration: float, out_path: Path) -> Path:
     return out_path
 
 
+def make_color_background(duration: float, out_path: Path,
+                          width: int, height: int,
+                          color: str = "white") -> Path:
+    """Generate a solid-color silent mp4 of `duration` at width×height. Used as
+    the base track for faceless/explainer videos where there's no gameplay —
+    the generated images (stickman/doodle) sit on this plain background, like
+    the Danny-Why style. `color` is any ffmpeg color (e.g. 'white', '#0d0d0d')."""
+    run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i",
+        f"color=c={color}:s={width}x{height}:r=30:d={max(0.5, duration):.2f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        str(out_path),
+    ])
+    if not out_path.is_file() or out_path.stat().st_size < 1024:
+        raise RuntimeError("color background generation produced empty mp4")
+    return out_path
+
+
 # Chatterbox tokenizer has an undocumented context limit. Empirically ~300
 # characters works reliably; longer scripts hit a CUDA embedding-lookup
 # OOB ("srcIndex < srcSelectDimSize") that corrupts the CUDA context for
@@ -5883,7 +5903,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     base_slug = job["slug"]
     source_url = (job.get("source_url") or "").strip()
 
-    if not source_url:
+    if bool(job.get("faceless_mode", False)):
+        # No gameplay source at all — images sit on a generated background.
+        slug = base_slug
+    elif not source_url:
         channel_url = (job.get("channel_url") or "").strip()
         if not channel_url:
             raise RuntimeError(f"job {base_slug!r} needs either 'source_url' or 'channel_url'")
@@ -5911,7 +5934,15 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         log.info(f"resume: {state.progress_summary()}")
 
     pre_downloaded = job.get("source_file")
-    if pre_downloaded and Path(pre_downloaded).is_file():
+    faceless_mode = bool(job.get("faceless_mode", False))
+    if faceless_mode:
+        # Faceless/explainer videos have no gameplay — the generated images sit
+        # on a plain colored background. Skip the YouTube download entirely.
+        raw = None
+        step("[1/5] Faceless-Modus: kein Gameplay-Download (einfacher Hintergrund)")
+        if state:
+            state.mark_done(Step.DOWNLOAD, {"raw_path": ""})
+    elif pre_downloaded and Path(pre_downloaded).is_file():
         raw = Path(pre_downloaded)
         step(f"[1/5] reusing pre-downloaded source: {raw.name}")
         if state:
@@ -6071,7 +6102,18 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     if mode == "even" and bool(job.get("smart_picking", False)):
         mode = "loud"
 
-    if state and state.is_done(Step.SCENE_PICK):
+    if faceless_mode:
+        # No gameplay: build a plain colored background to host the images.
+        clip_segments = 1
+        bg_color = (job.get("faceless_bg_color") or "white").strip() or "white"
+        step(f"[3/5] Faceless-Hintergrund ({bg_color}, {target:.1f}s)")
+        clip = make_color_background(target, work / "clip.mp4",
+                                     cfg.target_w, cfg.target_h, color=bg_color)
+        if state:
+            state.mark_done(Step.SCENE_PICK, {
+                "clip_path": clip, "target": target, "clip_segments": clip_segments,
+            })
+    elif state and state.is_done(Step.SCENE_PICK):
         clip = Path(state.get_artifact(Step.SCENE_PICK, "clip_path"))
         # Recover the post-mutation values so downstream stages match cache.
         cached_target = state.get_artifact(Step.SCENE_PICK, "target")

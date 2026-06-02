@@ -406,3 +406,29 @@ class TestTimestampImageExport:
         out = tmp_path / "export"
         pipeline.export_timestamped_images([clip], [(7.0, 10.0)], out)
         assert (out / "00_07.mp4").is_file()
+
+
+class TestColorBackground:
+    def test_builds_color_lavfi_cmd(self, tmp_path):
+        out = tmp_path / "clip.mp4"
+        def fake_run(cmd, **kw):
+            out.write_bytes(b"x" * 2048)
+            from unittest.mock import MagicMock
+            return MagicMock(returncode=0)
+        with patch("pipeline.run", side_effect=fake_run) as run_mock:
+            pipeline.make_color_background(8.0, out, 1920, 1080, color="white")
+        cmd = run_mock.call_args[0][0]
+        joined = " ".join(str(a) for a in cmd)
+        assert "color=c=white:s=1920x1080" in joined
+        assert "d=8.00" in joined
+
+    def test_custom_color(self, tmp_path):
+        out = tmp_path / "clip.mp4"
+        def fake_run(cmd, **kw):
+            out.write_bytes(b"x" * 2048)
+            from unittest.mock import MagicMock
+            return MagicMock(returncode=0)
+        with patch("pipeline.run", side_effect=fake_run) as run_mock:
+            pipeline.make_color_background(5.0, out, 1080, 1920, color="#0d0d0d")
+        joined = " ".join(str(a) for a in run_mock.call_args[0][0])
+        assert "color=c=#0d0d0d:s=1080x1920" in joined

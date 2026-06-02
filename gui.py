@@ -290,7 +290,10 @@ def generate(
                     uploaded_paths.append(f)
         if uploaded_paths:
             job["image_paths"] = uploaded_paths
-        if source_mode == "Direkt-URL":
+        # Faceless videos have no gameplay background → no source URL needed.
+        if _faceless:
+            pass
+        elif source_mode == "Direkt-URL":
             if not source_url.strip():
                 yield log + "\nFEHLER: Direkt-URL ist leer\n", last_video
                 return
