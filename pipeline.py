@@ -411,6 +411,17 @@ def ytdlp_cookie_args(cfg) -> list:
 def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
     """Turn a raw yt-dlp failure into an actionable hint for the GUI."""
     low = (output or "").lower()
+    # Cookie DB locked (browser is running) or encrypted (Chrome v127+ App-Bound
+    # Encryption, yt-dlp #7271). Almost always: the browser we read cookies from
+    # is open. Closing it fixes the common case; a cookies.txt export sidesteps
+    # both the lock and the newer encryption entirely.
+    if "could not copy" in low and "cookie" in low:
+        return ("\n\n→ yt-dlp kommt nicht an die Browser-Cookies: der Browser "
+                "läuft (DB gesperrt) oder Chrome verschlüsselt sie (v127+). "
+                "Browser GANZ schließen und neu starten — oder am stabilsten "
+                "eine cookies.txt exportieren und in config.json "
+                '"youtube_cookies_file" setzen (oder auf "edge"/"firefox" '
+                "umstellen).")
     if any(s in low for s in ("sign in to confirm", "not a bot", "429",
                               "too many requests", "confirm you")):
         if had_cookies:
