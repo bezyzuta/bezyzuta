@@ -104,6 +104,9 @@ class Config:
     # curated set. Empty = use the default (de_DE-thorsten-medium).
     tts_piper_model: str
     whisper_model: str
+    # Max height for the downloaded gameplay source. 1080 default; drop to 720
+    # for much faster downloads (a vertical short is cropped+scaled anyway).
+    download_max_height: int
     target_w: int
     target_h: int
     ducking_db: float
@@ -197,6 +200,7 @@ class Config:
             tts_language=str(data.get("tts_language", "auto")).lower(),
             tts_piper_model=str(data.get("tts_piper_model", "de_DE-thorsten-medium")),
             whisper_model=data.get("whisper_model", "small"),
+            download_max_height=int(data.get("download_max_height", 1080)),
             target_w=int(w),
             target_h=int(h),
             ducking_db=float(data.get("ducking_db", -18)),
@@ -406,14 +410,18 @@ def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
     return ""
 
 
-def download_gameplay(url: str, out_dir: Path, cookies: list | None = None) -> Path:
+def download_gameplay(url: str, out_dir: Path, cookies: list | None = None,
+                      max_height: int = 1080) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     template = str(out_dir / "%(id)s.%(ext)s")
+    h = max(360, int(max_height or 1080))
     cmd = [
         sys.executable, "-m", "yt_dlp",
         *(cookies or []),
+        "--no-playlist",                       # never accidentally pull a whole playlist
+        "--concurrent-fragments", "5",         # download DASH fragments in parallel — big speedup
         "--retries", "3", "--fragment-retries", "3",
-        "-f", "bv*[height<=1080]+ba/b[height<=1080]",
+        "-f", f"bv*[height<={h}]+ba/b[height<={h}]",
         "--merge-output-format", "mp4",
         "-o", template,
         url,
@@ -6203,7 +6211,8 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         step(f"[MULTI 1/4] resume: source already downloaded ({raw.name})")
     else:
         step(f"[MULTI 1/4] download source: {source_url}")
-        raw = download_gameplay(source_url, work_root, cookies=ytdlp_cookie_args(cfg))
+        raw = download_gameplay(source_url, work_root, cookies=ytdlp_cookie_args(cfg),
+                                max_height=int(getattr(cfg, 'download_max_height', 1080)))
         if state:
             state.mark_done(Step.MULTI_DOWNLOAD, {"raw_path": raw})
 
@@ -6409,7 +6418,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         step(f"[1/5] resume: source already downloaded ({raw.name})")
     else:
         step(f"[1/5] download: {source_url}")
-        raw = download_gameplay(source_url, work / "source", cookies=ytdlp_cookie_args(cfg))
+        raw = download_gameplay(source_url, work / "source", cookies=ytdlp_cookie_args(cfg),
+                                max_height=int(getattr(cfg, 'download_max_height', 1080)))
         if state:
             state.mark_done(Step.DOWNLOAD, {"raw_path": raw})
 
