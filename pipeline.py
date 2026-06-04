@@ -1553,7 +1553,8 @@ def _get_chatterbox_model():
         return None
     try:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"      loading Chatterbox TTS on {device} (~3GB download first time)")
+        print(f"      loading Chatterbox TTS into {device.upper()} VRAM "
+              "(one-time ~3GB model download on the very first run only)")
         _CHATTERBOX_MODEL = ChatterboxTTS.from_pretrained(device=device)
         print(f"      Chatterbox TTS ready (sr={_CHATTERBOX_MODEL.sr})")
     except Exception as e:
@@ -1586,7 +1587,8 @@ def _get_chatterbox_multilingual_model():
         return None
     try:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"      loading Chatterbox Multilingual on {device} (~3GB download first time)")
+        print(f"      loading Chatterbox Multilingual into {device.upper()} VRAM "
+              "(one-time ~3GB model download on the very first run only)")
         _CHATTERBOX_ML_MODEL = ChatterboxMultilingualTTS.from_pretrained(device=device)
         print(f"      Chatterbox Multilingual ready (sr={_CHATTERBOX_ML_MODEL.sr})")
     except Exception as e:
@@ -6797,10 +6799,19 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
     image_paths: list = []
     image_duration = float(job.get("image_duration", 1.5))
-    # The voiceover is on disk now; free the ~3-4 GB Chatterbox model before the
-    # image loop so VRAM, power draw and GPU temperature drop during the long
-    # (up to 50-image) generation stage. Cheap if already unloaded / Piper.
-    _unload_tts_model()
+    # Free the ~3-4 GB Chatterbox model from VRAM before a LONG image run
+    # (crash/thermal mitigation) — but NOT for small shorts, where unloading
+    # just forces a slow reload of the model on the next video in a batch.
+    # Cheap pre-estimate of the image count to decide.
+    _cont = bool(job.get("images_continuous", False)) and (
+        is_portrait_out or bool(job.get("faceless_mode", False)))
+    if _cont and not (job.get("image_prompts") or []):
+        _change = max(1.0, float(job.get("image_change_secs", 3.5)))
+        _est_imgs = max(4, min(int(round((vo_dur or 25.0) / _change)), 120))
+    else:
+        _est_imgs = max(1, min(int(job.get("image_count", 3)), 50))
+    if _est_imgs >= 12 or float(getattr(cfg, "image_cooldown_secs", 0.0) or 0.0) > 0:
+        _unload_tts_model()
     if state and state.is_done(Step.IMAGES):
         cached_paths = state.get_artifact(Step.IMAGES, "paths") or []
         image_paths = [Path(p) for p in cached_paths if Path(p).is_file()]
