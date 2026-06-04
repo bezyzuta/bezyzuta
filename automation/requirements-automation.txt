@@ -1,0 +1,16 @@
+# Automation extras — NOT needed for the shorts pipeline itself.
+# Install separately into the same .venv:
+#   .venv\Scripts\python.exe -m pip install -r automation\requirements-automation.txt
+#   .venv\Scripts\python.exe -m playwright install chromium
+
+# Browser automation: drives a real Chromium over the DOM (robust, not pixel
+# based). Use for web apps — YouTube/TikTok upload UIs, Higgsfield/Grok web.
+playwright>=1.44
+
+# Desktop automation: real OS-level mouse/keyboard + screen for native apps
+# that have no API. Pixel/image based, so it's fragile to resolution changes.
+pyautogui>=0.9.54
+
+# Used by the optional macro recorder (records real mouse/keyboard events so
+# you can replay them). Not required for the helper APIs themselves.
+pynput>=1.7.6

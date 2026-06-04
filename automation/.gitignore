@@ -1,0 +1,7 @@
+# Local browser login session (cookies!) — never commit.
+.browser_profile/
+# Recorded macros and screenshots are machine-specific.
+macros/
+shots/
+# Anchor images you capture for click_image() are local.
+anchors/
