@@ -75,5 +75,7 @@
   "_comment_telegram_chat": "Your Telegram numeric chat id (message @userinfobot to get it). ONLY this id may trigger renders. 0 = disabled.",
   "telegram_music_dir": "",
   "telegram_sfx_dir": "",
-  "_comment_telegram_audio": "Optional: dirs the bot uses for background music / SFX when a job asks for music. e.g. 'C:\\\\Users\\\\bezy\\\\Desktop\\\\music'."
+  "_comment_telegram_audio": "Optional: dirs the bot uses for background music / SFX. With these set, bot shorts get a random music track + SFX automatically (like the GUI). e.g. 'C:\\\\Users\\\\bezy\\\\Desktop\\\\music'.",
+  "telegram_defaults": {},
+  "_comment_telegram_defaults": "Your EXACT preferred short settings for bot renders — any GUI job key overrides the bot's built-in defaults. Example: {\"caption_color\": \"#FFEB3B\", \"caption_font_size\": 86, \"voice_tempo\": 1.0, \"subscribe_sting_file\": \"C:\\\\Users\\\\bezy\\\\Desktop\\\\sfx\\\\sub.mp3\", \"music_track\": \"ein bisschen episch.mp3\"}. Empty {} = just the built-in full-short defaults (all effects, emojis, karaoke, subscribe, music/sfx)."
 }

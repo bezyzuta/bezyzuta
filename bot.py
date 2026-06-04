@@ -117,9 +117,60 @@ def _effects_from_spec(value: str) -> list:
     return [e.strip() for e in v.split(",") if e.strip()]
 
 
+def _full_short_defaults() -> dict:
+    """A maxed-out short: every engagement feature on, matching a fully-loaded
+    GUI render. cfg-level stuff (Claude CLI, voice clone, image style,
+    Higgsfield, …) comes from config.json automatically via run_one."""
+    return {
+        "scene_pick_mode": "even",
+        "clip_segments": 1,
+        "enable_voice": True,
+        "voice_tempo": 1.0,
+        # Images: continuous changing visuals, full-size centered.
+        "images_continuous": True,
+        "image_count": 6,
+        "image_duration": 1.5,
+        "image_size": 1.0,
+        "image_vpos": -0.03,
+        "image_change_secs": 3.5,
+        "image_gap_secs": 0.5,
+        "image_tilt": False,
+        "image_allow_photos": False,
+        "image_allow_videos": False,
+        # Auto-reframe v2 so the speaker stays in the vertical crop.
+        "auto_reframe": True,
+        "reframe_v2": True,
+        "reframe_samples_per_seg": 3,
+        # Captions: TikTok karaoke + emojis + styling.
+        "enable_captions": True,
+        "caption_position": "top",
+        "caption_emojis": True,
+        "pop_captions": True,
+        "caption_font": "Impact",
+        "caption_font_size": 80,
+        "caption_color": "#FFFFFF",
+        "caption_stroke_color": "#000000",
+        # Effects: KI-directed, all the non-horror engagement set.
+        "effects_ai": True,
+        "effects_enabled": list(_FX_ALL_NO_HORROR),
+        # Audio polish.
+        "normalize_audio": True,
+        "target_lufs": -14.0,
+        "enable_sfx": True,
+        "sfx_volume_pct": 35.0,
+        "enable_music": True,
+        "music_volume_pct": 14.0,
+        "smart_music_start": True,
+        # End-screen subscribe banner.
+        "subscribe_overlay": True,
+        "progress_bar": True,
+        "whisper_device": "auto",
+    }
+
+
 def _build_job_and_cfg(spec: dict, cfg: Config) -> dict:
-    """Turn the parsed message into a run_one job + apply cfg overrides.
-    Defaults mirror a typical GUI short so bot videos look like normal ones."""
+    """Build a full-featured short job. Layering: built-in short defaults →
+    config.json 'telegram_defaults' (your exact prefs) → per-message overrides."""
     fmt = (spec.get("format") or "short").strip().lower()
     faceless = fmt in ("faceless", "story")
     landscape = fmt in ("long", "landscape", "lang")
@@ -137,49 +188,60 @@ def _build_job_and_cfg(spec: dict, cfg: Config) -> dict:
     if not script and not topic:
         topic = "ein krasser Roblox Moment" if lang == "de" else "an insane Roblox moment"
 
-    slug = pipeline._slugify_local((topic or script)[:40]) or "tg-short"
+    # Layer 1: full built-in short defaults.
+    job = _full_short_defaults()
+    # Layer 2: your exact preferences from config.json.
+    job.update(dict(getattr(cfg, "telegram_defaults", {}) or {}))
 
-    job: dict = {
-        "slug": slug,
-        "topic": topic or script[:60],
-        "target_duration": float(spec.get("dauer") or spec.get("target") or (480 if (landscape or faceless) else 30)),
-        "scene_pick_mode": "even",
-        "auto_reframe": not (landscape or faceless),
-        "enable_voice": True,
-        "images_continuous": True,
-        "faceless_mode": faceless,
-        "image_allow_photos": False,
-        "image_allow_videos": False,
-        "caption_position": "bottom" if (landscape or faceless) else "top",
-        "caption_emojis": True,
-        "pop_captions": True,
-        "hook_text": (spec.get("hook") or "").strip(),
-        "effects_enabled": _effects_from_spec(spec.get("effects") or spec.get("effekte") or "all-no-horror"),
-        "effects_ai": True,
-        "normalize_audio": True,
-        "subscribe_overlay": True,
-        "enable_captions": True,
-    }
+    # Format-specific tweaks (long/faceless differ from a short).
+    if landscape or faceless:
+        job["caption_position"] = "bottom"
+        job["auto_reframe"] = False
+        job["images_continuous"] = True
+    job["faceless_mode"] = faceless
+    if faceless:
+        job["image_allow_photos"] = False
+        job["image_allow_videos"] = False
+
+    job["slug"] = pipeline._slugify_local((topic or script)[:40]) or "tg-short"
+    job["topic"] = topic or script[:60]
+    job["target_duration"] = float(
+        spec.get("dauer") or spec.get("target")
+        or job.get("target_duration") or (480 if (landscape or faceless) else 30))
+
+    # Layer 3: per-message overrides.
+    if "effects" in spec or "effekte" in spec:
+        job["effects_enabled"] = _effects_from_spec(spec.get("effects") or spec.get("effekte"))
+    if spec.get("hook"):
+        job["hook_text"] = spec["hook"].strip()
+        job.setdefault("hook_duration", 3.0)
     if script:
         job["script"] = script
-        job["extend_script"] = bool(landscape or faceless)  # long forms auto-extend
+        job["extend_script"] = bool(landscape or faceless)
     if spec.get("url"):
         job["source_url"] = spec["url"].strip()
 
-    # Optional background music: message gives a filename, cfg gives the dir.
-    music = (spec.get("music") or spec.get("musik") or "").strip()
+    # Auto-wire music/SFX dirs (random track) when configured, unless the user's
+    # telegram_defaults already pinned a specific track/dir.
     music_dir = (getattr(cfg, "telegram_music_dir", "") or "").strip()
-    if music and music_dir:
-        job["enable_music"] = True
+    if job.get("enable_music") and music_dir and not job.get("music_dir"):
         job["music_dir"] = music_dir
-        job["music_track"] = "" if music.lower() in ("on", "an", "random") else music
-        job["music_volume_pct"] = 14.0
-        job["smart_music_start"] = True
+        job.setdefault("music_track", "")  # "" = random pick from the dir
+    music = (spec.get("music") or spec.get("musik") or "").strip()
+    if music:
+        if music.lower() in ("off", "aus", "none", "kein"):
+            job["enable_music"] = False
+        elif music.lower() not in ("on", "an", "random") and music_dir:
+            job["enable_music"] = True
+            job["music_dir"] = music_dir
+            job["music_track"] = music
     sfx_dir = (getattr(cfg, "telegram_sfx_dir", "") or "").strip()
-    if sfx_dir:
-        job["enable_sfx"] = True
+    if job.get("enable_sfx") and sfx_dir and not job.get("sfx_dir"):
         job["sfx_dir"] = sfx_dir
-        job["sfx_volume_pct"] = 35.0
+    if not job.get("music_dir"):
+        job["enable_music"] = False   # no dir → can't play music, avoid a crash
+    if not job.get("sfx_dir"):
+        job["enable_sfx"] = False
     return job
 
 

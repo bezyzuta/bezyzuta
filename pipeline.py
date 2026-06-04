@@ -190,6 +190,11 @@ class Config:
     telegram_allowed_chat_id: int
     telegram_music_dir: str
     telegram_sfx_dir: str
+    # Your exact preferred short settings for bot renders (any job key from the
+    # GUI: caption_color, caption_font_size, subscribe_sting_file, voice_tempo,
+    # image_size, …). Overlaid on the bot's built-in short defaults; a per-
+    # message value still wins. Empty {} = just use the built-in defaults.
+    telegram_defaults: dict
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -242,6 +247,7 @@ class Config:
             telegram_allowed_chat_id=int(data.get("telegram_allowed_chat_id", 0) or 0),
             telegram_music_dir=str(data.get("telegram_music_dir", "")),
             telegram_sfx_dir=str(data.get("telegram_sfx_dir", "")),
+            telegram_defaults=dict(data.get("telegram_defaults", {}) or {}),
         )
 
     def validate(self) -> tuple[list[str], list[str]]:

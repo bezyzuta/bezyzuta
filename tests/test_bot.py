@@ -11,6 +11,7 @@ class _Cfg:
         self.target_h = 1920
         self.telegram_music_dir = ""
         self.telegram_sfx_dir = ""
+        self.telegram_defaults = {}
 
 
 class TestParseMessage:
@@ -78,7 +79,7 @@ class TestBuildJob:
     def test_music_only_when_dir_configured(self):
         cfg = _Cfg()
         job = bot._build_job_and_cfg({"url": "http://yt/x", "music": "track.mp3", "script": "s"}, cfg)
-        assert "enable_music" not in job          # no dir → ignored
+        assert job["enable_music"] is False        # no dir → off
         cfg2 = _Cfg(); cfg2.telegram_music_dir = "/music"
         job2 = bot._build_job_and_cfg({"url": "http://yt/x", "music": "track.mp3", "script": "s"}, cfg2)
         assert job2["enable_music"] is True and job2["music_track"] == "track.mp3"
@@ -88,3 +89,43 @@ class TestBuildJob:
         job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s"}, cfg)
         assert "horror_grade" not in job["effects_enabled"]
         assert "color_grade" in job["effects_enabled"]
+
+    def test_full_featured_short(self):
+        cfg = _Cfg()
+        job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s"}, cfg)
+        # the whole engagement stack is on, like a maxed GUI short
+        assert job["caption_emojis"] and job["pop_captions"]
+        assert "word_karaoke" in job["effects_enabled"]
+        assert job["reframe_v2"] and job["auto_reframe"]
+        assert job["subscribe_overlay"] and job["normalize_audio"]
+
+    def test_telegram_defaults_override_builtins(self):
+        cfg = _Cfg()
+        cfg.telegram_defaults = {"caption_color": "#FFEB3B", "caption_font_size": 86}
+        job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s"}, cfg)
+        assert job["caption_color"] == "#FFEB3B"
+        assert job["caption_font_size"] == 86
+
+    def test_message_overrides_defaults(self):
+        cfg = _Cfg()
+        cfg.telegram_defaults = {"effects_enabled": ["color_grade"]}
+        # message 'effects: none' must win over telegram_defaults
+        job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s", "effects": "none"}, cfg)
+        assert job["effects_enabled"] == []
+
+    def test_music_off_when_no_dir(self):
+        cfg = _Cfg()  # no telegram_music_dir
+        job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s"}, cfg)
+        assert job["enable_music"] is False and job["enable_sfx"] is False
+
+    def test_music_random_when_dir_set(self):
+        cfg = _Cfg(); cfg.telegram_music_dir = "/music"; cfg.telegram_sfx_dir = "/sfx"
+        job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s"}, cfg)
+        assert job["enable_music"] and job["music_dir"] == "/music"
+        assert job["music_track"] == ""   # random pick
+        assert job["enable_sfx"] and job["sfx_dir"] == "/sfx"
+
+    def test_music_off_via_message(self):
+        cfg = _Cfg(); cfg.telegram_music_dir = "/music"
+        job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s", "music": "off"}, cfg)
+        assert job["enable_music"] is False
