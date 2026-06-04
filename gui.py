@@ -80,6 +80,7 @@ def generate(
     tts_language: str,
     tts_piper_model: str,
     voice_ref_audio: str,
+    tts_de_clone: bool,
     tts_exaggeration: float,
     tts_cfg_weight: float,
     enable_music: bool,
@@ -145,6 +146,8 @@ def generate(
         _gui_voice = (voice_ref_audio or "").strip()
         if _gui_voice:
             cfg.tts_reference_audio = _gui_voice
+        # German voice-cloning toggle (uses the same picked reference for DE).
+        cfg.tts_de_clone = bool(tts_de_clone)
         cfg.tts_exaggeration = float(tts_exaggeration)
         cfg.tts_cfg_weight = float(tts_cfg_weight)
         cfg.tts_language = (tts_language or "auto").lower()
@@ -374,6 +377,7 @@ def _config_defaults(config_path: str = "config.json") -> dict:
             "tts_exaggeration": getattr(cfg, "tts_exaggeration", 0.5),
             "tts_cfg_weight": getattr(cfg, "tts_cfg_weight", 0.5),
             "tts_language": getattr(cfg, "tts_language", "auto") or "auto",
+            "tts_de_clone": bool(getattr(cfg, "tts_de_clone", False)),
         }
     except Exception:
         return {}
@@ -657,6 +661,13 @@ def build_app() -> gr.Blocks:
                       "eintippen. '.clone.wav' wird direkt genutzt, eine Rohaufnahme "
                       "wird automatisch aufbereitet. Vorbefüllt aus config.json. "
                       "Leer = Chatterbox' Default-Stimme."),
+            )
+            tts_de_clone = gr.Checkbox(
+                value=bool(_defaults.get("tts_de_clone", False)),
+                label="🇩🇪 Deutsche Stimme klonen (statt Piper)",
+                info=("Nur bei Sprache = Deutsch. An = klont die oben gewählte "
+                      "Stimme auf Deutsch via Chatterbox Multilingual (~3GB Modell "
+                      "beim 1. Lauf). Aus = feste Piper-Stimme (schnell, kein Cloning)."),
             )
             with gr.Row():
                 tts_exaggeration = gr.Slider(
@@ -1111,7 +1122,7 @@ def build_app() -> gr.Blocks:
                 clip_segments, playback_speed, voice_tempo, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
-                voice_ref_audio, tts_exaggeration, tts_cfg_weight,
+                voice_ref_audio, tts_de_clone, tts_exaggeration, tts_cfg_weight,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start, normalize_audio, target_lufs,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
