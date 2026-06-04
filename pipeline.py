@@ -1596,6 +1596,32 @@ def _get_chatterbox_multilingual_model():
     return _CHATTERBOX_ML_MODEL
 
 
+def _resolve_clone_reference(ref: str) -> str:
+    """Return a usable existing voice-reference path, or "" if none found.
+    Tolerant: if the given path doesn't exist but it's a '.clone.wav', try the
+    raw source beside it (any common audio ext); if it IS a raw file, also try
+    an existing '.clone.wav' sibling. Lets the voice picker keep working even
+    when only one of the two files exists on disk."""
+    ref = (ref or "").strip()
+    if not ref:
+        return ""
+    p = Path(ref).expanduser()
+    if p.is_file():
+        return str(p)
+    name = p.name.lower()
+    if name.endswith(".clone.wav"):
+        stem = p.name[:-len(".clone.wav")]
+        for ext in (".wav", ".mp3", ".m4a", ".mp4", ".ogg", ".flac"):
+            cand = p.with_name(stem + ext)
+            if cand.is_file():
+                return str(cand)
+    else:
+        cand = p.with_suffix(".clone.wav")
+        if cand.is_file():
+            return str(cand)
+    return ""
+
+
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     """Dispatch to the right TTS engine based on `cfg.tts_language`:
 
@@ -1637,19 +1663,25 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
         # German-specific reference if set, else the general one. Falls back to
         # Piper if the multilingual model isn't available or errors.
         if bool(getattr(cfg, "tts_de_clone", False)):
-            de_ref = (getattr(cfg, "tts_reference_audio_de", "") or "").strip() \
-                or (getattr(cfg, "tts_reference_audio", "") or "").strip()
-            if de_ref and Path(de_ref).expanduser().is_file():
+            de_ref = _resolve_clone_reference(
+                (getattr(cfg, "tts_reference_audio_de", "") or "").strip()
+                or (getattr(cfg, "tts_reference_audio", "") or "").strip())
+            if de_ref:
+                print(f"      German voice cloning via Chatterbox Multilingual "
+                      f"(ref: {Path(de_ref).name})")
                 try:
                     return _synthesize_voiceover_chatterbox(
                         text, cfg, out_path, multilingual=True,
                         language_id="de", ref_override=de_ref)
                 except Exception as e:
-                    print(f"      WARN: German Chatterbox-clone failed ({str(e)[:120]}) "
+                    print(f"      WARN: German Chatterbox-clone failed ({str(e)[:160]}) "
                           "— falling back to Piper")
             else:
-                print("      WARN: tts_de_clone on but no German reference audio "
-                      "found — using Piper")
+                raw = ((getattr(cfg, "tts_reference_audio_de", "") or "").strip()
+                       or (getattr(cfg, "tts_reference_audio", "") or "").strip())
+                print(f"      WARN: 'Deutsche Stimme klonen' ist an, aber die Referenz-Datei "
+                      f"wurde nicht gefunden: {raw or '(leer)'} — nutze Piper. "
+                      "Pruefe den Pfad im Stimm-Feld (existiert die .wav wirklich?).")
         return _synthesize_voiceover_piper(text, cfg, out_path)
     return _synthesize_voiceover_chatterbox(text, cfg, out_path)
 

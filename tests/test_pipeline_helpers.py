@@ -575,3 +575,27 @@ class TestGermanCloneDispatch:
     def test_english_uses_chatterbox(self, tmp_path):
         calls = self._run(self._cfg(tts_language="en"), tmp_path, detected="en")
         assert calls["engine"] == "en"
+
+
+class TestResolveCloneReference:
+    def test_existing_file_returned(self, tmp_path):
+        f = tmp_path / "voice.clone.wav"; f.write_bytes(b"x" * 5000)
+        assert pipeline._resolve_clone_reference(str(f)) == str(f)
+
+    def test_missing_clone_falls_back_to_raw_sibling(self, tmp_path):
+        raw = tmp_path / "sample.wav"; raw.write_bytes(b"x" * 5000)
+        # ask for the (nonexistent) .clone.wav → resolver finds the raw .wav
+        got = pipeline._resolve_clone_reference(str(tmp_path / "sample.clone.wav"))
+        assert got == str(raw)
+
+    def test_raw_finds_clone_sibling(self, tmp_path):
+        clone = tmp_path / "besmir.clone.wav"; clone.write_bytes(b"x" * 5000)
+        got = pipeline._resolve_clone_reference(str(tmp_path / "besmir.wav"))
+        assert got == str(clone)
+
+    def test_nothing_found_returns_empty(self, tmp_path):
+        assert pipeline._resolve_clone_reference(str(tmp_path / "nope.clone.wav")) == ""
+
+    def test_empty_input(self):
+        assert pipeline._resolve_clone_reference("") == ""
+        assert pipeline._resolve_clone_reference("   ") == ""
