@@ -68,5 +68,12 @@
   "download_max_height": 1080,
   "_comment_download_max_height": "Max resolution of the downloaded gameplay source. 1080 default. Set to 720 for MUCH faster downloads on long source videos — a vertical short is cropped+scaled anyway, so 720 looks identical there (only matters for full 16:9 long-videos).",
   "target_resolution": [1080, 1920],
-  "ducking_db": -18
+  "ducking_db": -18,
+  "telegram_bot_token": "",
+  "_comment_telegram": "Remote control via bot.py (text a job from your phone, get the finished mp4 back). Empty = disabled. Get a token from @BotFather. Run `python bot.py` on the PC (must stay awake).",
+  "telegram_allowed_chat_id": 0,
+  "_comment_telegram_chat": "Your Telegram numeric chat id (message @userinfobot to get it). ONLY this id may trigger renders. 0 = disabled.",
+  "telegram_music_dir": "",
+  "telegram_sfx_dir": "",
+  "_comment_telegram_audio": "Optional: dirs the bot uses for background music / SFX when a job asks for music. e.g. 'C:\\\\Users\\\\bezy\\\\Desktop\\\\music'."
 }

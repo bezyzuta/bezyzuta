@@ -183,6 +183,13 @@ class Config:
     # slot. https://www.pexels.com/api/ — 30s signup, no card. Empty = the
     # pipeline keeps using AI renders / photos only (today's behavior).
     pexels_api_key: str
+    # Telegram remote control (bot.py). Empty token = bot disabled. Only the
+    # allowed chat id may trigger renders. Optional music/sfx dirs let bot jobs
+    # use background audio.
+    telegram_bot_token: str
+    telegram_allowed_chat_id: int
+    telegram_music_dir: str
+    telegram_sfx_dir: str
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -231,6 +238,10 @@ class Config:
             youtube_cookies_from_browser=str(data.get("youtube_cookies_from_browser", "")).strip(),
             youtube_cookies_file=str(data.get("youtube_cookies_file", "")).strip(),
             pexels_api_key=data.get("pexels_api_key") or os.environ.get("PEXELS_API_KEY", ""),
+            telegram_bot_token=str(data.get("telegram_bot_token", "")).strip(),
+            telegram_allowed_chat_id=int(data.get("telegram_allowed_chat_id", 0) or 0),
+            telegram_music_dir=str(data.get("telegram_music_dir", "")),
+            telegram_sfx_dir=str(data.get("telegram_sfx_dir", "")),
         )
 
     def validate(self) -> tuple[list[str], list[str]]:
