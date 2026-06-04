@@ -470,3 +470,161 @@ fb4d461 YOLOv11-face as primary detector
 3d28900 MediaPipe face detector
 a29b41b whisper full-video transcription via subprocess
 ```
+
+---
+
+# Session 3 (Juni 2026 — selbe Branch `claude/upgrade-roblox-autopilot-cdW3P`) — Handoff für neuen Chat
+
+Owner: **bezyzuta**, Kanal heißt **BloxGrave** (englische Roblox-Horror-Stories), macht
+auch deutsche/englische Roblox-Shorts. Arbeitet auf Windows, RTX 3080, venv unter
+`C:\Users\bezy\Desktop\roblox-shorts\bezyzuta`. **Tests:** `pytest -q` → aktuell ~300+
+grün, EIN bekannter Fail (`test_prepares_clean_mono_capped_sample`) NUR weil im
+Cloud-Container kein `ffmpeg` ist — auf der echten Maschine grün. Ignorieren.
+
+## Arbeitsweise mit diesem User (WICHTIG)
+- **Deutsch, ehrlich, keine Schmeichelei, konkrete Lösungen.** Er schätzt klares „geht
+  nicht weil X" mehr als Optimismus. Wird manchmal grob/flucht wenn frustriert — nicht
+  drauf eingehen, einfach sauber liefern.
+- **Workflow pro Änderung:** Ursache im Code finden → fixen → Tests dazu → volle Suite →
+  committen (klare Message, endet mit der Session-URL) → **pushen** zu
+  `claude/upgrade-roblox-autopilot-cdW3P` → kurz erklären was er tun muss (`git pull` +
+  evtl. config/GUI). Er rendert auf SEINER Maschine; ich (Cloud) kann nicht rendern
+  (kein ffmpeg/GPU/Modelle).
+- **HARTER INVARIANT — GUI param↔input alignment:** `gui.py` `generate(...)`-Signatur und
+  die `inputs=[...]`-Liste am `generate_btn.click(` MÜSSEN 1:1 in Reihenfolge & Anzahl
+  passen. Bei JEDER neuen GUI-Komponente prüfen mit diesem Snippet (zählt + vergleicht):
+  ```python
+  import ast, re; src=open('gui.py').read()
+  fn=next(n for n in ast.walk(ast.parse(src)) if isinstance(n,ast.FunctionDef) and n.name=='generate')
+  params=[a.arg for a in fn.args.args]
+  m=re.search(r'(?<!hook_)generate_btn\.click\(',src); i2=src.index('inputs=[',m.start())
+  d=0;j=i2+7;st=j
+  while True:
+      c=src[j]
+      if c=='[':d+=1
+      elif c==']':
+          d-=1
+          if d==0:break
+      j+=1
+  names=[t.strip() for t in re.sub(r'#.*','',src[st+1:j]).split(',') if t.strip()]
+  print(len(params),len(names),params==names)
+  ```
+  Aktuell **81 = 81**. Lieber config-only (kein GUI-Param) wenn möglich → null Risiko.
+- **`pipeline.py` (~6800 Zeilen) bleibt bewusst monolithisch.** Nicht splitten.
+- Pipeline-Funktionen die im GUI/Bot-Worker laufen → `on_step` durchreichen.
+
+## Was in Session 3 dazukam (alles auf der Branch, gepusht)
+
+### LLM-Bild-Provider-Kaskade (AI-Bilder)
+Reihenfolge im Bild-Beat: **Higgsfield → Grok → Cloudflare Flux → Pollinations** (Foto-
+/Video-Beats davor: Pexels). Alle config-gated, automatischer Fallback bei Fehler.
+- **Grok Build CLI** (`use_grok_cli`): `grok -p "<prompt>"` (Prompt ist ARGUMENT, nicht
+  stdin!), Bild landet im Session-Ordner → Snapshot-Diff von `~/.grok` findet die neue
+  Datei. `fetch_image_from_grok_cli`.
+- **Higgsfield CLI** (`use_higgsfield_images`, Modell `higgsfield_image_model` default
+  `nano_banana_2`): `higgsfield generate create <model> --prompt "..." --wait --json` →
+  `result_url` aus JSON-Array → runterladen. `fetch_image_from_higgsfield`. Es gibt AUCH
+  `fetch_video_from_higgsfield` (`use_higgsfield`/`higgsfield_video_model`) für Video-
+  Beats, aber Video-Modellname kennt der User nicht → standardmäßig aus. User will
+  Higgsfield für die BILDER (Strichmännchen), nicht Video.
+
+### Bild-Stil-System (`image_style` cfg + GUI-Dropdown „🎨 Bild-Stil")
+`_IMAGE_STYLE_PRESETS` + `_style_directive` + `_quality_suffix_for`. Werte:
+`auto` (KI wählt pro Beat Medium), `roblox`, `realistic`, `cinematic`,
+`ms_paint_stickman`, `doodle_sketch` (die 2 sind FLAT → nutzen `_IMAGE_STYLE_SUFFIX_FLAT`
+statt des cinematischen Suffixes, sonst zerstört „rim lighting/saturated" den flachen
+Look). `_roblox_cap`/`_enforce_roblox_cap`: in `auto` max `image_roblox_max` (default 2)
+Roblox-Renders pro Video, Rest wird via `_derobloxify` zu realen Motiven umgeschrieben.
+Forcierte Styles (inkl. flat) → 0 Roblox.
+
+### Faceless Story Format (Danny-Why-Stil, Strichmännchen)
+Output-Format-Radio hat 3. Option „📝 Faceless Story — 16:9 Querformat". Setzt
+`job["faceless_mode"]=True`. Pipeline: **KEIN YouTube-Download** (kein Gameplay), baut
+`make_color_background` (weiß) als Hintergrund; ALLE Bilder = AI im flat style (photos/
+videos forced off); Bilder werden 16:9 generiert (`_save_aspect_image`/`_faceless_recrop`)
+und FÜLLEN den Frame via `_fullframe_chain` (kein weißer Border, kein Tilt — sonst weiße
+Ränder). `allow_continuous` lockert die portrait-Kopplung der durchgehenden Bilder.
+Zeitstempel-Bild-Export (`export_timestamp_images` → `<slug>_timestamp_images/00_07.png`)
+zusätzlich zum Video, opt-in. **Wichtig:** Faceless braucht KEINE URL.
+
+### Horror-Effekte (KI-getimt, in `effects_enabled` CheckboxGroup)
+Neben flash/shake/punch/color_grade/ken_burns/slide_in/keyword_pop/word_karaoke jetzt:
+`red_flash`, `dark_pulse`, `glitch` (rgbashift), `creep` (langsamer Zoom), `horror_grade`
+(global, kalt/entsättigt, `colorbalance` — NUR gültige Optionen rs/gs/bs/rm/gm/bm/rh/gh/bh,
+NICHT „ms"!). `_EFFECT_PLAN_PROMPT` + `generate_effect_plan` platzieren sie. Bei langen
+Videos bis ~20 Effekte.
+
+### Skript-Länge wirklich treffen (war: 600s angefragt → 340s raus)
+Zwei Ursachen gefixt: (1) Top-up forderte ganzen Deficit in 1 Call → LLM liefert nur
+~halb. Jetzt `_continuation_block` (gebündelte ~280-Wort-Häppchen, Loop) +
+`_extend_script_to_target`. (2) wps-Schätzung (2.5) ≠ echte TTS-Rate (~4.5 bei Viral-
+Preset). Lösung: `_grow_voiceover_to_target` MISST nach dem TTS die echte Audio-Dauer,
+rechnet reale wps, verlängert Skript + synthetisiert nur den Zusatz + concatet Audio
+(`_concat_audio`), bis ~92% des Ziels. Greift nur bei `extend_script` + target>=90s.
+
+### TTS-Sanitizing + Zahlen + Stimmen
+- `_sanitize_script_for_tts` (läuft in `synthesize_voiceover` für ALLE): strippt
+  Timestamps/Markdown/Regie-Anweisungen. KONSERVATIV: echte Zeiten („John 3:16",
+  „5:30") bleiben, nur Klammer-/Dash-Timestamps + keyword-Regie raus.
+- `_spell_numbers_for_tts`: Ziffern → Wörter pro Sprache (DE Jahr „1979" →
+  „neunzehnhundertneunundsiebzig", `_de_number`/`_de_year`/`_en_*`). Sonst las TTS
+  Zahlen als Müll vor.
+- **Voice tempo** (`job["voice_tempo"]`, GUI-Slider 0.7-1.2): `apply_voice_tempo` (atempo,
+  tonhöhen-erhaltend), VOR der Längenmessung. Für lange/Horror-Videos langsamer (0.85-0.9).
+- **Deutsche Stimme klonen** (`tts_de_clone` + GUI-Checkbox „🇩🇪"): nutzt **Chatterbox
+  Multilingual** (`_get_chatterbox_multilingual_model`, `language_id="de"`) statt Piper.
+  Referenz: `tts_reference_audio_de` else `tts_reference_audio`. `_resolve_clone_reference`
+  ist tolerant (findet `.clone.wav` ↔ Rohdatei-Geschwister). Fällt auf Piper zurück wenn
+  Modell/Referenz fehlt. EN bleibt normales Chatterbox. Erster Lauf lädt ~3GB Multilingual-
+  Modell. `chatterbox-tts` evtl. `pip install -U` falls Import `chatterbox.mtl_tts` fehlt.
+- Englisch-Stimme: weiterhin Chatterbox + Voice-Cloning (Besmir-Stimme).
+
+### Stabilität / Performance
+- `_unload_tts_model()`: entlädt Chatterbox aus VRAM VOR der Bildphase — aber NUR bei
+  vielen Bildern (>=12 geschätzt) oder `image_cooldown_secs`>0. Kleine Shorts behalten
+  Modell → Batch lädt nicht jedes Mal neu. (User hatte PC-Absturz bei 50 Bildern =
+  Hardware-Schutz/Netzteil; `image_cooldown_secs` Config gibt GPU Atempausen.)
+- **Download schneller**: `download_gameplay` hat `--concurrent-fragments 5` +
+  `--no-playlist` + `download_max_height` (config, default 1080; 720 = viel schneller bei
+  Shorts, sieht im vertikalen Crop identisch aus). User nahm 44-Min-Quellen → langsam.
+- Bild-Größe-Slider bis 50 Bilder, Bild-Dauer bis 5s, Bild-Größe default 1.0.
+- Subscribe-Banner default „SUBSCRIBE" (war „ABONNIEREN").
+- B-Roll-Videos (Pexels) werden quadratisch gecroppt wie die Foto-Cards (`_video_chain`).
+
+### scene-plan Gemini-Retry (war: „nur 1/3 usable from Claude" obwohl Claude ok)
+`generate_scene_plan` bewertet Plan-Qualität; bei <60% brauchbaren Beats Retry mit Gemini.
+ABER: wenn Fotos/Videos AUS sind, bot der Prompt trotzdem „photo" an → Claude wählt photo
+→ wird zu leerem AI-Beat → Retry. Gefixt: `photo_hint`/`mix_rule` im `_SCENE_PLAN_PROMPT`
+sagen jetzt „nur source=ai mit echtem Motiv" wenn photos+videos off. KEIN Claude-Problem.
+
+## config.json — User-relevante Felder (Session-3-Neuzugänge)
+```
+image_style ("auto"/.../"ms_paint_stickman"/"doodle_sketch"), image_roblox_max (2),
+image_cooldown_secs (0), download_max_height (1080),
+use_grok_cli, grok_cli_path, grok_cli_extra_args,
+use_higgsfield_images, higgsfield_image_model ("nano_banana_2"), higgsfield_cli_path,
+use_higgsfield, higgsfield_video_model (leer=aus),
+tts_de_clone (false), tts_reference_audio_de,
+telegram_* (Bot — IGNORIEREN, User nutzt stattdessen Claude Code remote)
+```
+Echte config.json des Users hat: output_dir `C:\Users\bezy\Desktop\Youtube`,
+gemini_api_key, cloudflare_*, pexels_api_key, pixabay_api_key, tts_reference_audio (Besmir,
+EN), tts_language wechselt er, use_claude_cli oft an (opus), whisper_model sollte er auf
+`medium` setzen für bessere DE-Untertitel.
+
+## Bekannte offene Punkte / TODO
+- **Chatterbox Multilingual DE-Qualität** unbestätigt (ich kann kein Audio testen). User
+  meldete: Stimme „fast perfekt", aber gelegentliche Aussprache-Verhaspler („glauben"→
+  „blauben") = Modell-Artefakt, nicht code-fixbar; cfg_weight runter (~0.3) probieren.
+- **Untertitel-Genauigkeit DE**: Whisper-Modell auf `medium`/`large-v3` für Deutsch.
+- **Higgsfield Video-Modellname** fehlt noch (User müsste `higgsfield generate list` nach
+  einem manuellen Video-Job ausführen). Bilder via nano_banana_2 laufen.
+- **Telegram-Bot (`bot.py`)** existiert + getestet, aber User will ihn NICHT nutzen
+  (macht Remote via Claude Code). Nicht weiter ausbauen außer er fragt.
+- Multi-Clip-Qualität bleibt schwächer als Opus.pro (Modell-Limit), mit Claude-CLI besser.
+
+## Wie neuer Chat anfangen sollte
+1. Diese ganze CLAUDE.md lesen (v.a. diese Session-3-Sektion).
+2. `git log --oneline -15`, `pytest -q` (der eine ffmpeg-Fail ist ok).
+3. Ehrlich bleiben, in sauberen Batches arbeiten, param↔input-Check bei GUI-Änderungen,
+   nach jedem Feature pushen + dem User sagen was er tun muss.
