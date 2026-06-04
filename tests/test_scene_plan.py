@@ -157,6 +157,34 @@ class TestRobloxCap:
         assert len(roblox) == 2
 
 
+class TestScenePlanPromptGating:
+    """The LLM must be told which sources are allowed, so it doesn't pick
+    'photo' beats that then get downgraded to empty AI beats (which wrongly
+    tripped the Gemini-retry quality gate)."""
+
+    def test_photos_off_prompt_says_ai_only(self):
+        captured = {}
+        def fake(prompt, cfg, **kw):
+            captured["p"] = prompt
+            return ('[{"source":"ai","motif":"a village","query":""},'
+                    '{"source":"ai","motif":"a bank","query":""},'
+                    '{"source":"ai","motif":"a street","query":""}]')
+        with patch("pipeline._complete_text", side_effect=fake):
+            plan = pipeline.generate_scene_plan(
+                "swiss script", 3, _ClaudeCfg(), allow_photos=False, allow_videos=False)
+        assert "DEAKTIVIERT" in captured["p"]   # prompt forbids photo/video
+        assert all(b["source"] == "ai" for b in plan)
+
+    def test_photos_on_prompt_allows_mix(self):
+        captured = {}
+        def fake(prompt, cfg, **kw):
+            captured["p"] = prompt
+            return '[{"source":"ai","motif":"a village","query":""}]'
+        with patch("pipeline._complete_text", side_effect=fake):
+            pipeline.generate_scene_plan("s", 1, _ClaudeCfg(), allow_photos=True)
+        assert "Faustregel" in captured["p"]     # mix rule, not the AI-only rule
+
+
 class TestScenePlanGeminiRetry:
     SCRIPT = "the richest player got a crown and everyone was shocked at the moment"
 

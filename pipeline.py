@@ -4078,10 +4078,10 @@ _SCENE_PLAN_PROMPT = """Du bist Editor fuer virale YouTube-Shorts. Plane die Bil
 Teile dieses Skript in {n} chronologische Beats (Reihenfolge = Erzaehl-Reihenfolge). Fuer JEDEN Beat entscheide, welche Art Visual den gerade gesprochenen Satz am besten illustriert:
 
 - "ai"    = ein generiertes Bild. WICHTIG zum Motiv: Das Bild muss zum konkret Gesagten passen. Geht es im Satz um eine Roblox-/Spiel-Figur (Avatar, Charakter, Item, Map), beschreibe einen Roblox-3D-Render. Geht es um etwas Reales oder Abstraktes (eine Person, ein Gefuehl, Geld, eine Stadt, ein Objekt, ein Ort), beschreibe ein passendes FOTOREALISTISCHES/cinematisches Bild — KEINEN Roblox-Avatar erzwingen. Waehle das Medium pro Beat nach dem Inhalt.
-- "photo" = echtes Standbild (Reaktion/Objekt: geschockte Person, Geldstapel, Pokal, Handschlag, usw.)
+- "photo" = echtes Standbild {photo_hint}(Reaktion/Objekt: geschockte Person, Geldstapel, Pokal, Handschlag, usw.)
 - "video" = echtes Stock-Video / B-Roll Clip {video_hint}fuer bewegte Action / Atmosphaere (rennen, klettern, Geld zaehlen, Explosion, Stadt bei Nacht, jubelnde Crowd, Lichter blitzen, usw.) — wenn Bewegung den Moment besser traegt als ein Standbild.
 
-Mische die Quellen wie echte virale Shorts. Faustregel: 30-50% ai, 30-50% photo/video, je nach Inhalt.
+{mix_rule}
 
 Fuer jeden Beat liefere:
 - "source": "ai", "photo" oder "video"
@@ -4117,8 +4117,21 @@ def generate_scene_plan(script: str, n: int, cfg: "Config",
     if not (getattr(cfg, "use_claude_cli", False) or cfg.gemini_api_key):
         return _fallback_ai()
 
-    video_hint = ("(z.B. action-clip, kein Standbild) " if allow_videos else "(NICHT verwenden) ")
-    prompt_text = _SCENE_PLAN_PROMPT.format(n=n, script=script, video_hint=video_hint)
+    video_hint = ("(z.B. action-clip, kein Standbild) " if allow_videos else "(NICHT VERWENDEN — deaktiviert) ")
+    photo_hint = "" if allow_photos else "(NICHT VERWENDEN — deaktiviert) "
+    if allow_photos or allow_videos:
+        mix_rule = "Mische die Quellen wie echte virale Shorts. Faustregel: 30-50% ai, 30-50% photo/video, je nach Inhalt."
+    else:
+        # Photos AND videos are off → every beat MUST be source=ai with a real
+        # motif. Without this the LLM still picks 'photo' for real-world stuff,
+        # those beats get downgraded to empty AI beats, and the quality gate
+        # wrongly retries with Gemini.
+        mix_rule = ("WICHTIG: 'photo' und 'video' sind DEAKTIVIERT. Nutze fuer JEDEN "
+                    "Beat ausschliesslich source='ai' und schreibe IMMER ein konkretes "
+                    "englisches Motiv (auch fuer reale Dinge: dann fotorealistisch).")
+    prompt_text = _SCENE_PLAN_PROMPT.format(
+        n=n, script=script, video_hint=video_hint,
+        photo_hint=photo_hint, mix_rule=mix_rule)
     body = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
