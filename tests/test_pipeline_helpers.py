@@ -599,3 +599,30 @@ class TestResolveCloneReference:
     def test_empty_input(self):
         assert pipeline._resolve_clone_reference("") == ""
         assert pipeline._resolve_clone_reference("   ") == ""
+
+
+class TestSpellNumbersForTTS:
+    def test_german_year(self):
+        assert pipeline._spell_numbers_for_tts("Jahr 1979 war", "de") == \
+            "Jahr neunzehnhundertneunundsiebzig war"
+
+    def test_german_2000s_cardinal(self):
+        assert "zweitausendzehn" in pipeline._spell_numbers_for_tts("2010 war", "de")
+
+    def test_german_counts(self):
+        assert pipeline._spell_numbers_for_tts("21 Spieler", "de") == "einundzwanzig Spieler"
+        assert pipeline._spell_numbers_for_tts("100 Punkte", "de") == "einhundert Punkte"
+        assert pipeline._spell_numbers_for_tts("250 Euro", "de") == "zweihundertfünfzig Euro"
+
+    def test_english_year_and_counts(self):
+        assert pipeline._spell_numbers_for_tts("in 1979 it", "en") == \
+            "in nineteen seventy-nine it"
+        assert pipeline._spell_numbers_for_tts("21 players", "en") == "twenty-one players"
+
+    def test_no_digits_unchanged(self):
+        s = "Kein einziger Spieler war da"
+        assert pipeline._spell_numbers_for_tts(s, "de") == s
+
+    def test_huge_number_left_as_is(self):
+        # >= 1e6 is rare; left as digits rather than risk a wrong reading.
+        assert "1000000" in pipeline._spell_numbers_for_tts("1000000 Klicks", "de")

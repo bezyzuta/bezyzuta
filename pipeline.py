@@ -1622,6 +1622,112 @@ def _resolve_clone_reference(ref: str) -> str:
     return ""
 
 
+_DE_ONES = ["null", "eins", "zwei", "drei", "vier", "fünf", "sechs", "sieben",
+            "acht", "neun", "zehn", "elf", "zwölf", "dreizehn", "vierzehn",
+            "fünfzehn", "sechzehn", "siebzehn", "achtzehn", "neunzehn"]
+_DE_TENS = {20: "zwanzig", 30: "dreißig", 40: "vierzig", 50: "fünfzig",
+            60: "sechzig", 70: "siebzig", 80: "achtzig", 90: "neunzig"}
+
+
+def _de_below_1000(n: int) -> str:
+    if n < 20:
+        return _DE_ONES[n]
+    if n < 100:
+        t, o = (n // 10) * 10, n % 10
+        if o == 0:
+            return _DE_TENS[t]
+        one = "ein" if o == 1 else _DE_ONES[o]
+        return f"{one}und{_DE_TENS[t]}"
+    h, rest = n // 100, n % 100
+    hw = ("einhundert" if h == 1 else _DE_ONES[h] + "hundert")
+    return hw if rest == 0 else hw + _de_below_1000(rest)
+
+
+def _de_number(n: int) -> str:
+    if n == 0:
+        return "null"
+    if n < 1000:
+        return _de_below_1000(n)
+    if n < 1_000_000:
+        th, rest = n // 1000, n % 1000
+        thw = ("eintausend" if th == 1 else _de_below_1000(th) + "tausend")
+        return thw if rest == 0 else thw + _de_below_1000(rest)
+    return str(n)  # >= 1M: leave as digits (rare in these scripts)
+
+
+def _de_year(n: int) -> str:
+    """German year reading: 1979 → 'neunzehnhundertneunundsiebzig',
+    2010 → 'zweitausendzehn'."""
+    if 1100 <= n < 2000:
+        hi, lo = n // 100, n % 100
+        base = _de_below_1000(hi) + "hundert"
+        return base if lo == 0 else base + _de_below_1000(lo)
+    return _de_number(n)  # 2000+ reads as cardinal ("zweitausend...")
+
+
+_EN_ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven",
+            "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+            "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+_EN_TENS = {20: "twenty", 30: "thirty", 40: "forty", 50: "fifty",
+            60: "sixty", 70: "seventy", 80: "eighty", 90: "ninety"}
+
+
+def _en_below_1000(n: int) -> str:
+    if n < 20:
+        return _EN_ONES[n]
+    if n < 100:
+        t, o = (n // 10) * 10, n % 10
+        return _EN_TENS[t] if o == 0 else f"{_EN_TENS[t]}-{_EN_ONES[o]}"
+    h, rest = n // 100, n % 100
+    hw = f"{_EN_ONES[h]} hundred"
+    return hw if rest == 0 else f"{hw} {_en_below_1000(rest)}"
+
+
+def _en_number(n: int) -> str:
+    if n == 0:
+        return "zero"
+    if n < 1000:
+        return _en_below_1000(n)
+    if n < 1_000_000:
+        th, rest = n // 1000, n % 1000
+        thw = f"{_en_below_1000(th)} thousand"
+        return thw if rest == 0 else f"{thw} {_en_below_1000(rest)}"
+    return str(n)
+
+
+def _en_year(n: int) -> str:
+    if 1100 <= n < 2000 and n % 100 != 0:
+        return f"{_en_below_1000(n // 100)} {_en_below_1000(n % 100)}"
+    return _en_number(n)
+
+
+def _spell_numbers_for_tts(text: str, lang: str) -> str:
+    """Replace bare integers with spoken words so the TTS doesn't mangle them
+    (e.g. German Chatterbox read '1979' as 'neunzehnhundert neunzehn
+    siebenundneunzig'). 4-digit values that look like years use year reading.
+    Leaves numbers with adjacent letters/units untouched only loosely — runs
+    of pure digits (optionally with a thousands dot) are converted."""
+    de = (lang or "de").lower().startswith("de")
+    num = _de_number if de else _en_number
+    year = _de_year if de else _en_year
+
+    def repl(m: "re.Match") -> str:
+        raw = m.group(0)
+        digits = raw.replace(".", "").replace(",", "")
+        if not digits.isdigit():
+            return raw
+        n = int(digits)
+        try:
+            if len(digits) == 4 and 1100 <= n <= 2099:
+                return year(n)
+            return num(n)
+        except Exception:
+            return raw
+
+    # Pure-digit runs (allow German thousands dots / English commas inside).
+    return re.sub(r"\d[\d.,]*\d|\d", repl, text)
+
+
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     """Dispatch to the right TTS engine based on `cfg.tts_language`:
 
@@ -1658,6 +1764,9 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
         print("      WARN: TTS set to German but text scans as English — "
               "overriding to Chatterbox so the pronunciation matches.")
         lang = "en"
+    # Spell out digits in the resolved language so the TTS doesn't garble them
+    # ("1979" → "neunzehnhundertneunundsiebzig" instead of digit soup).
+    text = _spell_numbers_for_tts(text, lang)
     if lang == "de":
         # German voice cloning (opt-in) → Chatterbox Multilingual. Uses a
         # German-specific reference if set, else the general one. Falls back to
