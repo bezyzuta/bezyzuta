@@ -21,6 +21,10 @@ import requests
 # and failed (no torch / no chatterbox-tts / OOM), otherwise the model.
 _CHATTERBOX_MODEL = None
 
+# Same cache for the MULTILINGUAL Chatterbox model (German/other-language voice
+# cloning). Loaded only when German cloning is requested. None/False/model.
+_CHATTERBOX_ML_MODEL = None
+
 # Module-level cache for the Piper voice (German TTS). Piper is CPU-friendly
 # (~100 MB RAM, ~real-time on a modern CPU), so no VRAM impact. We cache per
 # voice name so switching voices at runtime re-loads cleanly.
@@ -80,6 +84,12 @@ class Config:
     # Primary training language is English; German output is achievable but
     # quality varies.
     tts_reference_audio: str   # optional path to a voice sample for cloning (Chatterbox/EN only)
+    # German voice cloning (opt-in): when tts_de_clone is on, German uses the
+    # multilingual Chatterbox model with cloning instead of the fixed Piper
+    # voice. tts_reference_audio_de is an optional German-specific sample;
+    # empty → reuse tts_reference_audio.
+    tts_de_clone: bool
+    tts_reference_audio_de: str
     tts_exaggeration: float    # 0..1, default 0.5 (Chatterbox emotion; 0=flat, 1=dramatic)
     tts_cfg_weight: float      # 0..1, default 0.5 (Chatterbox guidance; lower=more natural)
     # Auto-clean the clone reference (mono/trim/normalize) before Chatterbox
@@ -179,6 +189,8 @@ class Config:
         return cls(
             output_dir=Path(data["output_dir"]).expanduser(),
             tts_reference_audio=data.get("tts_reference_audio", ""),
+            tts_de_clone=bool(data.get("tts_de_clone", False)),
+            tts_reference_audio_de=data.get("tts_reference_audio_de", ""),
             tts_exaggeration=float(data.get("tts_exaggeration", 0.5)),
             tts_cfg_weight=float(data.get("tts_cfg_weight", 0.5)),
             tts_clone_autoprep=bool(data.get("tts_clone_autoprep", True)),
@@ -1551,6 +1563,39 @@ def _get_chatterbox_model():
     return _CHATTERBOX_MODEL
 
 
+def _get_chatterbox_multilingual_model():
+    """Lazy-init Chatterbox MULTILINGUAL TTS (German + 22 other langs, with
+    zero-shot voice cloning). ~3GB extra download on first call, ~3-4GB VRAM.
+    Returns None if unavailable. Cached at module scope. Tries the documented
+    import paths across chatterbox-tts versions."""
+    global _CHATTERBOX_ML_MODEL
+    if _CHATTERBOX_ML_MODEL is False:
+        return None
+    if _CHATTERBOX_ML_MODEL is not None:
+        return _CHATTERBOX_ML_MODEL
+    try:
+        import torch  # type: ignore
+        try:
+            from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
+        except Exception:
+            # Older/newer packaging may expose it from the top-level module.
+            from chatterbox import ChatterboxMultilingualTTS  # type: ignore
+    except Exception as e:
+        print(f"      Chatterbox Multilingual not installed: {e}")
+        _CHATTERBOX_ML_MODEL = False
+        return None
+    try:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"      loading Chatterbox Multilingual on {device} (~3GB download first time)")
+        _CHATTERBOX_ML_MODEL = ChatterboxMultilingualTTS.from_pretrained(device=device)
+        print(f"      Chatterbox Multilingual ready (sr={_CHATTERBOX_ML_MODEL.sr})")
+    except Exception as e:
+        print(f"      Chatterbox Multilingual load failed: {e}")
+        _CHATTERBOX_ML_MODEL = False
+        return None
+    return _CHATTERBOX_ML_MODEL
+
+
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     """Dispatch to the right TTS engine based on `cfg.tts_language`:
 
@@ -1588,6 +1633,23 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
               "overriding to Chatterbox so the pronunciation matches.")
         lang = "en"
     if lang == "de":
+        # German voice cloning (opt-in) → Chatterbox Multilingual. Uses a
+        # German-specific reference if set, else the general one. Falls back to
+        # Piper if the multilingual model isn't available or errors.
+        if bool(getattr(cfg, "tts_de_clone", False)):
+            de_ref = (getattr(cfg, "tts_reference_audio_de", "") or "").strip() \
+                or (getattr(cfg, "tts_reference_audio", "") or "").strip()
+            if de_ref and Path(de_ref).expanduser().is_file():
+                try:
+                    return _synthesize_voiceover_chatterbox(
+                        text, cfg, out_path, multilingual=True,
+                        language_id="de", ref_override=de_ref)
+                except Exception as e:
+                    print(f"      WARN: German Chatterbox-clone failed ({str(e)[:120]}) "
+                          "— falling back to Piper")
+            else:
+                print("      WARN: tts_de_clone on but no German reference audio "
+                      "found — using Piper")
         return _synthesize_voiceover_piper(text, cfg, out_path)
     return _synthesize_voiceover_chatterbox(text, cfg, out_path)
 
@@ -1624,18 +1686,30 @@ def _synthesize_voiceover_piper(text: str, cfg: Config, out_path: Path) -> Path:
     return out_path
 
 
-def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path) -> Path:
-    """English TTS via Chatterbox (Resemble AI, local on GPU).
+def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path, *,
+                                     multilingual: bool = False,
+                                     language_id: str | None = None,
+                                     ref_override: str | None = None) -> Path:
+    """Chatterbox TTS (Resemble AI, local on GPU). English by default; set
+    multilingual=True + language_id (e.g. "de") for the multilingual model
+    that clones a voice into another language.
 
-    If `cfg.tts_reference_audio` points to a valid audio file, the output
-    voice will mimic that speaker (zero-shot voice cloning, 3-10s sample
-    works best). Otherwise Chatterbox's built-in default voice is used.
+    If a reference audio is given (ref_override, else cfg.tts_reference_audio)
+    the output mimics that speaker (zero-shot voice cloning). Otherwise the
+    built-in default voice is used.
 
     `cfg.tts_exaggeration` controls emotion (0=flat, 1=dramatic).
-    `cfg.tts_cfg_weight` controls naturalness vs. text adherence
-    (lower=more natural speech rhythm).
+    `cfg.tts_cfg_weight` controls naturalness vs. text adherence.
     """
-    model = _get_chatterbox_model()
+    if multilingual:
+        model = _get_chatterbox_multilingual_model()
+        if model is None:
+            raise RuntimeError(
+                "Chatterbox Multilingual not available. Install/upgrade with:\n"
+                "  .venv\\Scripts\\python.exe -m pip install -U chatterbox-tts torchaudio"
+            )
+    else:
+        model = _get_chatterbox_model()
     if model is None:
         raise RuntimeError(
             "Chatterbox TTS not available. Install with:\n"
@@ -1653,7 +1727,8 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path) -> 
         "exaggeration": float(getattr(cfg, "tts_exaggeration", 0.5)),
         "cfg_weight": float(getattr(cfg, "tts_cfg_weight", 0.5)),
     }
-    ref_path_str = (getattr(cfg, "tts_reference_audio", "") or "").strip()
+    ref_path_str = (ref_override if ref_override is not None
+                    else getattr(cfg, "tts_reference_audio", "") or "").strip()
     if ref_path_str:
         ref_path = Path(ref_path_str).expanduser()
         if ref_path.is_file():
@@ -1692,11 +1767,14 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path) -> 
               f"to stay under tokenizer limit")
     try:
         import torch  # type: ignore
+        gen_kwargs = dict(kwargs)
+        if multilingual and language_id:
+            gen_kwargs["language_id"] = language_id
         pieces = []
         for i, chunk_text in enumerate(chunks, 1):
             if len(chunks) > 1:
                 print(f"      chatterbox chunk {i}/{len(chunks)} ({len(chunk_text)} chars)")
-            piece = model.generate(chunk_text, **kwargs)
+            piece = model.generate(chunk_text, **gen_kwargs)
             pieces.append(piece)
         wav = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=-1)
     except Exception as e:

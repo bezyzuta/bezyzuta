@@ -523,3 +523,55 @@ class TestRobloxCapRespectsStyle:
                  for _ in range(3)]
         out = pipeline._enforce_roblox_cap(beats, C())
         assert any("photorealistic" in b["prompt"] for b in out)
+
+
+class TestGermanCloneDispatch:
+    """synthesize_voiceover routes German to Chatterbox Multilingual (cloning)
+    only when tts_de_clone is on AND a reference exists; else Piper."""
+
+    def _cfg(self, **kw):
+        class C:
+            tts_language = kw.get("tts_language", "de")
+            tts_de_clone = kw.get("tts_de_clone", False)
+            tts_reference_audio = kw.get("tts_reference_audio", "")
+            tts_reference_audio_de = kw.get("tts_reference_audio_de", "")
+        return C()
+
+    def _run(self, cfg, tmp_path, detected="de"):
+        calls = {}
+        def piper(text, c, out): calls["engine"] = "piper"; return out
+        def cbox(text, c, out, **k):
+            calls["engine"] = "ml" if k.get("multilingual") else "en"
+            calls["kw"] = k
+            return out
+        with patch("pipeline._synthesize_voiceover_piper", side_effect=piper), \
+             patch("pipeline._synthesize_voiceover_chatterbox", side_effect=cbox), \
+             patch("pipeline._detect_language", return_value=detected), \
+             patch("pipeline._sanitize_script_for_tts", side_effect=lambda t: t):
+            pipeline.synthesize_voiceover("Hallo Welt Test", cfg, tmp_path / "o.mp3")
+        return calls
+
+    def test_de_clone_with_ref_uses_multilingual(self, tmp_path):
+        ref = tmp_path / "de.clone.wav"; ref.write_bytes(b"x" * 5000)
+        calls = self._run(self._cfg(tts_de_clone=True, tts_reference_audio=str(ref)), tmp_path)
+        assert calls["engine"] == "ml"
+        assert calls["kw"].get("language_id") == "de"
+        assert calls["kw"].get("ref_override") == str(ref)
+
+    def test_de_specific_ref_preferred(self, tmp_path):
+        gen = tmp_path / "gen.clone.wav"; gen.write_bytes(b"x" * 5000)
+        de = tmp_path / "de.clone.wav"; de.write_bytes(b"x" * 5000)
+        calls = self._run(self._cfg(tts_de_clone=True, tts_reference_audio=str(gen),
+                                    tts_reference_audio_de=str(de)), tmp_path)
+        assert calls["kw"].get("ref_override") == str(de)
+
+    def test_de_no_clone_uses_piper(self, tmp_path):
+        assert self._run(self._cfg(tts_de_clone=False), tmp_path)["engine"] == "piper"
+
+    def test_de_clone_without_ref_falls_back_to_piper(self, tmp_path):
+        assert self._run(self._cfg(tts_de_clone=True, tts_reference_audio=""),
+                         tmp_path)["engine"] == "piper"
+
+    def test_english_uses_chatterbox(self, tmp_path):
+        calls = self._run(self._cfg(tts_language="en"), tmp_path, detected="en")
+        assert calls["engine"] == "en"
