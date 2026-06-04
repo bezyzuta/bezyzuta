@@ -242,6 +242,22 @@ def _build_job_and_cfg(spec: dict, cfg: Config) -> dict:
         job["enable_music"] = False   # no dir → can't play music, avoid a crash
     if not job.get("sfx_dir"):
         job["enable_sfx"] = False
+
+    # Per-message volume control (percent). 'music_volume: 8' = quieter music.
+    mvol = (spec.get("music_volume") or spec.get("musik_lautstärke")
+            or spec.get("musik_lautstaerke") or "").strip()
+    if mvol:
+        try:
+            job["music_volume_pct"] = max(0.0, min(100.0, float(mvol.replace("%", ""))))
+        except ValueError:
+            pass
+    svol = (spec.get("sfx_volume") or spec.get("sfx_lautstärke")
+            or spec.get("sfx_lautstaerke") or "").strip()
+    if svol:
+        try:
+            job["sfx_volume_pct"] = max(0.0, min(100.0, float(svol.replace("%", ""))))
+        except ValueError:
+            pass
     return job
 
 
@@ -252,7 +268,8 @@ _HELP = (
     "lang: de | en | auto\n"
     "effects: all-no-horror | all | horror | none\n"
     "hook: HE KNEW MY NAME\n"
-    "music: <trackname.mp3>\n"
+    "music: <trackname.mp3>  (oder 'off')\n"
+    "music_volume: 14   (Prozent, Standard 14)\n"
     "script:\n"
     "<dein Skript hier, mehrzeilig>\n\n"
     "url weglassen = Faceless (kein Gameplay). Nur du kannst Videos auslösen."

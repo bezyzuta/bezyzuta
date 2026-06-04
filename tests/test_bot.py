@@ -129,3 +129,28 @@ class TestBuildJob:
         cfg = _Cfg(); cfg.telegram_music_dir = "/music"
         job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s", "music": "off"}, cfg)
         assert job["enable_music"] is False
+
+
+class TestVolumeControl:
+    def _cfg(self):
+        c = _Cfg(); c.telegram_music_dir = "/music"; c.telegram_sfx_dir = "/sfx"
+        return c
+
+    def test_default_music_volume(self):
+        job = bot._build_job_and_cfg({"url": "http://yt/x", "script": "s"}, self._cfg())
+        assert job["music_volume_pct"] == 14.0
+
+    def test_per_message_music_volume(self):
+        job = bot._build_job_and_cfg(
+            {"url": "http://yt/x", "script": "s", "music_volume": "8"}, self._cfg())
+        assert job["music_volume_pct"] == 8.0
+
+    def test_volume_with_percent_sign_and_clamp(self):
+        job = bot._build_job_and_cfg(
+            {"url": "http://yt/x", "script": "s", "music_volume": "150%"}, self._cfg())
+        assert job["music_volume_pct"] == 100.0
+
+    def test_sfx_volume(self):
+        job = bot._build_job_and_cfg(
+            {"url": "http://yt/x", "script": "s", "sfx_volume": "20"}, self._cfg())
+        assert job["sfx_volume_pct"] == 20.0
