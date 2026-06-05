@@ -1250,6 +1250,86 @@ def generate_hook_variants(topic: str, cfg: "Config", n: int = 4,
     return hooks[:n]
 
 
+_AUTO_HOOK_PROMPT_DE = """Hier ist das Skript eines YouTube-Shorts:
+---
+{script}
+---
+Schreibe EINEN einzigen kurzen Hook (der grosse Aufmacher-Text fuer die ersten 2-3 Sekunden), der genau zu DIESEM Skript passt und sofort fesselt.
+
+Der Hook MUSS:
+- Maximal 8 Woerter / 50 Zeichen sein
+- Sofort Neugier oder Schock ausloesen, am besten ein Cliffhanger auf das Spannendste im Skript
+- KEIN Punkt am Ende, optional ! oder ?
+- Nicht spoilern, sondern neugierig machen
+
+Antworte NUR mit dem Hook-Text in einer einzigen Zeile, keine Anfuehrungszeichen, sonst nichts."""
+
+_AUTO_HOOK_PROMPT_EN = """Here is the script of a YouTube Short:
+---
+{script}
+---
+Write ONE single short hook (the big opener text for the first 2-3 seconds) that fits THIS exact script and grabs attention instantly.
+
+The hook MUST:
+- Be max 8 words / 50 characters
+- Trigger instant curiosity or shock, ideally a cliffhanger on the most exciting part of the script
+- NO trailing period, optional ! or ?
+- Not spoil it, just make them need to watch
+
+Reply with ONLY the hook text on a single line, no quotes, nothing else."""
+
+
+def _clean_hook_line(text: str) -> str:
+    """Pull a single clean hook line out of an LLM reply: first non-empty
+    line, quotes/markdown/trailing period stripped, capped to ~60 chars."""
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```\s*$", "", raw)
+    for line in raw.splitlines():
+        h = line.strip().strip("-*•").strip()
+        # If the model wrapped it in JSON/quotes, peel those off.
+        h = h.strip('"').strip("'").strip()
+        h = h.rstrip(".").strip()
+        if 2 <= len(h) <= 60:
+            return h
+    return ""
+
+
+def generate_auto_hook(script: str, cfg: "Config", language: str = "de",
+                       on_step=None) -> str:
+    """Generate ONE punchy on-screen hook overlay from the ACTUAL script text.
+    Opt-in (job["auto_hook"]). Routes through _complete_text so the Claude-CLI
+    toggle is honored. Falls back to generate_hook_variants (first item), then
+    returns "" — the caller treats empty as 'no hook', so it never breaks a
+    render."""
+    snippet = (script or "").strip()
+    if not snippet:
+        return ""
+    snippet = snippet[:800]
+    is_en = (language or "de").lower() == "en"
+    prompt = (_AUTO_HOOK_PROMPT_EN if is_en else _AUTO_HOOK_PROMPT_DE).format(script=snippet)
+    body = {"contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.9, "maxOutputTokens": 64,
+                                 "thinkingConfig": {"thinkingBudget": 0}}}
+    try:
+        text = _complete_text(prompt, cfg, prefer_claude=True, gemini_body=body, on_step=on_step)
+    except Exception:
+        text = ""
+    hook = _clean_hook_line(text)
+    if hook:
+        return hook
+    # Fallback: reuse the variants generator off the script's opening line.
+    try:
+        variants = generate_hook_variants(
+            snippet[:120], cfg, n=1, language=("en" if is_en else "de"), on_step=on_step)
+        if variants:
+            return variants[0]
+    except Exception:
+        pass
+    return ""
+
+
 def fallback_template_script(topic: str) -> str:
     return random.choice(_SCRIPT_TEMPLATES).format(topic=topic.strip() or "ein krasser Roblox Moment")
 
@@ -7073,6 +7153,23 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     emoji_overlay_active = bool(emoji_png_events)
 
     ass_path = work / "captions.ass"
+    # Auto-Hook (opt-in): if the user left the hook field empty and enabled
+    # auto_hook, let the LLM write a punchy hook from the ACTUAL script. A
+    # manually typed hook always wins. Generated once, before captions render.
+    hook_text = str(job.get("hook_text", "")).strip()
+    if not hook_text and bool(job.get("auto_hook", False)):
+        try:
+            hook_lang = (getattr(cfg, "tts_language", "auto") or "auto").lower()
+            if hook_lang not in ("de", "en"):
+                hook_lang = _detect_language(script)
+            auto = generate_auto_hook(script, cfg, language=hook_lang, on_step=step)
+            if auto:
+                hook_text = auto
+                step(f"      Auto-Hook: {hook_text!r}")
+            else:
+                step("      Auto-Hook: kein Hook generiert (übersprungen)")
+        except Exception as e:
+            step(f"      Auto-Hook fehlgeschlagen ({str(e)[:120]})")
     if state and state.is_done(Step.CAPTIONS) and ass_path.is_file():
         ass = ass_path
         step("      resume: captions.ass cached")
@@ -7084,7 +7181,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             primary_color=str(job.get("caption_color", "#FFFFFF")),
             outline_color=str(job.get("caption_stroke_color", "#000000")),
             outline_width=int(job.get("caption_stroke_width", 5)),
-            hook_text=str(job.get("hook_text", "")),
+            hook_text=hook_text,
             hook_duration=float(job.get("hook_duration", 3.0)),
             pop_captions=bool(job.get("pop_captions", False)),
             subscribe_overlay=bool(job.get("subscribe_overlay", False)),

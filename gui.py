@@ -117,6 +117,7 @@ def generate(
     caption_position: str,
     hook_text: str,
     hook_duration: float,
+    auto_hook: bool,
     effects_enabled: list,
     effects_ai: bool,
     pop_captions: bool,
@@ -253,6 +254,7 @@ def generate(
             "caption_position": str(caption_position or "top"),
             "hook_text": str(hook_text or "").strip(),
             "hook_duration": float(hook_duration),
+            "auto_hook": bool(auto_hook),
             "effects_enabled": list(effects_enabled or []),
             "effects_ai": bool(effects_ai),
             "pop_captions": bool(pop_captions),
@@ -783,6 +785,13 @@ def build_app() -> gr.Blocks:
                 1.0, 6.0, value=3.0, step=0.5,
                 label="Anzeigedauer (Sekunden)",
             )
+            auto_hook = gr.Checkbox(
+                value=False,
+                label="🎣 Auto-Hook (KI schreibt den Hook aus dem Skript)",
+                info=("An: Wenn das Hook-Feld oben LEER ist, schreibt die KI automatisch "
+                      "einen knackigen Hook passend zum generierten Skript und blendet ihn "
+                      "in den ersten Sekunden ein. Ein manuell eingetippter Hook hat Vorrang."),
+            )
 
         # ───────────── Bild-Overlays ─────────────
         with gr.Accordion("🖼️ Bild-Overlays", open=False):
@@ -1136,7 +1145,7 @@ def build_app() -> gr.Blocks:
                 image_change_secs, image_gap_secs, image_allow_photos, image_allow_videos,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 caption_position,
-                hook_text, hook_duration,
+                hook_text, hook_duration, auto_hook,
                 effects_enabled, effects_ai,
                 pop_captions, caption_emojis, progress_bar, subscribe_overlay,
                 subscribe_sting_file, subscribe_sting_volume,
