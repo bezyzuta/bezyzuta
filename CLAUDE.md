@@ -640,6 +640,15 @@ https://download.pytorch.org/whl/cu128` + `pip install whisperx nvidia-cudnn-cu1
 nvidia-cublas-cu12`. Reparatur Haupt-venv falls verseucht: `pip install "numpy<2"
 "transformers==5.2.0"` + torch cu124 reinstall. config-only (kein GUI-Param).
 
+### Caption-Polish (opt-in, Effekt `caption_polish` in „✨ Engagement-Effekte")
+Neue CheckboxGroup-Option (KEIN neues GUI-Element → param↔input bleibt 81=81).
+In `write_ass` neuer Branch + Param `caption_polish`: die 3-Wort-Gruppe bleibt
+lesbar stehen, aber das gerade gesprochene Wort leuchtet (gelb `&H00FFFF&` +
+`\fscx116\b1`) und wandert wortweise mit — nutzt das enge WhisperX-Timing.
+Fade nur beim ersten/letzten Wort des Chunks (kein Flackern). Short-form only
+(long_form ignoriert), Vorrang vor `word_karaoke`. Verdrahtet an der einzigen
+write_ass-Call-Site aus `job["effects_enabled"]`. Tests: test_caption_polish.py.
+
 ## config.json — User-relevante Felder (Session-3-Neuzugänge)
 ```
 image_style ("auto"/.../"ms_paint_stickman"/"doodle_sketch"), image_roblox_max (2),
