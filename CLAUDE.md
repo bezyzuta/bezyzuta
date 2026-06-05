@@ -622,7 +622,18 @@ WhisperX-Fehler/fehlende Lib → automatischer Fallback, Render bricht NIE.
 Gleiche Rückgabe `[(start,end,wort)]`. `_fill_word_gaps` füllt nicht-alignte
 Tokens (Zahlen/Symbole) aus Nachbar-Timings statt sie zu droppen. Sprache aus
 `job["tts_language"]` (Voice-Pfad) bzw. "auto" (Source-Audio-Captions). Gratis,
-lokal, GPU. Install: `pip install whisperx`. Beide run_one-Call-Sites umgestellt.
+lokal, GPU. Beide run_one-Call-Sites umgestellt.
+
+**WICHTIG — Dep-Konflikt:** `pip install whisperx` (3.8.x) zieht torch~2.8 /
+numpy 2 / transformers 4.x rein und KILLT Chatterbox im Haupt-venv (braucht
+torch cu124 / numpy<2 / transformers==5.2.0). Deshalb läuft WhisperX in einem
+SEPARATEN venv: `cfg.whisperx_python` = Pfad zu dessen python.exe; der Subprocess
+nutzt `python_exe=` statt `sys.executable`. Haupt-venv bleibt sauber. Fehlt der
+Pfad/Interpreter → RuntimeError → Fallback. Setup-venv: `python -m venv
+whisperx-venv`, darin `pip install torch torchaudio --index-url
+https://download.pytorch.org/whl/cu128` + `pip install whisperx nvidia-cudnn-cu12
+nvidia-cublas-cu12`. Reparatur Haupt-venv falls verseucht: `pip install "numpy<2"
+"transformers==5.2.0"` + torch cu124 reinstall. config-only (kein GUI-Param).
 
 ## config.json — User-relevante Felder (Session-3-Neuzugänge)
 ```

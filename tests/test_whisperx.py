@@ -74,9 +74,12 @@ class TestDispatcher:
                           return_value=([(0.0, 0.4, "y")], "cuda")) as wx, \
              patch.object(pipeline, "transcribe_words_subprocess") as plain:
             words, dev = pipeline.transcribe_words_best(
-                "a.wav", "small", use_whisperx=True, language="de")
+                "a.wav", "small", use_whisperx=True, language="de",
+                whisperx_python=r"C:\wx\python.exe")
         assert words == [(0.0, 0.4, "y")]
         wx.assert_called_once()
+        # The isolated-venv interpreter is forwarded to the subprocess.
+        assert wx.call_args.kwargs.get("python_exe") == r"C:\wx\python.exe"
         plain.assert_not_called()
 
     def test_whisperx_failure_falls_back(self):
@@ -110,3 +113,22 @@ def test_config_defaults_whisperx_off(tmp_path):
 
 def test_config_reads_whisperx_flag(tmp_path):
     assert _write_cfg(tmp_path, use_whisperx=True).use_whisperx is True
+
+
+def test_config_whisperx_python_default_empty(tmp_path):
+    assert _write_cfg(tmp_path).whisperx_python == ""
+
+
+def test_config_reads_whisperx_python(tmp_path):
+    p = r"C:\Users\bezy\Desktop\roblox-shorts\whisperx-venv\Scripts\python.exe"
+    assert _write_cfg(tmp_path, whisperx_python=p).whisperx_python == p
+
+
+def test_missing_whisperx_python_raises(tmp_path):
+    # A configured-but-missing interpreter must error (so the dispatcher can
+    # fall back) rather than silently using the main venv.
+    import pytest
+    missing = str(tmp_path / "nope" / "python.exe")
+    with pytest.raises(RuntimeError):
+        pipeline.transcribe_words_whisperx_subprocess(
+            tmp_path / "a.wav", "small", python_exe=missing)

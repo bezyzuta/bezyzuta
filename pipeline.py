@@ -110,6 +110,13 @@ class Config:
     # local, GPU. Falls back to plain faster-whisper if whisperx isn't
     # installed or alignment fails, so it never breaks a render.
     use_whisperx: bool
+    # Path to a SEPARATE python.exe (its own venv) that has whisperx + a
+    # compatible torch installed. WhisperX 3.8.x needs torch ~2.8 / numpy 2 /
+    # transformers 4.x, which conflict head-on with Chatterbox in the main venv
+    # (torch cu124 / numpy<2 / transformers 5.2.0). So we run WhisperX
+    # out-of-process in its own env. Empty = use the main interpreter (only
+    # works if whisperx is somehow installed here too — usually it can't be).
+    whisperx_python: str
     # Max height for the downloaded gameplay source. 1080 default; drop to 720
     # for much faster downloads (a vertical short is cropped+scaled anyway).
     download_max_height: int
@@ -219,6 +226,7 @@ class Config:
             tts_piper_model=str(data.get("tts_piper_model", "de_DE-thorsten-medium")),
             whisper_model=data.get("whisper_model", "small"),
             use_whisperx=bool(data.get("use_whisperx", False)),
+            whisperx_python=str(data.get("whisperx_python", "")).strip(),
             download_max_height=int(data.get("download_max_height", 1080)),
             target_w=int(w),
             target_h=int(h),
@@ -3530,12 +3538,17 @@ def _fill_word_gaps(raw):
 
 def transcribe_words_whisperx_subprocess(audio_path: Path, model_name: str,
                                          device: str = "auto", language: str = "auto",
-                                         on_step=None):
+                                         python_exe: str = "", on_step=None):
     """Word-level transcription via WhisperX (faster-whisper + wav2vec2 align).
 
     Same crash-safe, subprocess-isolated pattern as transcribe_words_subprocess
     and the same return shape: (list[(start, end, word)], device_used). The
     child writes a JSON sidecar before any CUDA destructor runs.
+
+    `python_exe` selects the interpreter for the child: point it at a SEPARATE
+    venv that has whisperx + torch installed (cfg.whisperx_python), because
+    whisperx's deps conflict with the main venv's Chatterbox stack. Empty =
+    this interpreter (sys.executable).
 
     Raises RuntimeError on failure so the caller can fall back to plain
     faster-whisper. First run downloads a small wav2vec2 alignment model per
@@ -3547,6 +3560,11 @@ def transcribe_words_whisperx_subprocess(audio_path: Path, model_name: str,
             except Exception: pass
         else:
             print(msg)
+
+    exe = (python_exe or "").strip() or sys.executable
+    if (python_exe or "").strip() and not Path(exe).exists():
+        raise RuntimeError(
+            f"whisperx_python points to a missing interpreter: {exe}")
 
     out_json = audio_path.with_suffix(".wxwords.json")
     if out_json.exists():
@@ -3599,7 +3617,7 @@ def transcribe_words_whisperx_subprocess(audio_path: Path, model_name: str,
     for dev in devices:
         try:
             proc = subprocess.run(
-                [sys.executable, "-c", child_code, str(audio_path), model_name, dev, lang_arg, str(out_json)],
+                [exe, "-c", child_code, str(audio_path), model_name, dev, lang_arg, str(out_json)],
                 capture_output=True, text=True, timeout=900,
             )
         except subprocess.TimeoutExpired:
@@ -3621,11 +3639,12 @@ def transcribe_words_whisperx_subprocess(audio_path: Path, model_name: str,
 
 def transcribe_words_best(audio_path: Path, model_name: str, device: str = "auto",
                           use_whisperx: bool = False, language: str = "auto",
-                          on_step=None):
+                          whisperx_python: str = "", on_step=None):
     """Dispatcher: WhisperX (tight word alignment) when enabled, else plain
-    faster-whisper. WhisperX failures fall back automatically so a render is
-    never blocked by a missing dep or a bad align model. Returns the same
-    (words, device) shape as the underlying transcribers."""
+    faster-whisper. WhisperX runs in its own venv (whisperx_python). WhisperX
+    failures fall back automatically so a render is never blocked by a missing
+    dep or a bad align model. Returns the same (words, device) shape as the
+    underlying transcribers."""
     def log(msg):
         if on_step:
             try: on_step(msg)
@@ -3635,9 +3654,11 @@ def transcribe_words_best(audio_path: Path, model_name: str, device: str = "auto
 
     if use_whisperx:
         try:
-            log("      WhisperX: word-level alignment aktiv")
+            where = "eigenes venv" if (whisperx_python or "").strip() else "Haupt-venv"
+            log(f"      WhisperX: word-level alignment aktiv ({where})")
             return transcribe_words_whisperx_subprocess(
-                audio_path, model_name, device=device, language=language, on_step=on_step,
+                audio_path, model_name, device=device, language=language,
+                python_exe=whisperx_python, on_step=on_step,
             )
         except Exception as e:
             log(f"      WhisperX nicht verfügbar/fehlgeschlagen ({str(e)[:160]}) "
@@ -6857,6 +6878,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         words, used_dev = transcribe_words_best(
             vo, cfg.whisper_model, device=whisper_device,
             use_whisperx=bool(getattr(cfg, "use_whisperx", False)),
+            whisperx_python=str(getattr(cfg, "whisperx_python", "")),
             language=str(job.get("tts_language", "auto")), on_step=step,
         )
         step(f"      whisper ran on {used_dev}")
@@ -6887,6 +6909,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             words, used_dev = transcribe_words_best(
                 clip_audio, cfg.whisper_model, device=whisper_device,
                 use_whisperx=bool(getattr(cfg, "use_whisperx", False)),
+                whisperx_python=str(getattr(cfg, "whisperx_python", "")),
                 language="auto", on_step=step,
             )
             step(f"      whisper ran on {used_dev} — {len(words)} words from source audio")
