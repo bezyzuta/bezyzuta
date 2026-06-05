@@ -97,6 +97,38 @@ class TestFetchImageFromGrokCli:
             with pytest.raises(RuntimeError, match="exited 1"):
                 pipeline.fetch_image_from_grok_cli("a cat", tmp_path / "out.png", _Cfg())
 
+    def test_aspect_9_16_makes_portrait_and_requests_it(self, tmp_path):
+        home = tmp_path / "home"
+        out = tmp_path / "out.png"
+        side_effect, _img = _grok_run_that_writes(home)
+        captured = {}
+
+        def _spy(*args, **kwargs):
+            captured["cmd"] = args[0]
+            return side_effect(*args, **kwargs)
+
+        with patch("shutil.which", return_value="/usr/bin/grok"), \
+             patch("pathlib.Path.home", return_value=home), \
+             patch("subprocess.run", side_effect=_spy):
+            pipeline.fetch_image_from_grok_cli("a cat", out, _Cfg(), aspect="9:16")
+        # The grok prompt asks for a 9:16 vertical image …
+        prompt_arg = captured["cmd"][captured["cmd"].index("-p") + 1]
+        assert "9:16 vertical portrait" in prompt_arg
+        # … and the saved file is actually taller than wide (crop-to-fill).
+        with Image.open(out) as im:
+            assert im.height > im.width
+
+    def test_default_aspect_still_square(self, tmp_path):
+        home = tmp_path / "home"
+        out = tmp_path / "out.png"
+        side_effect, _img = _grok_run_that_writes(home)
+        with patch("shutil.which", return_value="/usr/bin/grok"), \
+             patch("pathlib.Path.home", return_value=home), \
+             patch("subprocess.run", side_effect=side_effect):
+            pipeline.fetch_image_from_grok_cli("a cat", out, _Cfg())
+        with Image.open(out) as im:
+            assert im.width == im.height
+
     def test_timeout_raises(self, tmp_path):
         home = tmp_path / "home"
         with patch("shutil.which", return_value="/usr/bin/grok"), \

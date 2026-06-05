@@ -161,9 +161,14 @@ def generate(
         # picked a non-auto style) + continuous per-beat images. Rendered in
         # landscape 16:9 like a normal long-form YouTube video.
         _faceless = _fmt == "faceless"
+        # KI-Bild-Short: same no-source, full-frame AI-image engine as faceless,
+        # but PORTRAIT 9:16 and WITHOUT the forced hand-drawn style (uses the
+        # normal AI-image chain — Grok first if enabled). No YouTube source.
+        _ai_image_short = _fmt == "ai_image_short"
+        _no_source = _faceless or _ai_image_short
         if _fmt in ("landscape", "faceless"):
             cfg.target_w, cfg.target_h = 1920, 1080
-        else:  # portrait
+        else:  # portrait OR ai_image_short
             cfg.target_w, cfg.target_h = 1080, 1920
         # Claude-CLI provider toggle (overrides config.json for this run).
         cfg.use_claude_cli = bool(use_claude_cli)
@@ -236,11 +241,11 @@ def generate(
             "image_tilt": bool(image_tilt),
             # Faceless format forces continuous per-beat images; otherwise honor
             # the checkbox.
-            "images_continuous": bool(images_continuous) or _faceless,
+            "images_continuous": bool(images_continuous) or _faceless or _ai_image_short,
             # Faceless = landscape story video that STILL wants per-beat images
             # (normal landscape doesn't). This flag lets the pipeline allow
             # continuous images in landscape just for this mode.
-            "faceless_mode": bool(_faceless),
+            "faceless_mode": bool(_faceless or _ai_image_short),
             "export_timestamp_images": bool(export_timestamp_images),
             "image_change_secs": float(image_change_secs),
             "image_gap_secs": float(image_gap_secs),
@@ -264,7 +269,7 @@ def generate(
             "whisper_device": str(whisper_device or "auto"),
             # Multiclip needs a gameplay source to cut from — meaningless and
             # crash-prone in faceless mode, so force it off there.
-            "multiclip_enabled": bool(multiclip_enabled) and not _faceless,
+            "multiclip_enabled": bool(multiclip_enabled) and not _no_source,
             "multiclip_count": int(multiclip_count),
             "enable_music": bool(enable_music),
             "music_dir": str(music_dir or ""),
@@ -295,8 +300,8 @@ def generate(
                     uploaded_paths.append(f)
         if uploaded_paths:
             job["image_paths"] = uploaded_paths
-        # Faceless videos have no gameplay background → no source URL needed.
-        if _faceless:
+        # Faceless / KI-Bild-Short have no gameplay background → no URL needed.
+        if _no_source:
             pass
         elif source_mode == "Direkt-URL":
             if not source_url.strip():
@@ -435,14 +440,17 @@ def build_app() -> gr.Blocks:
                 ("📱 Short — 9:16 Hochformat (1080×1920)", "portrait"),
                 ("🎬 Lang-Video — 16:9 Querformat (1920×1080)", "landscape"),
                 ("📝 Faceless Story — 16:9 Querformat, handgezeichneter Stil", "faceless"),
+                ("🎨 KI-Bild-Short — 9:16 Hochformat, KI-Bilder (Grok), kein YT nötig", "ai_image_short"),
             ],
             value="portrait",
             label="🖼️ Output-Format",
             info=("Hochformat = YouTube/TikTok-Short, schmaler vertikaler Crop, "
                   "Auto-Reframe wirkt. Querformat = normales YouTube-Video, "
                   "kein Crop. Faceless = Story-Video im Danny-Why-Stil "
-                  "(Strichmännchen/Doodle, durchgehende Bilder) — setzt Bild-Stil "
-                  "+ Optionen automatisch."),
+                  "(Strichmännchen/Doodle, durchgehende Bilder). KI-Bild-Short = "
+                  "vertikales Short ganz OHNE YouTube-Quelle: vollflächige KI-Bilder "
+                  "pro Sprech-Beat (Grok zuerst, dann Higgsfield/Flux/Pollinations), "
+                  "Bild-Stil frei wählbar."),
         )
 
         with gr.Accordion("⚙️ Config-Datei", open=False):

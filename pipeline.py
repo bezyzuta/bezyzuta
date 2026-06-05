@@ -1051,10 +1051,13 @@ def _grok_image_snapshot() -> dict[str, float]:
 
 
 def fetch_image_from_grok_cli(prompt: str, out_path: Path, cfg: "Config", *,
-                              timeout: int = 240, on_step=None) -> Path:
+                              aspect: str = "1:1", timeout: int = 240,
+                              on_step=None) -> Path:
     """Generate one image via the local Grok Build CLI (`grok -p`), tapping the
     user's SuperGrok subscription — no API key, no per-image billing. Writes the
-    result to `out_path` (square PNG) and returns it. Raises on ANY failure so
+    result to `out_path` and returns it. `aspect` ("1:1"/"9:16"/"16:9") is asked
+    for in the prompt and enforced by cropping the bytes to that ratio (Grok may
+    ignore the request, so we never trust it blindly). Raises on ANY failure so
     the caller falls back to Cloudflare / Pollinations.
 
     Grok Build saves generated images into its own session dir and names the
@@ -1075,13 +1078,15 @@ def fetch_image_from_grok_cli(prompt: str, out_path: Path, cfg: "Config", *,
             "done? set grok_cli_path in config.json)")
 
     before = _grok_image_snapshot()
-    # One image, square (matches the photo-card / overlay footprint). The
-    # explicit instructions keep the agent from asking a follow-up question
-    # or generating several variations. Single line — it's passed as an argv
-    # value, and image prompts are short (no Windows command-length concern).
+    # One image in the requested aspect. The explicit instructions keep the
+    # agent from asking a follow-up question or generating several variations.
+    # Single line — it's passed as an argv value, and image prompts are short
+    # (no Windows command-length concern).
+    _aspect_word = {"1:1": "1:1 square", "9:16": "9:16 vertical portrait",
+                    "16:9": "16:9 widescreen"}.get(aspect, "1:1 square")
     ask = (
         "imagine " + " ".join(prompt.split())
-        + " — generate exactly ONE image in 1:1 square format, produce it "
+        + f" — generate exactly ONE image in {_aspect_word} format, produce it "
         "directly, do not ask questions, do not generate variations."
     )
     # Grok Build's `-p` (alias --single) takes the prompt as its VALUE, not on
@@ -1115,15 +1120,20 @@ def fetch_image_from_grok_cli(prompt: str, out_path: Path, cfg: "Config", *,
     newest = max(fresh, key=lambda p: p.stat().st_mtime)
     log(f"      grok image → {newest.name}")
 
-    # Normalize to a square PNG at out_path (same shape as photo cards). Reuses
-    # the shared center-crop helper, which also validates the bytes are a real
-    # image — a half-written file raises and we fall back.
+    # Normalize to the requested aspect at out_path. Reuses the shared
+    # center-crop helpers, which also validate the bytes are a real image — a
+    # half-written file raises and we fall back.
     try:
         data = newest.read_bytes()
     except OSError as e:
         raise RuntimeError(f"grok image unreadable: {str(e)[:120]}") from e
-    if not _save_square_image(data, out_path):
-        raise RuntimeError("grok image could not be decoded")
+    _ar = {"1:1": 1.0, "9:16": 9 / 16, "16:9": 16 / 9}.get(aspect, 1.0)
+    if aspect == "1:1":
+        if not _save_square_image(data, out_path):
+            raise RuntimeError("grok image could not be decoded")
+    else:
+        if not _save_aspect_image(data, out_path, ar=_ar):
+            raise RuntimeError("grok image could not be decoded")
     return out_path
 
 
@@ -7185,8 +7195,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
 
             consecutive_failures = 0
             # Faceless landscape → generate/keep images at 16:9 so they fill the
-            # widescreen frame (no squared cards, no side bars).
+            # widescreen frame (no squared cards, no side bars). Faceless PORTRAIT
+            # (KI-Bild-Short) → 9:16 so they fill the vertical frame.
             faceless_wide = faceless_mode and not is_portrait_out
+            faceless_tall = faceless_mode and is_portrait_out
             cloudflare_ready = bool(cfg.cloudflare_account_id and cfg.cloudflare_api_token)
             grok_ready = bool(getattr(cfg, "use_grok_cli", False)
                               and _resolve_grok_cli(getattr(cfg, "grok_cli_path", "") or "grok"))
@@ -7250,11 +7262,18 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                 # enabled, then Grok Build CLI, then Cloudflare Flux, then
                 # Pollinations. Faceless landscape wants 16:9 — Cloudflare is
                 # asked directly; Higgsfield/Grok/Pollinations are re-cropped.
-                cf_w, cf_h = (1280, 720) if faceless_wide else (1024, 1024)
+                if faceless_wide:
+                    cf_w, cf_h = 1280, 720
+                elif faceless_tall:
+                    cf_w, cf_h = 720, 1280
+                else:
+                    cf_w, cf_h = 1024, 1024
                 if not ok and hf_img_ready:
                     try:
                         fetch_image_from_higgsfield(prompt, target_path, cfg,
                                                     faceless_wide=faceless_wide, on_step=step)
+                        if faceless_tall:
+                            _faceless_recrop(target_path, ar=9 / 16)
                         image_paths.append(target_path)
                         ok = True
                     except Exception as e:
@@ -7262,9 +7281,13 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                         step(f"      Higgsfield image miss ({str(e)[:120]}), falling back")
                 if not ok and grok_ready:
                     try:
-                        fetch_image_from_grok_cli(prompt, target_path, cfg, on_step=step)
+                        grok_aspect = "9:16" if faceless_tall else ("16:9" if faceless_wide else "1:1")
+                        fetch_image_from_grok_cli(prompt, target_path, cfg,
+                                                  aspect=grok_aspect, on_step=step)
                         if faceless_wide:
                             _faceless_recrop(target_path)
+                        elif faceless_tall:
+                            _faceless_recrop(target_path, ar=9 / 16)
                         image_paths.append(target_path)
                         ok = True
                     except Exception as e:
@@ -7292,6 +7315,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
                         )
                         if faceless_wide:
                             _faceless_recrop(target_path)
+                        elif faceless_tall:
+                            _faceless_recrop(target_path, ar=9 / 16)
                         image_paths.append(target_path)
                         ok = True
                     except Exception as e:

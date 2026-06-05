@@ -649,6 +649,20 @@ Fade nur beim ersten/letzten Wort des Chunks (kein Flackern). Short-form only
 (long_form ignoriert), Vorrang vor `word_karaoke`. Verdrahtet an der einzigen
 write_ass-Call-Site aus `job["effects_enabled"]`. Tests: test_caption_polish.py.
 
+### KI-Bild-Short — neues Output-Format „ai_image_short" (9:16, kein YT)
+Vierte Radio-Option (nur Choice, kein neues GUI-Element → param↔input 81=81).
+In `gui.generate`: `_ai_image_short`/`_no_source` setzen `faceless_mode=True`
+(no-Source-Engine: weißer BG via `make_color_background`, durchgehende Bilder,
+`_fullframe_chain` füllt den Frame), aber PORTRAIT 1080×1920 und OHNE den
+Stickman-Style-Zwang (Bild-Stil frei). multiclip aus, keine URL nötig. In
+`run_one`-Image-Gen neu: `faceless_tall = faceless_mode and is_portrait_out`
+→ cf-Dims 720×1280, Grok/Higgsfield/Pollinations-Output via
+`_faceless_recrop(ar=9/16)` auf 9:16. `fetch_image_from_grok_cli` hat jetzt
+`aspect`-Param ("1:1"/"9:16"/"16:9"): fordert das Format im Prompt an + crop-to-
+fill (Grok ignoriert Aspect oft → nie blind vertrauen). Default bleibt square.
+Bild-Kaskade unverändert: Grok zuerst (wenn an), dann Higgsfield/Flux/Pollinations.
+Grok kann KEIN Video → nur Bilder. Tests: test_grok_cli.py (aspect).
+
 ## config.json — User-relevante Felder (Session-3-Neuzugänge)
 ```
 image_style ("auto"/.../"ms_paint_stickman"/"doodle_sketch"), image_roblox_max (2),
