@@ -905,6 +905,8 @@ def build_app() -> gr.Blocks:
                     ("💬 Keyword-Pop (Untertitel-Wort flasht gelb bei Schlüsselwort)", "keyword_pop"),
                     ("🎤 Per-Wort-Karaoke (TikTok-Style: ein Wort nach dem anderen, mit Pop)", "word_karaoke"),
                     ("✨ Caption-Polish (3-Wort-Gruppe bleibt, gesprochenes Wort leuchtet größer+gelb)", "caption_polish"),
+                    ("🟨 Caption-Highlight-Box (aktives Wort in gelber Box, schwarzer Text — Hormozi-Style)", "caption_box"),
+                    ("⌨️ Wort-für-Wort-Aufbau (Satz tippt sich Wort für Wort auf)", "caption_buildup"),
                     ("🩸 Horror: Roter Blitz (Jumpscare/Gefahr)", "red_flash"),
                     ("🌑 Horror: Dunkel-Puls (Bedrohung/Licht geht aus)", "dark_pulse"),
                     ("📺 Horror: Glitch (übernatürlich/etwas stimmt nicht)", "glitch"),

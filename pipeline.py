@@ -3940,11 +3940,16 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
               emoji_overlay: bool = False,
               keyword_pop: bool = False,
               word_karaoke: bool = False,
-              caption_polish: bool = False) -> Path:
+              caption_polish: bool = False,
+              caption_box: bool = False,
+              caption_buildup: bool = False) -> Path:
     """Bold karaoke captions; styling exposed for the GUI.
     caption_polish: keep the 3-word chunk on screen but highlight the currently
     spoken word (bigger + yellow), walking word by word via the per-word timing
     — the modern viral look. Short-form only; takes precedence over word_karaoke.
+    caption_box: like polish but the active word gets a filled yellow highlight
+    box (black text). caption_buildup: the sentence types itself word by word.
+    Both short-form only and take precedence over caption_polish when combined.
     Optional hook_text shown big at the top for the first hook_duration seconds.
     pop_captions: every chunk pops in with a scale animation (TikTok-style).
     subscribe_overlay: red SUBSCRIBE button in the last ~2.5s (needs total_duration).
@@ -4026,7 +4031,63 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     # emit ONE dialogue per word with a punchy pop+yellow-flash. Visually
     # this is the modern "single word reveals to the beat" style. Only for
     # short-form portrait (long-form keeps its 8-word readable lines).
-    if enable_captions and caption_polish and not long_form:
+    if enable_captions and (caption_buildup or caption_box) and not long_form:
+        # Two opt-in caption styles that share the walking per-word highlight:
+        #   caption_buildup: the sentence types itself word by word (each beat
+        #     reveals one more word) instead of showing the whole chunk at once.
+        #   caption_box: the active word gets a filled YELLOW HIGHLIGHT BOX
+        #     (black text on a chunky opaque-yellow border that merges into a
+        #     bar) — the Hormozi look. Combine them for a typed-out + boxed feel.
+        # Takes precedence over caption_polish when several are ticked.
+        box = bool(caption_box)
+        buildup = bool(caption_buildup)
+        if box:
+            # Black text + thick opaque-yellow border ≈ a yellow box behind the
+            # word. {\r} resets back to the Pop style (white text, normal border).
+            hi_open = "\\1c&H000000&\\3c&H00FFFF&\\bord7\\shad0\\fscx110\\fscy110\\b1"
+        else:
+            hi_open = "\\c&H00FFFF&\\fscx116\\fscy116\\b1"
+        for ch in chunks:
+            cend = ch[-1][1]
+            raw_full = " ".join(w[2] for w in ch).replace("{", "(").replace("}", ")")
+            emo = _emoji_for_caption(raw_full) if (caption_emojis and not emoji_overlay) else ""
+            n = len(ch)
+            for i, w in enumerate(ch):
+                ws = w[0]
+                we = ch[i + 1][0] if i + 1 < n else cend
+                if we <= ws:
+                    we = w[1]
+                # Buildup reveals words up to the current one; otherwise the
+                # whole chunk stays and only the highlight walks.
+                shown = ch[:i + 1] if buildup else ch
+                parts = []
+                for j, wj in enumerate(shown):
+                    tok = (wj[2] or "").strip().upper().replace("{", "(").replace("}", ")")
+                    if j == i:
+                        parts.append("{" + hi_open + "}" + tok + "{\\r}")
+                    else:
+                        parts.append(tok)
+                text = " ".join(parts)
+                if emo:
+                    text = f"{text}\\N{emo}"
+                # Buildup grows the line each beat, so only fade the first word
+                # in (later words just appear = typewriter). Static-box behaves
+                # like polish: fade at the chunk's start/end, no mid-flicker.
+                if buildup:
+                    fade = "\\fad(50,0)" if i == 0 else ""
+                elif n == 1:
+                    fade = "\\fad(60,60)"
+                elif i == 0:
+                    fade = "\\fad(60,0)"
+                elif i == n - 1:
+                    fade = "\\fad(0,60)"
+                else:
+                    fade = ""
+                lines.append(
+                    f"Dialogue: 0,{_ass_time(ws)},{_ass_time(we)},Pop,,0,0,0,,"
+                    f"{{{fade}}}{text}"
+                )
+    elif enable_captions and caption_polish and not long_form:
         # Caption-Polish: keep the readable 3-word chunk on screen, but light
         # up the CURRENTLY-spoken word (bigger + yellow) and let it walk word by
         # word using the tight per-word timing. The modern viral look. Uses the
@@ -7110,6 +7171,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             keyword_pop=("keyword_pop" in [str(e).lower() for e in (job.get("effects_enabled") or [])]),
             word_karaoke=("word_karaoke" in [str(e).lower() for e in (job.get("effects_enabled") or [])]),
             caption_polish=("caption_polish" in [str(e).lower() for e in (job.get("effects_enabled") or [])]),
+            caption_box=("caption_box" in [str(e).lower() for e in (job.get("effects_enabled") or [])]),
+            caption_buildup=("caption_buildup" in [str(e).lower() for e in (job.get("effects_enabled") or [])]),
         )
         if state:
             state.mark_done(Step.CAPTIONS, {"ass_path": ass})

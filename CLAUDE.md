@@ -649,6 +649,16 @@ Fade nur beim ersten/letzten Wort des Chunks (kein Flackern). Short-form only
 (long_form ignoriert), Vorrang vor `word_karaoke`. Verdrahtet an der einzigen
 write_ass-Call-Site aus `job["effects_enabled"]`. Tests: test_caption_polish.py.
 
+### Caption-Highlight-Box + Wort-für-Wort-Aufbau (opt-in Effekte)
+Zwei neue CheckboxGroup-Optionen `caption_box` / `caption_buildup` (nur Choices,
+kein neues GUI-Element → param↔input 81=81). In `write_ass` EIN gemeinsamer
+Branch (vor caption_polish, Vorrang): `caption_buildup` = Satz baut sich Wort
+für Wort auf (Typewriter, `shown=ch[:i+1]`), `caption_box` = aktives Wort als
+gelbe Box (schwarzer Text `\1c&H000000&` + dicker opaker gelber Rand `\3c&H00FFFF&\bord7`
+≈ Hintergrund-Bar). Aktives Wort via `{...}{\r}` (reset auf Pop-Style).
+Kombinierbar (Aufbau + Box). Short-form only, Caption-Polish unverändert.
+Tests: test_caption_box_buildup.py.
+
 ### KI-Bild-Short — neues Output-Format „ai_image_short" (9:16, kein YT)
 Vierte Radio-Option (nur Choice, kein neues GUI-Element → param↔input 81=81).
 In `gui.generate`: `_ai_image_short`/`_no_source` setzen `faceless_mode=True`
