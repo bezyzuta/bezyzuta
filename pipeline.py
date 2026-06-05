@@ -104,6 +104,12 @@ class Config:
     # curated set. Empty = use the default (de_DE-thorsten-medium).
     tts_piper_model: str
     whisper_model: str
+    # Opt-in WhisperX for word-level captions. WhisperX runs the same
+    # faster-whisper transcription, then force-aligns every word with a
+    # wav2vec2 model -> noticeably tighter karaoke timing (no drift). Free,
+    # local, GPU. Falls back to plain faster-whisper if whisperx isn't
+    # installed or alignment fails, so it never breaks a render.
+    use_whisperx: bool
     # Max height for the downloaded gameplay source. 1080 default; drop to 720
     # for much faster downloads (a vertical short is cropped+scaled anyway).
     download_max_height: int
@@ -212,6 +218,7 @@ class Config:
             tts_language=str(data.get("tts_language", "auto")).lower(),
             tts_piper_model=str(data.get("tts_piper_model", "de_DE-thorsten-medium")),
             whisper_model=data.get("whisper_model", "small"),
+            use_whisperx=bool(data.get("use_whisperx", False)),
             download_max_height=int(data.get("download_max_height", 1080)),
             target_w=int(w),
             target_h=int(h),
@@ -3485,6 +3492,161 @@ def transcribe_words_subprocess(audio_path: Path, model_name: str,
     raise RuntimeError(f"transcribe_words_subprocess failed: {last_err}")
 
 
+def _fill_word_gaps(raw):
+    """Turn WhisperX's raw word list into clean (start, end, word) tuples.
+
+    WhisperX force-aligns most words, but a few tokens (digits, symbols, some
+    punctuation) can come back WITHOUT start/end. Dropping them would lose words
+    from the captions, so we interpolate timing from the neighbours instead:
+    a gap inherits the previous word's end as its start and the next word's
+    start as its end. Leading/trailing gaps borrow the adjacent timestamp.
+
+    `raw` is a list of [start_or_None, end_or_None, word]. Returns a list of
+    (float start, float end, str word) with start <= end and no None left.
+    """
+    items = [[s, e, str(w).strip()] for (s, e, w) in raw if str(w).strip()]
+    n = len(items)
+    if n == 0:
+        return []
+
+    # Forward fill missing starts from the previous word's END (its real
+    # boundary), tracking the latest known end as we go.
+    prev_end = 0.0
+    for it in items:
+        it[0] = prev_end if it[0] is None else float(it[0])
+        prev_end = float(it[1]) if it[1] is not None else it[0]
+
+    # Backward fill missing ends from the next word's START; clamp end >= start.
+    next_start = items[-1][0]
+    for i in range(n - 1, -1, -1):
+        it = items[i]
+        it[1] = next_start if it[1] is None else float(it[1])
+        if it[1] < it[0]:
+            it[1] = it[0]
+        next_start = it[0]
+
+    return [(float(a), float(b), c) for (a, b, c) in items]
+
+
+def transcribe_words_whisperx_subprocess(audio_path: Path, model_name: str,
+                                         device: str = "auto", language: str = "auto",
+                                         on_step=None):
+    """Word-level transcription via WhisperX (faster-whisper + wav2vec2 align).
+
+    Same crash-safe, subprocess-isolated pattern as transcribe_words_subprocess
+    and the same return shape: (list[(start, end, word)], device_used). The
+    child writes a JSON sidecar before any CUDA destructor runs.
+
+    Raises RuntimeError on failure so the caller can fall back to plain
+    faster-whisper. First run downloads a small wav2vec2 alignment model per
+    language (free, cached by HuggingFace).
+    """
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+
+    out_json = audio_path.with_suffix(".wxwords.json")
+    if out_json.exists():
+        try: out_json.unlink()
+        except Exception: pass
+
+    devices = (
+        ["cuda", "cpu"] if device == "auto"
+        else ["cuda"] if device == "cuda"
+        else ["cpu"]
+    )
+    lang_arg = "" if language in ("auto", "", None) else str(language)
+    child_code = (
+        "import json, os, sys, importlib.util\n"
+        "if sys.platform == 'win32':\n"
+        "    for pkg in ('nvidia.cublas','nvidia.cudnn','nvidia.cuda_runtime','nvidia.cuda_nvrtc'):\n"
+        "        try:\n"
+        "            spec = importlib.util.find_spec(pkg)\n"
+        "        except Exception:\n"
+        "            spec = None\n"
+        "        if spec and spec.submodule_search_locations:\n"
+        "            for loc in spec.submodule_search_locations:\n"
+        "                b = os.path.join(loc, 'bin')\n"
+        "                if os.path.isdir(b):\n"
+        "                    try: os.add_dll_directory(b)\n"
+        "                    except Exception: pass\n"
+        "                    os.environ['PATH'] = b + os.pathsep + os.environ.get('PATH','')\n"
+        "import whisperx\n"
+        "audio_path, model_name, device, lang, out_json = sys.argv[1:6]\n"
+        "ct = 'float16' if device == 'cuda' else 'int8'\n"
+        "model = whisperx.load_model(model_name, device, compute_type=ct, language=(lang or None))\n"
+        "audio = whisperx.load_audio(audio_path)\n"
+        "result = model.transcribe(audio, batch_size=16)\n"
+        "detected = result.get('language') or lang or 'en'\n"
+        "align_model, metadata = whisperx.load_align_model(language_code=detected, device=device)\n"
+        "aligned = whisperx.align(result['segments'], align_model, metadata, audio, device, return_char_alignments=False)\n"
+        "out = []\n"
+        "for seg in aligned.get('segments', []):\n"
+        "    for w in seg.get('words', []):\n"
+        "        word = str(w.get('word', '')).strip()\n"
+        "        if not word:\n"
+        "            continue\n"
+        "        s = w.get('start'); e = w.get('end')\n"
+        "        out.append([None if s is None else float(s), None if e is None else float(e), word])\n"
+        "with open(out_json, 'w', encoding='utf-8') as f:\n"
+        "    json.dump(out, f)\n"
+        "print(f'OK {len(out)} words', flush=True)\n"
+    )
+    last_err = None
+    for dev in devices:
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", child_code, str(audio_path), model_name, dev, lang_arg, str(out_json)],
+                capture_output=True, text=True, timeout=900,
+            )
+        except subprocess.TimeoutExpired:
+            last_err = f"timeout on {dev}"
+            continue
+        if out_json.exists() and out_json.stat().st_size > 2:
+            try:
+                arr = json.loads(out_json.read_text(encoding="utf-8"))
+                words = _fill_word_gaps(arr)
+                if words:
+                    return words, dev
+            except Exception as e:
+                last_err = f"parse error on {dev}: {e}"
+        err_tail = (proc.stderr or "").strip().splitlines()[-8:]
+        last_err = f"subprocess exit {proc.returncode} on {dev}: " + " | ".join(err_tail)
+        log(f"      whisperx {dev} failed: {last_err[:200]}")
+    raise RuntimeError(f"transcribe_words_whisperx_subprocess failed: {last_err}")
+
+
+def transcribe_words_best(audio_path: Path, model_name: str, device: str = "auto",
+                          use_whisperx: bool = False, language: str = "auto",
+                          on_step=None):
+    """Dispatcher: WhisperX (tight word alignment) when enabled, else plain
+    faster-whisper. WhisperX failures fall back automatically so a render is
+    never blocked by a missing dep or a bad align model. Returns the same
+    (words, device) shape as the underlying transcribers."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+
+    if use_whisperx:
+        try:
+            log("      WhisperX: word-level alignment aktiv")
+            return transcribe_words_whisperx_subprocess(
+                audio_path, model_name, device=device, language=language, on_step=on_step,
+            )
+        except Exception as e:
+            log(f"      WhisperX nicht verfügbar/fehlgeschlagen ({str(e)[:160]}) "
+                "→ Fallback auf faster-whisper")
+    return transcribe_words_subprocess(
+        audio_path, model_name, device=device, on_step=on_step,
+    )
+
+
 def transcribe_words(audio_path: Path, model_name: str, device: str = "auto"):
     """Transcribe to word-level timestamps. device in {"auto","cuda","cpu"}.
     "auto" tries CUDA first and silently falls back to CPU if CUDA isn't available."""
@@ -6692,8 +6854,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         # sequential runs (especially in multi-clip mode). The subprocess
         # variant has lived in the codebase for the voice-disabled path
         # already; now we use it universally.
-        words, used_dev = transcribe_words_subprocess(
-            vo, cfg.whisper_model, device=whisper_device, on_step=step,
+        words, used_dev = transcribe_words_best(
+            vo, cfg.whisper_model, device=whisper_device,
+            use_whisperx=bool(getattr(cfg, "use_whisperx", False)),
+            language=str(job.get("tts_language", "auto")), on_step=step,
         )
         step(f"      whisper ran on {used_dev}")
         _release_gpu_memory()
@@ -6720,8 +6884,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             ])
             # Use subprocess isolation: per-clip whisper calls accumulate
             # CUDA cleanup state and can hard-crash python.exe after ~10 clips.
-            words, used_dev = transcribe_words_subprocess(
-                clip_audio, cfg.whisper_model, device=whisper_device, on_step=step,
+            words, used_dev = transcribe_words_best(
+                clip_audio, cfg.whisper_model, device=whisper_device,
+                use_whisperx=bool(getattr(cfg, "use_whisperx", False)),
+                language="auto", on_step=step,
             )
             step(f"      whisper ran on {used_dev} — {len(words)} words from source audio")
             _release_gpu_memory()

@@ -65,6 +65,8 @@
   "pexels_api_key": "",
   "_comment_pexels": "FREE Pexels API key for stock B-roll VIDEOS in the middle slot (https://www.pexels.com/api/ — 30s signup, no card). Enables the GUI's '📹 Auch Stock-VIDEOS verwenden' toggle. Empty = pipeline keeps using AI renders / photos only. Can also be set via PEXELS_API_KEY env.",
   "whisper_model": "small",
+  "use_whisperx": false,
+  "_comment_use_whisperx": "Opt-in WhisperX for word-level captions. Runs the same faster-whisper transcription, then force-aligns every word with a wav2vec2 model -> noticeably tighter karaoke timing (no drift). FREE, local, GPU. Install once: .venv\\Scripts\\python.exe -m pip install whisperx . First run downloads a small per-language alignment model. Falls back to plain faster-whisper automatically if whisperx isn't installed or alignment fails, so it never breaks a render.",
   "download_max_height": 1080,
   "_comment_download_max_height": "Max resolution of the downloaded gameplay source. 1080 default. Set to 720 for MUCH faster downloads on long source videos — a vertical short is cropped+scaled anyway, so 720 looks identical there (only matters for full 16:9 long-videos).",
   "target_resolution": [1080, 1920],

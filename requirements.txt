@@ -1,6 +1,12 @@
 requests>=2.31
 yt-dlp>=2024.5.27
 faster-whisper>=1.0.3
+# Optional, NOT pulled by default: WhisperX for word-level caption alignment
+# (config: "use_whisperx": true). Force-aligns every word with wav2vec2 ->
+# much tighter karaoke timing, no drift. Free, local, GPU. Install with:
+#   .venv\Scripts\python.exe -m pip install whisperx
+# First run downloads a small per-language alignment model. Pipeline falls
+# back to plain faster-whisper automatically if it's not installed.
 gradio>=4.40
 # TTS via Chatterbox (Resemble AI, Apache 2.0). Local model, ~3GB download
 # on first use, ~3-4GB VRAM. Supports zero-shot voice cloning from a 5-10s

@@ -597,6 +597,33 @@ ABER: wenn Fotos/Videos AUS sind, bot der Prompt trotzdem „photo" an → Claud
 → wird zu leerem AI-Beat → Retry. Gefixt: `photo_hint`/`mix_rule` im `_SCENE_PLAN_PROMPT`
 sagen jetzt „nur source=ai mit echtem Motiv" wenn photos+videos off. KEIN Claude-Problem.
 
+## Session 4 (Juni 2026 — Branch `claude/happy-fermat-Oy6Cg`)
+
+### automation/ (eigenständig, rührt pipeline.py nicht an)
+PC-Steuerung auf USER-Maschine (Cloud kann's nicht ausführen): `browser.py`
+(Playwright, persistentes Login-Profil, DOM-robust), `chrome_attach.py` (CDP an
+laufendes Chrome andocken → echte Tabs/Logins), `desktop.py` (pyautogui,
+`click_image`), `recorder.py` (pynput record/replay), `snip_test.py`
+(Win+Shift+S → Clipboard → PNG). Install via `automation/requirements-automation.txt`
++ `playwright install chromium`. `pytest.ini` `testpaths=tests` damit pytest die
+automation-Skripte nicht sammelt (snip_test.py matcht `*_test.py`).
+
+### yt-dlp Cookie-Hinweis
+`_ytdlp_error_hint` erkennt jetzt „Could not copy ... cookie database" (#7271:
+Browser läuft = DB gesperrt, oder Chrome v127+ App-Bound Encryption) → sagt
+Browser schließen / cookies.txt exportieren / Browser wechseln. Lösung beim User:
+`youtube_cookies_file` (cookies.txt) ODER cookies ganz aus für öffentliche Videos.
+
+### WhisperX — wort-genaue Captions (opt-in, `use_whisperx` in config.json)
+`transcribe_words_best()` Dispatcher: bei `cfg.use_whisperx` →
+`transcribe_words_whisperx_subprocess` (faster-whisper + wav2vec2 force-align,
+subprocess-isoliert wie der Rest), sonst altes `transcribe_words_subprocess`.
+WhisperX-Fehler/fehlende Lib → automatischer Fallback, Render bricht NIE.
+Gleiche Rückgabe `[(start,end,wort)]`. `_fill_word_gaps` füllt nicht-alignte
+Tokens (Zahlen/Symbole) aus Nachbar-Timings statt sie zu droppen. Sprache aus
+`job["tts_language"]` (Voice-Pfad) bzw. "auto" (Source-Audio-Captions). Gratis,
+lokal, GPU. Install: `pip install whisperx`. Beide run_one-Call-Sites umgestellt.
+
 ## config.json — User-relevante Felder (Session-3-Neuzugänge)
 ```
 image_style ("auto"/.../"ms_paint_stickman"/"doodle_sketch"), image_roblox_max (2),
