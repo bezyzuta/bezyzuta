@@ -2117,6 +2117,48 @@ def trim_leading_silence(in_path: Path, out_path: Path,
     return out_path
 
 
+def trim_internal_silence(in_path: Path, out_path: Path,
+                          threshold_db: float = -35.0,
+                          min_silence: float = 0.4,
+                          keep_silence: float = 0.2,
+                          on_step=None) -> Path:
+    """Remove long PAUSES throughout the voiceover for tighter pacing (opt-in
+    'Dead-Air-Trim'). Only silences longer than `min_silence` are trimmed, and
+    `keep_silence` of natural breathing room is left in each so it doesn't sound
+    chopped. Applied BEFORE transcription so word timings, images and SFX are
+    all derived from the trimmed audio — no desync.
+
+    Safety: if the result is empty or shrank to <50% of the input (threshold
+    too aggressive for this voice), the ORIGINAL is kept instead of shipping a
+    mangled track."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+        else:
+            print(msg)
+    try:
+        run([
+            "ffmpeg", "-y", "-i", str(in_path),
+            "-af", (f"silenceremove=stop_periods=-1:stop_duration={min_silence}"
+                    f":stop_threshold={threshold_db}dB:stop_silence={keep_silence}"),
+            "-c:a", "libmp3lame", "-q:a", "4",
+            str(out_path),
+        ])
+    except Exception as e:
+        log(f"      Dead-Air-Trim fehlgeschlagen ({str(e)[:120]}) — Original behalten")
+        return in_path
+    in_d = probe_duration(in_path)
+    out_d = probe_duration(out_path)
+    if out_d <= 0.5 or (in_d > 1.0 and out_d < 0.5 * in_d):
+        log(f"      Dead-Air-Trim hätte zu viel gekürzt ({in_d:.1f}s→{out_d:.1f}s) "
+            "— Original behalten (threshold zu aggressiv für diese Stimme)")
+        return in_path
+    log(f"      Dead-Air-Trim: {in_d:.1f}s → {out_d:.1f}s "
+        f"({in_d - out_d:.1f}s Pausen entfernt)")
+    return out_path
+
+
 def _concat_audio(parts: list[Path], out_path: Path) -> Path:
     """Concatenate mp3 audio files in order into out_path (re-encoded so the
     join is clean regardless of per-file encoder settings)."""
@@ -6891,6 +6933,17 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             step(f"      voice tempo: {voice_tempo:.2f}x "
                  f"({'langsamer' if voice_tempo < 1 else 'schneller'})")
             apply_voice_tempo(vo, voice_tempo)
+        # Dead-Air-Trim (opt-in): cut long pauses for tighter pacing. Done here
+        # — before transcription — so captions/images/SFX derive from the
+        # trimmed audio and stay perfectly in sync.
+        if bool(job.get("trim_silence", False)):
+            step("      Dead-Air-Trim: kürze lange Sprech-Pausen")
+            vo = trim_internal_silence(
+                vo, work / "voice_trimmed.mp3",
+                threshold_db=float(job.get("trim_silence_threshold_db", -35.0)),
+                min_silence=float(job.get("trim_silence_min", 0.4)),
+                keep_silence=float(job.get("trim_silence_keep", 0.2)),
+                on_step=step)
         vo_dur = probe_duration(vo)
         # Long-form length is only correct once we measure the REAL spoken
         # duration: the wps estimate that sized the script is unreliable (the

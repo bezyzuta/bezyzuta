@@ -658,6 +658,16 @@ Zeile (Quotes/Fence/Punkt weg, ≤60 Z.). In `run_one` vor `write_ass`: nur wenn
 → Signatur+inputs+job-dict gezogen, param↔input jetzt **82=82**. Tests:
 test_auto_hook.py.
 
+### Dead-Air-Trim / Pacing (opt-in, GUI-Checkbox „✂️ Dead-Air-Trim")
+`trim_internal_silence(in,out,threshold_db=-35,min_silence=0.4,keep_silence=0.2)`:
+ffmpeg `silenceremove=stop_periods=-1` kürzt lange Pausen ÜBERALL, lässt
+`keep_silence` Atempause. **Safety:** Output leer oder <50% vom Input → Original
+behalten (threshold zu aggressiv). In `run_one` NACH voice_tempo, VOR der
+vo_dur-Messung + Transkription → Captions/Bilder/SFX bleiben synchron (alles wird
+danach aus dem getrimmten vo abgeleitet). `job["trim_silence"]` + optionale
+config-tunes `trim_silence_threshold_db/min/keep`. NEUE GUI-Checkbox → param↔input
+jetzt **83=83**. Tests: test_dead_air.py.
+
 ## config.json — User-relevante Felder (Session-3-Neuzugänge)
 ```
 image_style ("auto"/.../"ms_paint_stickman"/"doodle_sketch"), image_roblox_max (2),

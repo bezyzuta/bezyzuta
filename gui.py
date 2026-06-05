@@ -70,6 +70,7 @@ def generate(
     clip_segments: int,
     playback_speed: float,
     voice_tempo: float,
+    trim_silence: bool,
     scene_pick_mode: str,
     manual_ranges: str,
     auto_reframe: bool,
@@ -216,6 +217,7 @@ def generate(
             "clip_segments": int(clip_segments),
             "playback_speed": float(playback_speed),
             "voice_tempo": float(voice_tempo),
+            "trim_silence": bool(trim_silence),
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "manual_ranges": str(manual_ranges or ""),
             "auto_reframe": bool(auto_reframe),
@@ -558,6 +560,14 @@ def build_app() -> gr.Blocks:
                     info=("Nur die Stimme, Tonhöhe bleibt gleich. 1.0 = normal, "
                           "0.85 = ruhiger (gut für lange Videos), 0.9 = leicht "
                           "langsamer. Für Shorts 1.0 lassen."),
+                )
+                trim_silence = gr.Checkbox(
+                    value=False,
+                    label="✂️ Dead-Air-Trim (lange Sprech-Pausen kürzen)",
+                    info=("Schneidet automatisch zu lange Pausen aus dem Voiceover "
+                          "(>0.4s, lässt 0.2s Atempause) für strafferes Tempo = mehr "
+                          "Watchtime. Untertitel/Bilder bleiben synchron (vor der "
+                          "Transkription angewandt). Kürzt das Video etwas."),
                 )
             with gr.Accordion("🎬 Szenen-Auswahl", open=False):
                 scene_pick_mode = gr.Radio(
@@ -1129,7 +1139,7 @@ def build_app() -> gr.Blocks:
                 config_path, use_claude_cli, claude_cli_model,
                 source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, extend_script, target_duration,
-                clip_segments, playback_speed, voice_tempo, scene_pick_mode, manual_ranges, auto_reframe,
+                clip_segments, playback_speed, voice_tempo, trim_silence, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_de_clone, tts_exaggeration, tts_cfg_weight,
