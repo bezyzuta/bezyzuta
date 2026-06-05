@@ -616,8 +616,13 @@ Browser schließen / cookies.txt exportieren / Browser wechseln. Lösung beim Us
 
 ### WhisperX — wort-genaue Captions (opt-in, `use_whisperx` in config.json)
 `transcribe_words_best()` Dispatcher: bei `cfg.use_whisperx` →
-`transcribe_words_whisperx_subprocess` (faster-whisper + wav2vec2 force-align,
-subprocess-isoliert wie der Rest), sonst altes `transcribe_words_subprocess`.
+`transcribe_words_whisperx_subprocess`, sonst altes `transcribe_words_subprocess`.
+**WICHTIG (User-Feedback "Text leicht schlechter"):** Erkennung läuft NICHT über
+whisperx' batched pipeline (erkennt Wörter schlechter), sondern über SEQUENZIELLES
+faster-whisper (gleiche Engine/Settings wie der alte Pfad → identischer Text).
+WhisperX macht NUR das wav2vec2-Force-Align fürs Timing auf diesem Text. Align
+schlägt fehl → faster-whispers eigene Word-Timestamps (= alter Pfad). Damit nie
+schlechterer Text als vorher.
 WhisperX-Fehler/fehlende Lib → automatischer Fallback, Render bricht NIE.
 Gleiche Rückgabe `[(start,end,wort)]`. `_fill_word_gaps` füllt nicht-alignte
 Tokens (Zahlen/Symbole) aus Nachbar-Timings statt sie zu droppen. Sprache aus

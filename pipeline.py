@@ -3539,11 +3539,17 @@ def _fill_word_gaps(raw):
 def transcribe_words_whisperx_subprocess(audio_path: Path, model_name: str,
                                          device: str = "auto", language: str = "auto",
                                          python_exe: str = "", on_step=None):
-    """Word-level transcription via WhisperX (faster-whisper + wav2vec2 align).
+    """Word-level transcription with sequential faster-whisper RECOGNITION +
+    WhisperX wav2vec2 TIMING alignment.
 
-    Same crash-safe, subprocess-isolated pattern as transcribe_words_subprocess
-    and the same return shape: (list[(start, end, word)], device_used). The
-    child writes a JSON sidecar before any CUDA destructor runs.
+    Recognition uses plain sequential faster-whisper (same engine/settings as
+    transcribe_words_subprocess) so the recognized TEXT matches the non-whisperx
+    path exactly — the batched whisperx pipeline recognizes words slightly
+    worse. WhisperX is then used ONLY to force-align that text for tighter word
+    boundaries; if alignment fails, faster-whisper's own word timestamps are
+    used instead (= the old path). Same return shape (list[(start, end, word)],
+    device_used). The child writes a JSON sidecar before any CUDA destructor
+    runs.
 
     `python_exe` selects the interpreter for the child: point it at a SEPARATE
     venv that has whisperx + torch installed (cfg.whisperx_python), because
@@ -3593,22 +3599,47 @@ def transcribe_words_whisperx_subprocess(audio_path: Path, model_name: str,
         "                    except Exception: pass\n"
         "                    os.environ['PATH'] = b + os.pathsep + os.environ.get('PATH','')\n"
         "import whisperx\n"
+        "from faster_whisper import WhisperModel\n"
         "audio_path, model_name, device, lang, out_json = sys.argv[1:6]\n"
         "ct = 'float16' if device == 'cuda' else 'int8'\n"
-        "model = whisperx.load_model(model_name, device, compute_type=ct, language=(lang or None))\n"
-        "audio = whisperx.load_audio(audio_path)\n"
-        "result = model.transcribe(audio, batch_size=16)\n"
-        "detected = result.get('language') or lang or 'en'\n"
-        "align_model, metadata = whisperx.load_align_model(language_code=detected, device=device)\n"
-        "aligned = whisperx.align(result['segments'], align_model, metadata, audio, device, return_char_alignments=False)\n"
+        # Recognition: use plain SEQUENTIAL faster-whisper (same engine/settings
+        # as the non-whisperx path) so the TEXT quality matches exactly. The
+        # batched whisperx pipeline is faster but recognizes words slightly
+        # worse. We keep faster-whisper's own word timestamps as a fallback.
+        "model = WhisperModel(model_name, device=device, compute_type=ct)\n"
+        "seg_iter, info = model.transcribe(audio_path, word_timestamps=True, language=(lang or None))\n"
+        "segs = []\n"
+        "fw_words = []\n"
+        "for s in seg_iter:\n"
+        "    t = (s.text or '').strip()\n"
+        "    if t:\n"
+        "        segs.append({'start': float(s.start), 'end': float(s.end), 'text': t})\n"
+        "    for w in (s.words or []):\n"
+        "        ww = str(w.word).strip()\n"
+        "        if ww:\n"
+        "            fw_words.append([float(w.start), float(w.end), ww])\n"
+        "detected = (lang or getattr(info, 'language', None) or 'en')\n"
+        # Timing: force-align faster-whisper's exact text with whisperx (wav2vec2)
+        # for tighter word boundaries. If alignment fails for any reason, we fall
+        # back to faster-whisper's own word timestamps (= the old path).
         "out = []\n"
-        "for seg in aligned.get('segments', []):\n"
-        "    for w in seg.get('words', []):\n"
-        "        word = str(w.get('word', '')).strip()\n"
-        "        if not word:\n"
-        "            continue\n"
-        "        s = w.get('start'); e = w.get('end')\n"
-        "        out.append([None if s is None else float(s), None if e is None else float(e), word])\n"
+        "if segs:\n"
+        "    try:\n"
+        "        align_model, metadata = whisperx.load_align_model(language_code=detected, device=device)\n"
+        "        audio = whisperx.load_audio(audio_path)\n"
+        "        aligned = whisperx.align(segs, align_model, metadata, audio, device, return_char_alignments=False)\n"
+        "        for seg in aligned.get('segments', []):\n"
+        "            for w in seg.get('words', []):\n"
+        "                word = str(w.get('word', '')).strip()\n"
+        "                if not word:\n"
+        "                    continue\n"
+        "                s2 = w.get('start'); e2 = w.get('end')\n"
+        "                out.append([None if s2 is None else float(s2), None if e2 is None else float(e2), word])\n"
+        "    except Exception as align_err:\n"
+        "        sys.stderr.write('whisperx align failed: ' + str(align_err) + '\\n')\n"
+        "        out = []\n"
+        "if not out:\n"
+        "    out = fw_words\n"
         "with open(out_json, 'w', encoding='utf-8') as f:\n"
         "    json.dump(out, f)\n"
         "print(f'OK {len(out)} words', flush=True)\n"
