@@ -649,25 +649,6 @@ Fade nur beim ersten/letzten Wort des Chunks (kein Flackern). Short-form only
 (long_form ignoriert), Vorrang vor `word_karaoke`. Verdrahtet an der einzigen
 write_ass-Call-Site aus `job["effects_enabled"]`. Tests: test_caption_polish.py.
 
-### Auto-Hook (opt-in, GUI-Checkbox „🎣 Auto-Hook" im Hook-Accordion)
-`generate_auto_hook(script, cfg, language)`: LLM schreibt EINEN Hook aus dem
-ECHTEN Skript (nicht nur Topic), routet über `_complete_text` (Claude-CLI-aware),
-Fallback → `generate_hook_variants[0]` → "". `_clean_hook_line` zieht eine saubere
-Zeile (Quotes/Fence/Punkt weg, ≤60 Z.). In `run_one` vor `write_ass`: nur wenn
-`job["auto_hook"]` UND Hook-Feld leer (manueller Hook gewinnt). NEUE GUI-Checkbox
-→ Signatur+inputs+job-dict gezogen, param↔input jetzt **82=82**. Tests:
-test_auto_hook.py.
-
-### Dead-Air-Trim / Pacing (opt-in, GUI-Checkbox „✂️ Dead-Air-Trim")
-`trim_internal_silence(in,out,threshold_db=-35,min_silence=0.4,keep_silence=0.2)`:
-ffmpeg `silenceremove=stop_periods=-1` kürzt lange Pausen ÜBERALL, lässt
-`keep_silence` Atempause. **Safety:** Output leer oder <50% vom Input → Original
-behalten (threshold zu aggressiv). In `run_one` NACH voice_tempo, VOR der
-vo_dur-Messung + Transkription → Captions/Bilder/SFX bleiben synchron (alles wird
-danach aus dem getrimmten vo abgeleitet). `job["trim_silence"]` + optionale
-config-tunes `trim_silence_threshold_db/min/keep`. NEUE GUI-Checkbox → param↔input
-jetzt **83=83**. Tests: test_dead_air.py.
-
 ## config.json — User-relevante Felder (Session-3-Neuzugänge)
 ```
 image_style ("auto"/.../"ms_paint_stickman"/"doodle_sketch"), image_roblox_max (2),

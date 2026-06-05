@@ -70,7 +70,6 @@ def generate(
     clip_segments: int,
     playback_speed: float,
     voice_tempo: float,
-    trim_silence: bool,
     scene_pick_mode: str,
     manual_ranges: str,
     auto_reframe: bool,
@@ -118,7 +117,6 @@ def generate(
     caption_position: str,
     hook_text: str,
     hook_duration: float,
-    auto_hook: bool,
     effects_enabled: list,
     effects_ai: bool,
     pop_captions: bool,
@@ -217,7 +215,6 @@ def generate(
             "clip_segments": int(clip_segments),
             "playback_speed": float(playback_speed),
             "voice_tempo": float(voice_tempo),
-            "trim_silence": bool(trim_silence),
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "manual_ranges": str(manual_ranges or ""),
             "auto_reframe": bool(auto_reframe),
@@ -256,7 +253,6 @@ def generate(
             "caption_position": str(caption_position or "top"),
             "hook_text": str(hook_text or "").strip(),
             "hook_duration": float(hook_duration),
-            "auto_hook": bool(auto_hook),
             "effects_enabled": list(effects_enabled or []),
             "effects_ai": bool(effects_ai),
             "pop_captions": bool(pop_captions),
@@ -561,14 +557,6 @@ def build_app() -> gr.Blocks:
                           "0.85 = ruhiger (gut für lange Videos), 0.9 = leicht "
                           "langsamer. Für Shorts 1.0 lassen."),
                 )
-                trim_silence = gr.Checkbox(
-                    value=False,
-                    label="✂️ Dead-Air-Trim (lange Sprech-Pausen kürzen)",
-                    info=("Schneidet automatisch zu lange Pausen aus dem Voiceover "
-                          "(>0.4s, lässt 0.2s Atempause) für strafferes Tempo = mehr "
-                          "Watchtime. Untertitel/Bilder bleiben synchron (vor der "
-                          "Transkription angewandt). Kürzt das Video etwas."),
-                )
             with gr.Accordion("🎬 Szenen-Auswahl", open=False):
                 scene_pick_mode = gr.Radio(
                     choices=[("Standard — gleichmäßig verteilt", "even"),
@@ -794,13 +782,6 @@ def build_app() -> gr.Blocks:
             hook_duration = gr.Slider(
                 1.0, 6.0, value=3.0, step=0.5,
                 label="Anzeigedauer (Sekunden)",
-            )
-            auto_hook = gr.Checkbox(
-                value=False,
-                label="🎣 Auto-Hook (KI schreibt den Hook aus dem Skript)",
-                info=("An: Wenn das Hook-Feld oben LEER ist, schreibt die KI automatisch "
-                      "einen knackigen Hook passend zum generierten Skript und blendet ihn "
-                      "in den ersten Sekunden ein. Ein manuell eingetippter Hook hat Vorrang."),
             )
 
         # ───────────── Bild-Overlays ─────────────
@@ -1139,7 +1120,7 @@ def build_app() -> gr.Blocks:
                 config_path, use_claude_cli, claude_cli_model,
                 source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, extend_script, target_duration,
-                clip_segments, playback_speed, voice_tempo, trim_silence, scene_pick_mode, manual_ranges, auto_reframe,
+                clip_segments, playback_speed, voice_tempo, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_de_clone, tts_exaggeration, tts_cfg_weight,
@@ -1155,7 +1136,7 @@ def build_app() -> gr.Blocks:
                 image_change_secs, image_gap_secs, image_allow_photos, image_allow_videos,
                 caption_font, caption_color, caption_stroke_color, caption_font_size,
                 caption_position,
-                hook_text, hook_duration, auto_hook,
+                hook_text, hook_duration,
                 effects_enabled, effects_ai,
                 pop_captions, caption_emojis, progress_bar, subscribe_overlay,
                 subscribe_sting_file, subscribe_sting_volume,
