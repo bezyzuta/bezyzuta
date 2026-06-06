@@ -693,22 +693,6 @@ Alles niedriges Risiko, getestet:
   _DISABLED_PHOTO_SOURCES. **GUI-Alignment jetzt als echter Test**
   (tests/test_gui_alignment.py) — der manuelle 81=81-Check ist automatisiert.
 
-### Premium-TTS (F5) + Voice-Enhance in EIGENEM venv (opt-in, WhisperX-Muster)
-Wie WhisperX: separates venv (eigenes torch/numpy) per Subprocess, Fallback bei Fehler.
-- **F5-TTS** (`external_tts="f5"`, `external_tts_python`): `synthesize_voiceover_f5`
-  klont die Stimme via F5-TTS-API im eigenen venv → wav → ffmpeg→mp3. Nur EN-Pfad
-  (vor `_synthesize_voiceover_chatterbox`); bei jedem Fehler Fallback auf Chatterbox.
-  Referenz = `tts_reference_audio`; `external_tts_ref_text` optional (leer=F5
-  auto-transkribiert). gen_text/ref_text via Temp-Files (kein argv-Limit).
-- **Voice-Enhance** (`voice_enhance="resemble"|"deepfilter"`, `voice_enhance_python`):
-  `enhance_voice_external` entrauscht/enhanced die TTS-Ausgabe im eigenen venv.
-  In run_one nach trim_leading_silence (nach dem opt-in Voice-EQ). Gibt bei JEDEM
-  Fehler das Original zurück. Resemble = denoise+super-res (kann Timbre ändern),
-  DeepFilter = nur denoise (leichter).
-- **Voice-EQ default OFF** (machte Chatterbox härter; opt-in `job["voice_eq"]=True`).
-- Setup-venvs: F5 `pip install f5-tts` + torch cu128; Enhance `pip install
-  resemble-enhance` ODER `deepfilternet`. Tests: test_external_voice.py.
-
 ## config.json — User-relevante Felder (Session-3-Neuzugänge)
 ```
 image_style ("auto"/.../"ms_paint_stickman"/"doodle_sketch"), image_roblox_max (2),

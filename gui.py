@@ -83,8 +83,6 @@ def generate(
     tts_de_clone: bool,
     tts_exaggeration: float,
     tts_cfg_weight: float,
-    external_tts_on: bool,
-    voice_enhance_mode: str,
     enable_music: bool,
     music_dir: str,
     music_track: str,
@@ -152,10 +150,6 @@ def generate(
         cfg.tts_de_clone = bool(tts_de_clone)
         cfg.tts_exaggeration = float(tts_exaggeration)
         cfg.tts_cfg_weight = float(tts_cfg_weight)
-        # External-venv voice tools (paths stay in config.json; the GUI just
-        # flips them on/off for this run).
-        cfg.external_tts = "f5" if bool(external_tts_on) else "off"
-        cfg.voice_enhance = (voice_enhance_mode or "off")
         cfg.tts_language = (tts_language or "auto").lower()
         cfg.tts_piper_model = (tts_piper_model or "de_DE-thorsten-medium").strip()
         # Apply orientation toggle: override target_w/target_h on cfg so the
@@ -389,8 +383,6 @@ def _config_defaults(config_path: str = "config.json") -> dict:
             "tts_cfg_weight": getattr(cfg, "tts_cfg_weight", 0.5),
             "tts_language": getattr(cfg, "tts_language", "auto") or "auto",
             "tts_de_clone": bool(getattr(cfg, "tts_de_clone", False)),
-            "external_tts": getattr(cfg, "external_tts", "off") or "off",
-            "voice_enhance": getattr(cfg, "voice_enhance", "off") or "off",
         }
     except Exception:
         return {}
@@ -696,25 +688,6 @@ def build_app() -> gr.Blocks:
                     label="Chatterbox CFG Weight (nur EN)",
                     info="Niedriger = natürlicheres Sprachtempo, höher = wörtlicher.",
                 )
-            external_tts_on = gr.Checkbox(
-                value=(_defaults.get("external_tts", "off") == "f5"),
-                label="🗣️ Premium-Stimme: F5-TTS (eigenes venv, nur EN)",
-                info=("Klont deine Stimme mit F5-TTS statt Chatterbox (oft natürlicher). "
-                      "Braucht das separate venv + 'external_tts_python' in config.json. "
-                      "Fällt bei Fehler automatisch auf Chatterbox zurück."),
-            )
-            voice_enhance_mode = gr.Dropdown(
-                choices=[
-                    ("Aus", "off"),
-                    ("DeepFilter (nur Entrauschen)", "deepfilter"),
-                    ("Resemble (Entrauschen + Enhance)", "resemble"),
-                ],
-                value=_defaults.get("voice_enhance", "off"),
-                label="✨ Voice-Enhance (eigenes venv)",
-                info=("Entrauscht/klärt die Stimme. Braucht das separate venv + "
-                      "'voice_enhance_python' in config.json. Fällt bei Fehler auf "
-                      "die Original-Stimme zurück. Aus = nichts."),
-            )
 
         # ───────────── Audio (BGM + SFX) ─────────────
         with gr.Accordion("🎵 Audio (Musik + SFX)", open=False):
@@ -1168,7 +1141,6 @@ def build_app() -> gr.Blocks:
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_de_clone, tts_exaggeration, tts_cfg_weight,
-                external_tts_on, voice_enhance_mode,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start, normalize_audio, target_lufs,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,

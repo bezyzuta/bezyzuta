@@ -117,21 +117,6 @@ class Config:
     # out-of-process in its own env. Empty = use the main interpreter (only
     # works if whisperx is somehow installed here too — usually it can't be).
     whisperx_python: str
-    # Premium TTS via F5-TTS in its OWN venv (conflicts with Chatterbox's
-    # torch/numpy/transformers pins). "off" = use Chatterbox/Piper as before;
-    # "f5" = clone the voice with F5-TTS (often more natural). Falls back to
-    # Chatterbox on any error. external_tts_python = that venv's python.exe;
-    # external_tts_ref_text = optional transcript of the reference clip (empty =
-    # F5 auto-transcribes it).
-    external_tts: str
-    external_tts_python: str
-    external_tts_ref_text: str
-    # Voice enhance/denoise in its OWN venv. "off" = none; "resemble" =
-    # Resemble-Enhance (denoise + speech super-resolution); "deepfilter" =
-    # DeepFilterNet (denoise only, lighter). Applied to the TTS output; falls
-    # back to the raw voice on any error. voice_enhance_python = that venv.
-    voice_enhance: str
-    voice_enhance_python: str
     # Max height for the downloaded gameplay source. 1080 default; drop to 720
     # for much faster downloads (a vertical short is cropped+scaled anyway).
     download_max_height: int
@@ -245,11 +230,6 @@ class Config:
             whisper_model=data.get("whisper_model", "small"),
             use_whisperx=bool(data.get("use_whisperx", False)),
             whisperx_python=str(data.get("whisperx_python", "")).strip(),
-            external_tts=str(data.get("external_tts", "off")).strip().lower() or "off",
-            external_tts_python=str(data.get("external_tts_python", "")).strip(),
-            external_tts_ref_text=str(data.get("external_tts_ref_text", "")),
-            voice_enhance=str(data.get("voice_enhance", "off")).strip().lower() or "off",
-            voice_enhance_python=str(data.get("voice_enhance_python", "")).strip(),
             download_max_height=int(data.get("download_max_height", 1080)),
             target_w=int(w),
             target_h=int(h),
@@ -1819,122 +1799,6 @@ def _spell_numbers_for_tts(text: str, lang: str) -> str:
     return re.sub(r"\d[\d.,]*\d|\d", repl, text)
 
 
-def synthesize_voiceover_f5(text: str, cfg: "Config", out_path: Path,
-                            ref_audio: str) -> Path:
-    """Clone the voice with F5-TTS running in its OWN venv (cfg.external_tts_python).
-    Subprocess-isolated like WhisperX — F5's torch/numpy/transformers pins clash
-    with Chatterbox in the main venv. Writes a wav, transcodes to out_path (mp3).
-    Raises on any failure so the caller falls back to Chatterbox."""
-    exe = (getattr(cfg, "external_tts_python", "") or "").strip()
-    if not exe or not Path(exe).exists():
-        raise RuntimeError(f"external_tts_python missing: {exe!r}")
-    if not ref_audio or not Path(ref_audio).is_file():
-        raise RuntimeError("F5-TTS needs a reference audio (tts_reference_audio)")
-
-    out_wav = out_path.with_suffix(".f5.wav")
-    gen_txt = out_path.with_suffix(".f5_gen.txt")
-    gen_txt.write_text(text, encoding="utf-8")
-    ref_text = (getattr(cfg, "external_tts_ref_text", "") or "")
-    ref_arg = "-"
-    if ref_text.strip():
-        ref_txt = out_path.with_suffix(".f5_ref.txt")
-        ref_txt.write_text(ref_text, encoding="utf-8")
-        ref_arg = str(ref_txt)
-    for p in (out_wav,):
-        try:
-            if p.exists(): p.unlink()
-        except Exception: pass
-
-    child = (
-        "import sys\n"
-        "ref, ref_text_path, gen_text_path, out_wav = sys.argv[1:5]\n"
-        "ref_text = ''\n"
-        "if ref_text_path != '-':\n"
-        "    try: ref_text = open(ref_text_path, encoding='utf-8').read()\n"
-        "    except Exception: ref_text = ''\n"
-        "gen_text = open(gen_text_path, encoding='utf-8').read()\n"
-        "from f5_tts.api import F5TTS\n"
-        "model = F5TTS()\n"
-        "model.infer(ref_file=ref, ref_text=ref_text, gen_text=gen_text, "
-        "file_wave=out_wav, remove_silence=False)\n"
-        "print('OK')\n"
-    )
-    proc = subprocess.run(
-        [exe, "-c", child, str(ref_audio), ref_arg, str(gen_txt), str(out_wav)],
-        capture_output=True, text=True, timeout=1800,
-    )
-    if not out_wav.is_file() or out_wav.stat().st_size < 500:
-        tail = (proc.stderr or "").strip().splitlines()[-6:]
-        raise RuntimeError("F5-TTS produced no audio: " + " | ".join(tail))
-    # Transcode the F5 wav to the mp3 the rest of the pipeline expects.
-    run(["ffmpeg", "-y", "-i", str(out_wav), "-c:a", "libmp3lame", "-q:a", "2",
-         str(out_path)])
-    return out_path
-
-
-def enhance_voice_external(in_path: Path, out_path: Path, cfg: "Config",
-                           on_step=None) -> Path:
-    """Denoise/enhance a voice file via Resemble-Enhance or DeepFilterNet in
-    their OWN venv (cfg.voice_enhance_python). Returns the enhanced mp3, or the
-    INPUT unchanged on any error (never blocks a render)."""
-    def log(msg):
-        if on_step:
-            try: on_step(msg)
-            except Exception: pass
-    mode = (getattr(cfg, "voice_enhance", "off") or "off").strip().lower()
-    exe = (getattr(cfg, "voice_enhance_python", "") or "").strip()
-    if mode in ("off", "") or not exe or not Path(exe).exists():
-        if mode not in ("off", ""):
-            log(f"      Voice-Enhance übersprungen (venv-Python fehlt: {exe!r})")
-        return in_path
-
-    out_wav = out_path.with_suffix(".enh.wav")
-    if mode == "resemble":
-        child = (
-            "import sys, torch, torchaudio\n"
-            "inp, outp = sys.argv[1:3]\n"
-            "from resemble_enhance.enhancer.inference import enhance\n"
-            "dwav, sr = torchaudio.load(inp)\n"
-            "dwav = dwav.mean(0)\n"
-            "dev = 'cuda' if torch.cuda.is_available() else 'cpu'\n"
-            "wav, new_sr = enhance(dwav, sr, dev, nfe=64, solver='midpoint', lambd=0.9, tau=0.5)\n"
-            "torchaudio.save(outp, wav.unsqueeze(0).cpu(), new_sr)\n"
-            "print('OK')\n"
-        )
-    else:  # deepfilter
-        child = (
-            "import sys\n"
-            "from df.enhance import enhance, init_df, load_audio, save_audio\n"
-            "inp, outp = sys.argv[1:3]\n"
-            "model, state, _ = init_df()\n"
-            "audio, _ = load_audio(inp, sr=state.sr())\n"
-            "out = enhance(model, state, audio)\n"
-            "save_audio(outp, out, state.sr())\n"
-            "print('OK')\n"
-        )
-    try:
-        if out_wav.exists(): out_wav.unlink()
-    except Exception: pass
-    try:
-        proc = subprocess.run(
-            [exe, "-c", child, str(in_path), str(out_wav)],
-            capture_output=True, text=True, timeout=1200,
-        )
-    except Exception as e:
-        log(f"      Voice-Enhance fehlgeschlagen ({str(e)[:120]}) — Original behalten")
-        return in_path
-    if not out_wav.is_file() or out_wav.stat().st_size < 500:
-        tail = (proc.stderr or "").strip().splitlines()[-4:]
-        log(f"      Voice-Enhance ohne Ergebnis ({' | '.join(tail)[:160]}) — Original behalten")
-        return in_path
-    try:
-        run(["ffmpeg", "-y", "-i", str(out_wav), "-c:a", "libmp3lame", "-q:a", "2",
-             str(out_path)])
-    except Exception:
-        return in_path
-    return out_path
-
-
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
     """Dispatch to the right TTS engine based on `cfg.tts_language`:
 
@@ -1999,18 +1863,6 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
                       f"wurde nicht gefunden: {raw or '(leer)'} — nutze Piper. "
                       "Pruefe den Pfad im Stimm-Feld (existiert die .wav wirklich?).")
         return _synthesize_voiceover_piper(text, cfg, out_path)
-    # English: premium F5-TTS clone (own venv) if enabled, else Chatterbox.
-    if (getattr(cfg, "external_tts", "off") == "f5"
-            and (getattr(cfg, "external_tts_python", "") or "").strip()):
-        ref = _resolve_clone_reference(
-            (getattr(cfg, "tts_reference_audio", "") or "").strip())
-        if ref:
-            try:
-                print("      Premium-TTS: F5-TTS clone (eigenes venv)")
-                return synthesize_voiceover_f5(text, cfg, out_path, ref)
-            except Exception as e:
-                print(f"      F5-TTS fehlgeschlagen ({str(e)[:160]}) "
-                      "— Fallback auf Chatterbox")
     return _synthesize_voiceover_chatterbox(text, cfg, out_path)
 
 
@@ -7189,11 +7041,6 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         if bool(job.get("voice_eq", False)):
             step("      Voice-EQ (Highpass + Präsenz + Kompressor)")
             vo = apply_voice_eq(vo, work / "voice_eq.mp3", on_step=step)
-        # Voice enhance/denoise in its own venv (opt-in via cfg.voice_enhance).
-        # Falls back to the raw voice on any error.
-        if str(getattr(cfg, "voice_enhance", "off")).lower() not in ("off", ""):
-            step(f"      Voice-Enhance ({cfg.voice_enhance}, eigenes venv)")
-            vo = enhance_voice_external(vo, work / "voice_enh.mp3", cfg, on_step=step)
         # Optional voice tempo (pitch-preserved). < 1.0 = calmer/slower, good
         # for long-form where the fast short-style delivery gets tiring. Applied
         # BEFORE measuring duration so the long-form auto-extend targets the
