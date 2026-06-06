@@ -2220,9 +2220,20 @@ def find_loudest_music_offset(music_path: Path, voice_duration: float,
 
 
 def mix_voice_with_music(voice_path: Path, music_path: Path, volume_pct: float,
-                         out_path: Path, start_offset: float = 0.0) -> Path:
+                         out_path: Path, start_offset: float = 0.0,
+                         sidechain: bool = True) -> Path:
     """Loop music under voice at given volume (%). Output ends with the voice.
-    `start_offset` skips into the music track before mixing."""
+    `start_offset` skips into the music track before mixing.
+
+    Polish:
+    - Sidechain ducking: the music ducks DYNAMICALLY under the voice (pumps
+      back up during silence/intro/image-only beats) instead of sitting at a
+      flat low level the whole time. Makes the music breathe. Falls back to a
+      plain static mix if the sidechain filter errors.
+    - Intro swell + outro fade: 1.2s fade-in so the music establishes before
+      the hook, and a fade-out over the last ~1.8s so the video ends clean
+      instead of cutting the music dead.
+    """
     pct = max(0.0, min(volume_pct, 100.0)) / 100.0
     # Quadratic taper: matches perceived loudness so low slider values are actually quiet.
     # e.g. 3% -> 0.0009 (~-60dB), 10% -> 0.01 (~-40dB), 30% -> 0.09 (~-21dB).
@@ -2230,17 +2241,72 @@ def mix_voice_with_music(voice_path: Path, music_path: Path, volume_pct: float,
     music_args = ["-stream_loop", "-1"]
     if start_offset > 0.05:
         music_args = ["-ss", f"{start_offset:.2f}", "-stream_loop", "-1"]
-    run([
-        "ffmpeg", "-y",
-        "-i", str(voice_path),
-        *music_args, "-i", str(music_path),
-        "-filter_complex",
-        f"[1:a]volume={vol:.3f}[bgm];"
-        f"[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]",
-        "-map", "[mix]",
-        "-c:a", "libmp3lame", "-q:a", "4",
-        str(out_path),
-    ])
+
+    # Music fade chain (intro swell always; outro fade only if we know the
+    # voice is long enough that a 1.8s tail won't eat the whole track).
+    try:
+        vdur = _media_duration(voice_path)
+    except Exception:
+        vdur = 0.0
+    fades = ""
+    if vdur > 2.0:
+        fades += ",afade=t=in:st=0:d=1.2"
+    if vdur > 4.0:
+        fades += f",afade=t=out:st={max(0.0, vdur - 1.8):.2f}:d=1.8"
+
+    base = ["ffmpeg", "-y", "-i", str(voice_path), *music_args, "-i", str(music_path)]
+    tail = ["-map", "[mix]", "-c:a", "libmp3lame", "-q:a", "4", str(out_path)]
+
+    if sidechain:
+        # Normalize both signals to a common format so sidechaincompress can
+        # key the music off the voice envelope.
+        norm = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+        fc = (
+            f"[0:a]{norm},asplit=2[vmain][vsc];"
+            f"[1:a]{norm},volume={vol:.4f}{fades}[bgm];"
+            f"[bgm][vsc]sidechaincompress=threshold=0.03:ratio=6:attack=5:release=250[bgmduck];"
+            f"[vmain][bgmduck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]"
+        )
+        try:
+            run(base + ["-filter_complex", fc] + tail)
+            return out_path
+        except Exception:
+            pass  # fall through to the plain static mix below
+
+    fc = (
+        f"[1:a]volume={vol:.4f}{fades}[bgm];"
+        f"[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]"
+    )
+    run(base + ["-filter_complex", fc] + tail)
+    return out_path
+
+
+def apply_voice_eq(voice_path: Path, out_path: Path, on_step=None) -> Path:
+    """Broadcast-style voice chain on the raw TTS output: high-pass to kill
+    rumble, a gentle presence lift around 3 kHz so the voice cuts through music,
+    a soft de-ess at ~7 kHz, and a compressor to even out levels and add body.
+    Makes free local TTS sound like a mixed voiceover. Falls back to the input
+    on any ffmpeg error so it never blocks a render."""
+    def log(msg):
+        if on_step:
+            try: on_step(msg)
+            except Exception: pass
+    af = (
+        "highpass=f=80,"
+        "equalizer=f=3000:width_type=o:width=1.5:g=3,"
+        "equalizer=f=7000:width_type=o:width=1.5:g=-3,"
+        "acompressor=threshold=0.05:ratio=4:attack=5:release=80:makeup=2"
+    )
+    try:
+        run([
+            "ffmpeg", "-y", "-i", str(voice_path),
+            "-af", af, "-c:a", "libmp3lame", "-q:a", "2", str(out_path),
+        ])
+    except Exception as e:
+        log(f"      Voice-EQ fehlgeschlagen ({str(e)[:120]}) — Original behalten")
+        return voice_path
+    if not out_path.is_file() or out_path.stat().st_size < 200:
+        return voice_path
     return out_path
 
 
@@ -6909,6 +6975,12 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         step("[2/5] voiceover")
         vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
         vo = trim_leading_silence(vo_raw, work / "voice.mp3")
+        # Broadcast voice chain (EQ + presence + de-ess + compression) so the
+        # free TTS sounds mixed and cuts through the music. Opt-out via
+        # job["voice_eq"]=False. Falls back to the input on any error.
+        if bool(job.get("voice_eq", True)):
+            step("      Voice-EQ (Highpass + Präsenz + Kompressor)")
+            vo = apply_voice_eq(vo, work / "voice_eq.mp3", on_step=step)
         # Optional voice tempo (pitch-preserved). < 1.0 = calmer/slower, good
         # for long-form where the fast short-style delivery gets tiring. Applied
         # BEFORE measuring duration so the long-form auto-extend targets the
