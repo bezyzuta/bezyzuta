@@ -123,6 +123,9 @@ class Config:
     target_w: int
     target_h: int
     ducking_db: float
+    # Video encoder: "auto" (use NVENC on an NVIDIA GPU, else x264), "nvenc"
+    # (force GPU), or "cpu" (force x264). NVENC is 5-10x faster on an RTX card.
+    video_encoder: str
     gemini_api_key: str
     gemini_model: str
     # Optional override for the multi-clip moment-picker. Defaults to
@@ -231,6 +234,7 @@ class Config:
             target_w=int(w),
             target_h=int(h),
             ducking_db=float(data.get("ducking_db", -18)),
+            video_encoder=str(data.get("video_encoder", "auto")).strip().lower() or "auto",
             gemini_api_key=data.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", ""),
             gemini_model=default_gemini,
             gemini_moments_model=data.get("gemini_moments_model", default_gemini),
@@ -1375,7 +1379,7 @@ def make_color_background(duration: float, out_path: Path,
         "ffmpeg", "-y",
         "-f", "lavfi", "-i",
         f"color=c={color}:s={width}x{height}:r=30:d={max(0.5, duration):.2f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        *_vcodec("fast"),
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         str(out_path),
     ])
@@ -2219,6 +2223,53 @@ def find_loudest_music_offset(music_path: Path, voice_duration: float,
     return random.choice(top)[1]
 
 
+# Video encoder selection. NVENC (NVIDIA GPU) is 5-10x faster than libx264 for
+# the final encode on an RTX card. Mode is set once per run from cfg.video_encoder.
+_VIDEO_ENCODER_MODE = "auto"   # "auto" | "nvenc" | "cpu"
+_NVENC_CACHED: bool | None = None
+
+
+def set_video_encoder_mode(mode: str) -> None:
+    """Called at the start of run_one/run_multiclip from cfg.video_encoder."""
+    global _VIDEO_ENCODER_MODE
+    _VIDEO_ENCODER_MODE = (mode or "auto").strip().lower()
+    if _VIDEO_ENCODER_MODE not in ("auto", "nvenc", "cpu"):
+        _VIDEO_ENCODER_MODE = "auto"
+
+
+def _nvenc_available() -> bool:
+    """True if h264_nvenc should be used. Honors the forced modes; in auto it
+    probes `ffmpeg -encoders` once and caches the result."""
+    global _NVENC_CACHED
+    if _VIDEO_ENCODER_MODE == "cpu":
+        return False
+    if _VIDEO_ENCODER_MODE == "nvenc":
+        return True
+    if _NVENC_CACHED is None:
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=15,
+            )
+            _NVENC_CACHED = "h264_nvenc" in (proc.stdout or "")
+        except Exception:
+            _NVENC_CACHED = False
+    return _NVENC_CACHED
+
+
+def _vcodec(quality: str = "standard") -> list:
+    """ffmpeg video-codec args, NVENC-first. `quality`: 'standard' (final
+    output) or 'fast' (intermediate re-encodes). Does NOT emit -pix_fmt — call
+    sites keep their own where needed."""
+    if _nvenc_available():
+        if quality == "standard":
+            return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
+        return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "26"]
+    if quality == "standard":
+        return ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"]
+
+
 def mix_voice_with_music(voice_path: Path, music_path: Path, volume_pct: float,
                          out_path: Path, start_offset: float = 0.0,
                          sidechain: bool = True) -> Path:
@@ -2414,7 +2465,7 @@ def pick_clip(source: Path, target_seconds: float, out_path: Path) -> Path:
         "ffmpeg", "-y",
         "-ss", f"{start:.2f}", "-i", str(source),
         "-t", f"{target_seconds:.2f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        *_vcodec("fast"),
         "-c:a", "aac", "-b:a", "160k",
         str(out_path),
     ])
@@ -2459,7 +2510,7 @@ def _extract_and_concat(source: Path, segments: list[tuple[float, float]],
             "ffmpeg", "-y",
             "-ss", f"{s:.2f}", "-i", str(source),
             "-t", f"{d:.2f}",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            *_vcodec("fast"),
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
             "-r", "60",
@@ -2602,7 +2653,7 @@ def pick_loud_clip(source: Path, target_seconds: float, out_path: Path,
         "ffmpeg", "-y",
         "-ss", f"{start:.2f}", "-i", str(source),
         "-t", f"{target_seconds:.2f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        *_vcodec("fast"),
         "-c:a", "aac", "-b:a", "160k",
         str(out_path),
     ])
@@ -5054,7 +5105,7 @@ def fetch_video_from_pexels(query: str, out_path: Path, cfg: "Config",
     try:
         run([
             "ffmpeg", "-y", "-i", str(raw), "-t", f"{max_dur:.2f}",
-            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-an", *_vcodec("fast"),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path),
         ])
     finally:
@@ -5199,7 +5250,7 @@ def fetch_video_from_higgsfield(query: str, out_path: Path, cfg: "Config", *,
     try:
         run([
             "ffmpeg", "-y", "-i", str(raw),
-            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-an", *_vcodec("fast"),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path),
         ])
     finally:
@@ -5618,7 +5669,7 @@ def apply_playback_speed(video_path: Path, speed: float) -> None:
         "-filter_complex",
         f"[0:v]setpts=PTS/{speed}[v];[0:a]atempo={speed}[a]",
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        *_vcodec("standard"),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
@@ -6068,7 +6119,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
     cmd += [
         "-filter_complex", filter_complex,
         "-map", f"[{vlabel}]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+        *_vcodec("standard"), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-shortest", "-movflags", "+faststart",
         str(out_path),
@@ -6646,6 +6697,7 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
         else:
             print(msg)
 
+    set_video_encoder_mode(getattr(cfg, "video_encoder", "auto"))
     resume_enabled = bool(job.get("resume", False))
     log = Logger(step_cb=on_step, level=str(job.get("log_level", "INFO")))
 
@@ -6818,6 +6870,9 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             except Exception:
                 pass
         print(msg)
+
+    # Pick GPU vs CPU video encoder for this run (NVENC = 5-10x faster).
+    set_video_encoder_mode(getattr(cfg, "video_encoder", "auto"))
 
     # Opt-in upgrades. When all flags are off, behavior is identical to the
     # legacy pipeline.

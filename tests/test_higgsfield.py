@@ -89,9 +89,13 @@ class TestFetchVideoFromHiggsfield:
              patch("pipeline.run", side_effect=fake_run):
             result = pipeline.fetch_video_from_higgsfield("a foggy hallway", out, _Cfg())
         assert result == out
-        # verify the CLI was called with create/--wait/--json + the model + prompt
-        cmd = run_mock.call_args[0][0]
-        assert "create" in cmd and "--wait" in cmd and "--json" in cmd
+        # verify the CLI was called with create/--wait/--json + the model + prompt.
+        # (Other subprocess.run calls may occur, e.g. the one-time NVENC probe,
+        # so search the call list for the higgsfield create invocation.)
+        cmds = [c.args[0] for c in run_mock.call_args_list if c.args]
+        cmd = next((c for c in cmds if "create" in c), None)
+        assert cmd is not None, f"no higgsfield create call in {cmds}"
+        assert "--wait" in cmd and "--json" in cmd
         assert "some_video_model" in cmd
         assert "a foggy hallway" in cmd
 

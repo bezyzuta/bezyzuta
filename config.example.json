@@ -23,6 +23,8 @@
   "cloudflare_account_id": "leave_empty_or_paste_account_id_from_dash.cloudflare.com",
   "cloudflare_api_token": "leave_empty_or_paste_workers_ai_token",
   "cloudflare_image_model": "@cf/black-forest-labs/flux-1-schnell",
+  "video_encoder": "auto",
+  "_comment_video_encoder": "Final video encode. 'auto' (recommended) uses NVENC on an NVIDIA GPU (5-10x faster than CPU on an RTX 3080) and falls back to x264 if NVENC isn't available. Force with 'nvenc' or 'cpu'. If NVENC ever produces a broken/blocky encode on your driver, set 'cpu'.",
   "use_claude_cli": false,
   "_comment_claude_cli": "Use the locally installed `claude` CLI (your Claude subscription, no API key) for text tasks instead of Gemini — mainly multi-clip moment-picking. Opt-in, local/personal use only; slower than Gemini and counts against subscription limits. Falls back to Gemini on any failure. Can also be toggled per-run in the GUI.",
   "claude_cli_model": "sonnet",
