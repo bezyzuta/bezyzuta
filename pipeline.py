@@ -3778,16 +3778,41 @@ def _hex_to_ass_color(hex_color: str) -> str:
 # most captions stay clean like the reference. German + English triggers.
 # Order matters: first match wins, so put the most specific words first.
 _CAPTION_EMOJI_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
-    (("geld", "reich", "money", "rich", "robux", "millionen", "million", "cash", "diamant", "gems"), "💰"),
-    (("achtung", "warnung", "gefahr", "vorsicht", "warning", "danger", "verboten", "niemals", "never"), "⚠️"),
-    (("schock", "krass", "wahnsinn", "unglaublich", "shock", "insane", "crazy", "omg", "wtf", "was?"), "😱"),
-    (("angst", "gruselig", "creepy", "horror", "scary", "albtraum", "nightmare", "dunkel", "nacht", "night"), "😨"),
-    (("boss", "stark", "mächtig", "macht", "power", "strong", "king", "könig", "legende", "legend"), "🔥"),
-    (("gewonnen", "sieg", "win", "gewinn", "champion", "best", "beste", "nummer eins", "number one"), "🏆"),
-    (("lachen", "lustig", "funny", "lol", "haha", "witzig", "meme"), "😂"),
-    (("liebe", "love", "herz", "heart", "süß", "cute"), "❤️"),
-    (("geheim", "secret", "versteckt", "hidden", "trick", "hack", "cheat"), "🤫"),
-    (("freund", "friend", "teilen", "share", "schicken", "send"), "🤝"),
+    # Order matters: first match wins, so strong/specific signals go first.
+    (("geld", "reich", "money", "rich", "robux", "millionen", "million", "cash", "diamant", "gems", "dollar", "euro", "bezahlt", "kaufen"), "💰"),
+    (("achtung", "warnung", "gefahr", "vorsicht", "warning", "danger", "verboten", "niemals", "never", "stop", "pass auf"), "⚠️"),
+    (("getötet", "tötet", "tödlich", "gestorben", "stirbt", "ermordet", "killed", "kills", "death", "deadly", "murder"), "💀"),
+    (("blut", "blutig", "blood", "bloody", "wunde"), "🩸"),
+    (("messer", "mord", "mörder", "knife", "stab", "klinge", "waffe", "weapon"), "🔪"),
+    (("geist", "gespenst", "ghost", "spuk", "haunted", "seele", "verflucht", "fluch", "cursed", "dämon", "demon"), "👻"),
+    (("schock", "krass", "wahnsinn", "unglaublich", "shock", "insane", "crazy", "omg", "wtf", "was?", "plötzlich", "suddenly"), "😱"),
+    (("mindblown", "verrückt", "unfassbar", "explodiert", "kopf", "mind blown", "speechless", "sprachlos"), "🤯"),
+    (("angst", "gruselig", "creepy", "horror", "scary", "albtraum", "nightmare", "dunkel", "nacht", "night", "schatten", "shadow", "grusel"), "😨"),
+    (("böse", "evil", "villain", "bösewicht", "teuflisch", "sinister", "grin"), "😈"),
+    (("boss", "stark", "mächtig", "macht", "power", "strong", "legende", "legend", "episch", "epic"), "🔥"),
+    (("krone", "crown", "royal", "vip", "könig", "king", "prinz", "queen", "königin"), "👑"),
+    (("gewonnen", "sieg", "win", "gewinn", "champion", "best", "beste", "nummer eins", "number one", "gewinner", "winner"), "🏆"),
+    (("selten", "rare", "diamond", "legendär", "legendary", "exklusiv", "exclusive", "wertvoll"), "💎"),
+    (("lachen", "lustig", "funny", "lol", "haha", "witzig", "meme", "komisch"), "😂"),
+    (("traurig", "weinen", "tränen", "sad", "crying", "tears", "heartbroken", "schluchz"), "😭"),
+    (("wütend", "wut", "sauer", "angry", "rage", "hass", "hate", "zorn", "furious"), "😡"),
+    (("liebe", "love", "herz", "heart", "süß", "cute", "verliebt"), "❤️"),
+    (("lüge", "gelogen", "lie", "lying", "fake", "betrug", "scam", "betrüger", "liar", "fälschung"), "🤥"),
+    (("geheim", "secret", "versteckt", "hidden", "trick", "hack", "cheat", "glitch", "exploit"), "🤫"),
+    (("schau", "guck", "look", "watch", "sieh", "seht", "achte", "beobachte", "anschauen"), "👀"),
+    (("schlau", "klug", "genie", "smart", "brain", "clever", "iq", "denk mal"), "🧠"),
+    (("zeit", "schnell", "time", "hurry", "quick", "sekunden", "seconds", "sofort", "instantly", "eilig"), "⏰"),
+    (("rennen", "flucht", "fliehen", "run", "escape", "weglaufen", "entkommen", "flee", "rennt"), "🏃"),
+    (("gesperrt", "locked", "verschlossen", "tür", "door", "safe", "tresor", "schloss"), "🔒"),
+    (("geschenk", "gratis", "kostenlos", "free", "gift", "gewinnspiel", "giveaway", "umsonst"), "🎁"),
+    (("rakete", "rocket", "boost", "viral", "wachsen", "grow", "explodiert wachstum", "durchgestartet"), "🚀"),
+    (("training", "muskel", "stärke", "muscle", "gym", "kraft", "workout", "grind"), "💪"),
+    (("spiel", "game", "gaming", "roblox", "level", "noob", "gamer", "spielen", "runde"), "🎮"),
+    (("welt", "world", "jeder", "everyone", "alle", "menschheit", "global"), "🌍"),
+    (("bitte", "please", "hoffe", "hope", "beten", "pray", "wunsch", "wünsche"), "🙏"),
+    (("richtig", "correct", "stimmt", "wahr", "true", "endlich", "geschafft", "erfolg", "success"), "✅"),
+    (("falsch", "wrong", "fehler", "mistake", "schiefgelaufen", "kaputt", "failed", "versagt"), "❌"),
+    (("freund", "friend", "teilen", "share", "schicken", "send", "abonnier", "subscribe"), "🤝"),
     (("denken", "überleg", "think", "frage", "warum", "why", "wie", "how"), "🤔"),
 ]
 
@@ -3803,12 +3828,21 @@ def _emoji_for_caption(text: str) -> str:
 
 
 # Hex-codepoint id per emoji (used only for stable cache filenames; FE0F
-# variation selectors dropped). Our curated caption-emoji set.
+# variation selectors dropped). Our curated caption-emoji set. Anything missing
+# falls back to ord() of the first codepoint in get_emoji_png, so this map is a
+# nicety, not a requirement.
 _EMOJI_TWEMOJI_CODE: dict[str, str] = {
     "💰": "1f4b0", "⚠️": "26a0", "😱": "1f631", "😨": "1f628",
     "🔥": "1f525", "🏆": "1f3c6", "😂": "1f602", "❤️": "2764",
     "🤫": "1f92b", "🤝": "1f91d", "🤔": "1f914", "🌙": "1f319",
     "😎": "1f60e",
+    # Session-4 expansion (more coverage + variety, incl. horror set).
+    "💀": "1f480", "🩸": "1fa78", "🔪": "1f52a", "👻": "1f47b",
+    "🤯": "1f92f", "😈": "1f608", "👑": "1f451", "💎": "1f48e",
+    "😭": "1f62d", "😡": "1f621", "🤥": "1f925", "👀": "1f440",
+    "🧠": "1f9e0", "⏰": "23f0", "🏃": "1f3c3", "🔒": "1f512",
+    "🎁": "1f381", "🚀": "1f680", "💪": "1f4aa", "🎮": "1f3ae",
+    "🌍": "1f30d", "🙏": "1f64f", "✅": "2705", "❌": "274c",
 }
 
 _EMOJI_CACHE_DIR = Path.home() / ".cache" / "bezyzuta-emoji"
