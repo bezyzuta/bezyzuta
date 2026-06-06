@@ -7034,10 +7034,11 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         step("[2/5] voiceover")
         vo_raw = synthesize_voiceover(script, cfg, work / "voice_raw.mp3")
         vo = trim_leading_silence(vo_raw, work / "voice.mp3")
-        # Broadcast voice chain (EQ + presence + de-ess + compression) so the
-        # free TTS sounds mixed and cuts through the music. Opt-out via
-        # job["voice_eq"]=False. Falls back to the input on any error.
-        if bool(job.get("voice_eq", True)):
+        # Broadcast voice chain (EQ + presence + de-ess + compression). DEFAULT
+        # OFF — on Chatterbox (esp. high exaggeration) the compressor + presence
+        # boost made the voice sound harsher, not better. Opt-IN via
+        # job["voice_eq"]=True. Falls back to the input on any error.
+        if bool(job.get("voice_eq", False)):
             step("      Voice-EQ (Highpass + Präsenz + Kompressor)")
             vo = apply_voice_eq(vo, work / "voice_eq.mp3", on_step=step)
         # Optional voice tempo (pitch-preserved). < 1.0 = calmer/slower, good
