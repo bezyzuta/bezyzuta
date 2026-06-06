@@ -4059,7 +4059,9 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
     # TikTok-style pop animation: start scaled up, shrink to 100% over 150ms.
     # Forced off in long-form — a scale-pop every 8 words for 10 minutes is
     # nauseating; long-form just fades.
-    pop_tag = "\\fscx125\\fscy125\\t(0,150,\\fscx100\\fscy100)" if (pop_captions and not long_form) else ""
+    # accel < 1 = ease-out: the text snaps down fast then settles, reading as a
+    # satisfying "pop" instead of a mechanical linear shrink.
+    pop_tag = "\\fscx125\\fscy125\\t(0,150,0.6,\\fscx100\\fscy100)" if (pop_captions and not long_form) else ""
 
     # TikTok per-word karaoke: instead of 3-word chunks shown together,
     # emit ONE dialogue per word with a punchy pop+yellow-flash. Visually
@@ -4166,7 +4168,7 @@ def write_ass(words, video_w: int, video_h: int, out_path: Path,
                     f"{{{fade}}}{text}"
                 )
     elif enable_captions and word_karaoke and not long_form:
-        word_pop = "\\fscx150\\fscy150\\c&H00FFFF&\\t(0,160,\\fscx100\\fscy100\\c&HFFFFFF&)"
+        word_pop = "\\fscx150\\fscy150\\c&H00FFFF&\\t(0,160,0.6,\\fscx100\\fscy100\\c&HFFFFFF&)"
         for w in words:
             ws, we, wt = w[0], w[1], (w[2] or "").strip()
             if not wt:

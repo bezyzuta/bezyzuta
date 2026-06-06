@@ -977,11 +977,18 @@ def build_app() -> gr.Blocks:
             caption_font = gr.Dropdown(
                 choices=[
                     ("Impact", "Impact"),
+                    ("Bebas Neue", "Bebas Neue"),
+                    ("Anton", "Anton"),
+                    ("Montserrat Black", "Montserrat Black"),
                     ("Arial-Bold", "Arial Black"),
                     ("Verdana", "Verdana"),
                 ],
                 value="Impact",
                 label="Schriftart",
+                info=("Bebas Neue / Anton / Montserrat sind die Fonts, die aktuelle "
+                      "virale Creator nutzen (moderner als Impact). MÜSSEN auf Windows "
+                      "installiert sein (gratis bei Google Fonts → Rechtsklick → "
+                      "Installieren), sonst nutzt der Renderer einen Ersatz-Font."),
             )
             with gr.Row():
                 caption_color = gr.ColorPicker(value="#FFFFFF", label="Textfarbe")
