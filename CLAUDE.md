@@ -673,6 +673,26 @@ fill (Grok ignoriert Aspect oft → nie blind vertrauen). Default bleibt square.
 Bild-Kaskade unverändert: Grok zuerst (wenn an), dann Higgsfield/Flux/Pollinations.
 Grok kann KEIN Video → nur Bilder. Tests: test_grok_cli.py (aspect).
 
+### Politur-Sprint (Session 4 — aus dem 10-Agenten-Brainstorm)
+Alles niedriges Risiko, getestet:
+- **Caption-Easing**: pop_captions/word_karaoke nutzen `\t(0,150,0.6,...)` (ease-out
+  Snap statt linear). Caption-Polish/Box/Buildup unangetastet.
+- **Fonts**: Dropdown +Bebas Neue/Anton/Montserrat Black (müssen auf Windows
+  installiert sein), Default bleibt Impact.
+- **Audio**: `mix_voice_with_music` jetzt Sidechain-Ducking (Musik atmet unter
+  Stimme, `sidechaincompress`) + Intro-Swell + Outro-Fade; Fallback auf statischen
+  amix bei Filter-Fehler. `apply_voice_eq` (Highpass80/Präsenz3k/De-Ess7k/Kompressor)
+  in run_one nach trim_leading_silence, opt-out `job["voice_eq"]=False`.
+- **NVENC**: `_vcodec()`/`_nvenc_available()`/`set_video_encoder_mode()` — alle 8
+  Encode-Stellen NVENC-first (5-10× schneller auf RTX), Auto-Detect via
+  `ffmpeg -encoders` gecacht. Config `video_encoder` auto|nvenc|cpu. Bei NVENC-Bug
+  → "cpu" setzen.
+- **Curiosity-Gap-Skript**: SCRIPT_PROMPT_SHORT(_EN) erzwingen jetzt Open-Loop →
+  Eskalation → Payoff erst in den letzten ~5s → CTA (größter Retention-Hebel).
+- **Test-Isolation**: conftest autouse-Fixture resettet Encoder-Globals +
+  _DISABLED_PHOTO_SOURCES. **GUI-Alignment jetzt als echter Test**
+  (tests/test_gui_alignment.py) — der manuelle 81=81-Check ist automatisiert.
+
 ## config.json — User-relevante Felder (Session-3-Neuzugänge)
 ```
 image_style ("auto"/.../"ms_paint_stickman"/"doodle_sketch"), image_roblox_max (2),

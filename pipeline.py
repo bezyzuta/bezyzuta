@@ -550,9 +550,11 @@ Thema: {topic}
 
 Anforderungen:
 - Laenge: ca. {target_low}-{target_high} Sekunden Sprechzeit (etwa {words_low}-{words_high} deutsche Woerter)
-- Starker Hook am Anfang (z.B. "Bro, schau dir das an!", "Achtung!", "99% der Spieler...")
-- Action-Beschreibung in der Mitte, spannend und mitreissend
-- Call-to-Action am Ende ("Folg fuer mehr...", "Lass ein Like da...")
+- STRUKTUR (Curiosity Gap — entscheidend fuer Watchtime):
+  1. OEFFNE mit einer Frage oder einem ungeloesten Raetsel/Versprechen, das sofort fesselt — und verrate die Antwort NOCH NICHT (z.B. "Niemand wusste, was hinter dieser Tuer war...", "Das haette nie passieren duerfen...").
+  2. Baue in der Mitte Spannung auf und eskaliere — gib Andeutungen, aber halte die Aufloesung bewusst zurueck.
+  3. Liefere die AUFLOESUNG / den Payoff erst in den LETZTEN ~5 Sekunden, direkt vor dem Call-to-Action. Der Zuschauer muss bis zum Ende dranbleiben, um die versprochene Antwort zu bekommen.
+  4. Ganz am Schluss ein kurzer Call-to-Action ("Folg fuer Teil 2...", "Lass ein Like da...").
 - Kein Markdown, keine Anfuehrungszeichen, keine Regie-Anweisungen
 - Gib NUR den reinen Sprechertext aus, sonst nichts"""
 
@@ -579,9 +581,11 @@ Topic: {topic}
 
 Requirements:
 - Length: about {target_low}-{target_high} seconds of speech (around {words_low}-{words_high} English words)
-- Strong hook in the first 5 seconds (e.g. "Bro, look at this!", "99% of players can't do this...", "You won't believe...")
-- Hype action description in the middle, fast-paced and engaging
-- Call to action at the end ("Follow for more...", "Like if that was wild...")
+- STRUCTURE (curiosity gap — critical for watch time):
+  1. OPEN with a question or an unresolved mystery/promise that grabs attention instantly — and DO NOT reveal the answer yet (e.g. "Nobody knew what was behind that door...", "This was never supposed to happen...").
+  2. Build tension through the middle and escalate — drop hints but deliberately withhold the resolution.
+  3. Deliver the PAYOFF / answer only in the FINAL ~5 seconds, right before the call to action. The viewer must watch to the end to get the answer they were promised.
+  4. End with a short call to action ("Follow for part 2...", "Like if that was wild...").
 - No markdown, no quotes, no stage directions
 - Output ONLY the speaker text, nothing else"""
 
