@@ -1,7 +1,34 @@
 requests>=2.31
 yt-dlp>=2024.5.27
 faster-whisper>=1.0.3
+# Optional, NOT pulled by default: WhisperX for word-level caption alignment
+# (config: "use_whisperx": true). Force-aligns every word with wav2vec2 ->
+# much tighter karaoke timing, no drift. Free, local, GPU. Install with:
+#   .venv\Scripts\python.exe -m pip install whisperx
+# First run downloads a small per-language alignment model. Pipeline falls
+# back to plain faster-whisper automatically if it's not installed.
 gradio>=4.40
+# TTS via Chatterbox (Resemble AI, Apache 2.0). Local model, ~3GB download
+# on first use, ~3-4GB VRAM. Supports zero-shot voice cloning from a 5-10s
+# reference audio file. Primary language is English; German output works
+# but quality varies.
+chatterbox-tts
+# Audio I/O for Chatterbox (writes WAV before ffmpeg transcodes to MP3).
+torchaudio
+# Piper TTS for German voiceovers — offline, CPU-friendly, ~63 MB Thorsten
+# voice model auto-downloaded on first use. ONNX runtime is pulled as a
+# transitive dep.
+piper-tts
+# Pillow renders color caption emojis from the system emoji font (Segoe UI
+# Emoji on Windows / Noto Color Emoji on Linux). Usually already present via
+# ultralytics, pinned here so the emoji overlay never silently no-ops.
+Pillow>=9.2
+
+# ── Dev / test only — not needed for the pipeline itself ──
+# pytest runs the unit-test suite in tests/. Install with
+#   pip install -r requirements.txt
+# then run `pytest -v` from the repo root.
+pytest
 # Local face detection for auto-reframe. Detector priority at runtime:
 #   YOLOv8/v11-face (ultralytics)  -> best on GPU, requires torch
 #   InsightFace (RetinaFace/SCRFD) -> highest accuracy, needs VC++ on Windows
@@ -20,3 +47,7 @@ mediapipe>=0.10
 nvidia-cublas-cu12; platform_system != "Darwin"
 nvidia-cuda-runtime-cu12; platform_system != "Darwin"
 nvidia-cudnn-cu12<10; platform_system != "Darwin"
+# Optional, ONLY needed if you want direct YouTube upload from youtube_optimizer
+# .upload_to_youtube(). The metadata + thumbnail sidecar features work without it.
+#   .venv\Scripts\python.exe -m pip install \
+#     google-auth google-auth-oauthlib google-api-python-client

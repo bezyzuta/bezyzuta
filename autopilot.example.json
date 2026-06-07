@@ -1,0 +1,46 @@
+{
+  "config": "config.json",
+  "shutdown_when_done": false,
+
+  "_comment": "Vorlage fuer den Autopilot. Kopiere diese Datei nach autopilot.jobs.json und passe die Jobs an. Jeder Job rendert lokal (0 Claude-Tokens) und kann optional zu YouTube hochgeladen werden. Pflichtfeld ist nur 'topic'. 'overrides' = beliebige Job-Felder, 'cfg_overrides' = beliebige config-Felder. 'shutdown_when_done': true faehrt den PC nach fehlerfreiem Lauf runter.",
+
+  "_comment_accounts": "Mehrere YouTube-Channels: lege die Token-Dateien nach youtube_tokens/<name>.json (z.B. youtube_tokens/bloxgrave.json) und waehle pro Job mit upload.account den Channel. Die 'accounts'-Map unten ist optional (nur noetig wenn ein Channel eine eigene client_secret.json/anderen Pfad braucht). client_secret.json (selbes Google-Projekt wie beim Erstellen der Tokens) muss im Projektordner liegen, damit die Tokens erneuert werden koennen.",
+  "accounts": {
+    "bloxgrave":      { "token_file": "youtube_tokens/bloxgrave.json" },
+    "drivebystories": { "token_file": "youtube_tokens/drivebystories.json" },
+    "obbyoverlordyt": { "token_file": "youtube_tokens/obbyoverlordyt.json" },
+    "obbyoverlordus": { "token_file": "youtube_tokens/obbyoverlordus.json" },
+    "getinho77":      { "token_file": "youtube_tokens/getinho77.json" }
+  },
+
+  "jobs": [
+    {
+      "topic": "Roblox Horror Story: Das Ding im Keller",
+      "output_format": "faceless",
+      "tts_language": "de",
+      "image_style": "ms_paint_stickman",
+      "overrides": { "target_duration": 90, "effects_ai": true },
+      "upload": { "enabled": true, "account": "bloxgrave", "privacy": "private" }
+    },
+
+    {
+      "topic": "Krasse Roblox Momente",
+      "output_format": "portrait",
+      "source_url": "https://www.youtube.com/watch?v=DEINE_VIDEO_ID",
+      "multiclip_enabled": true,
+      "multiclip_count": 3,
+      "tts_language": "en",
+      "auto_reframe": true,
+      "reframe_v2": true,
+      "upload": { "enabled": true, "account": "obbyoverlordyt", "privacy": "unlisted", "playlist_id": "" }
+    },
+
+    {
+      "topic": "Schneller KI-Bild-Short ohne YouTube-Quelle",
+      "output_format": "ai_image_short",
+      "tts_language": "de",
+      "overrides": { "target_duration": 45 },
+      "upload": { "enabled": true, "account": "getinho77", "privacy": "private" }
+    }
+  ]
+}

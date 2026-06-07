@@ -8,3 +8,10 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# --- YouTube / OAuth secrets — NEVER commit these (live account access) ---
+client_secret*.json
+youtube_token*.json
+youtube_tokens/
+autopilot.jobs.json
+autopilot_state.json
