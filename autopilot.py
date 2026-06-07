@@ -189,23 +189,31 @@ def _resolve_upload_paths(upload_cfg: dict, accounts: dict, project_dir: Path):
     secret = Path(
         upload_cfg.get("client_secret") or acc.get("client_secret")
         or project_dir / "client_secret.json")
+    # Relative paths (e.g. from the accounts map) resolve against the project
+    # dir, not the current working dir — so it works under Task Scheduler too.
+    if not token_file.is_absolute():
+        token_file = project_dir / token_file
+    if not secret.is_absolute():
+        secret = project_dir / secret
     return token_file, secret
 
 
-def _load_credentials(token_file: Path, secret_file: Path, log):
+def _load_credentials(token_file: Path, secret_file: Path, log,
+                      allow_interactive: bool = False):
     """Build valid Google credentials. Accepts BOTH token formats:
       - the library's `authorized_user` format (client_id/client_secret/refresh_token)
       - a raw OAuth token dump (access_token/refresh_token/scope) — the
         client_id/client_secret are then pulled from client_secret.json so the
         token can be refreshed for unattended runs.
-    Falls back to a one-time interactive browser auth when no token exists.
-    Re-saves the (refreshed) creds in the clean format for next time."""
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
+    When no usable token exists it raises (so an unattended run NEVER blocks on a
+    browser) unless allow_interactive=True (the `--auth` flag), which then does
+    the one-time browser authorization. Re-saves refreshed creds for next time.
 
+    Google libs are imported lazily per branch so the no-token error path works
+    even when they aren't installed."""
     creds = None
     if token_file.is_file():
+        from google.oauth2.credentials import Credentials
         try:
             raw = json.loads(token_file.read_text(encoding="utf-8-sig"))
         except Exception:
@@ -222,16 +230,24 @@ def _load_credentials(token_file: Path, secret_file: Path, log):
                 client_id=cid, client_secret=csec, scopes=scopes)
 
     if creds is None:
+        if not allow_interactive:
+            raise RuntimeError(
+                f"Kein gültiges Token gefunden: {token_file}. Lege die Token-Datei "
+                "dorthin (siehe AUTOPILOT.md) ODER autorisiere diesen Account "
+                "EINMALIG interaktiv: `start-autopilot.bat --auth`. (Unbeaufsichtigt "
+                "wird KEIN Browser geöffnet, damit der Lauf nicht hängt.)")
         if not secret_file.is_file():
             raise RuntimeError(
                 f"Kein Token ({token_file.name}) und keine {secret_file.name} zum "
                 "Autorisieren gefunden. Siehe AUTOPILOT.md.")
+        from google_auth_oauthlib.flow import InstalledAppFlow
         flow = InstalledAppFlow.from_client_secrets_file(str(secret_file), _YT_SCOPES)
         log("      YouTube: Browser öffnet sich zum Autorisieren (einmalig)…")
         creds = flow.run_local_server(port=0)
 
     if not creds.valid:
         if creds.refresh_token and creds.client_id and creds.client_secret:
+            from google.auth.transport.requests import Request
             creds.refresh(Request())
         elif not creds.token:
             raise RuntimeError(
@@ -267,7 +283,7 @@ def _load_sidecar_metadata(video_path: Path, topic: str) -> dict:
 
 def upload_to_youtube(video_path: Path, upload_cfg: dict, topic: str,
                       project_dir: Path, accounts: dict = None,
-                      on_step=None) -> str:
+                      allow_interactive: bool = False, on_step=None) -> str:
     """Upload `video_path` to YouTube via the Data API v3. Returns the video id.
 
     Multi-account: `upload_cfg["account"]` picks which token to use
@@ -293,7 +309,8 @@ def upload_to_youtube(video_path: Path, upload_cfg: dict, topic: str,
     token_file, secret = _resolve_upload_paths(upload_cfg, accounts or {}, project_dir)
     acct = upload_cfg.get("account")
     log(f"      YouTube-Account: {acct or '(default)'} → {token_file.name}")
-    creds = _load_credentials(token_file, secret, log)
+    creds = _load_credentials(token_file, secret, log,
+                              allow_interactive=allow_interactive)
 
     meta = _load_sidecar_metadata(video_path, topic)
     privacy = str(upload_cfg.get("privacy", "private")).lower()
@@ -366,7 +383,7 @@ def _save_state(jobs_path: Path, state: dict) -> None:
 
 
 def run_queue(jobs_path: Path, *, force: bool = False, do_upload: bool = True,
-              allow_shutdown: bool = True) -> int:
+              allow_shutdown: bool = True, allow_interactive: bool = False) -> int:
     """Process every job in jobs.json. Returns the number of failed jobs."""
     data = json.loads(jobs_path.read_text(encoding="utf-8-sig"))
     default_config = data.get("config", "config.json")
@@ -412,7 +429,9 @@ def run_queue(jobs_path: Path, *, force: bool = False, do_upload: bool = True,
                         continue
                     try:
                         vid = upload_to_youtube(v, up, topic, project_dir,
-                                                accounts=accounts, on_step=step)
+                                                accounts=accounts,
+                                                allow_interactive=allow_interactive,
+                                                on_step=step)
                         rec["uploads"].append(vid)
                     except Exception as e:
                         print(f"[{_ts()}] ⚠ Upload fehlgeschlagen ({v.name}): {e}")
@@ -448,6 +467,9 @@ def main(argv=None) -> int:
     ap.add_argument("--force", action="store_true", help="re-run jobs already marked done")
     ap.add_argument("--no-upload", action="store_true", help="render only, skip uploads")
     ap.add_argument("--no-shutdown", action="store_true", help="ignore shutdown_when_done")
+    ap.add_argument("--auth", action="store_true",
+                    help="allow one-time interactive browser auth for accounts "
+                         "without a token (otherwise uploads never open a browser)")
     args = ap.parse_args(argv)
 
     jobs_path = Path(args.jobs)
@@ -456,7 +478,8 @@ def main(argv=None) -> int:
         print("Lege eine an (Vorlage: autopilot.example.json) — siehe AUTOPILOT.md.")
         return 2
     return run_queue(jobs_path, force=args.force, do_upload=not args.no_upload,
-                     allow_shutdown=not args.no_shutdown)
+                     allow_shutdown=not args.no_shutdown,
+                     allow_interactive=args.auth)
 
 
 if __name__ == "__main__":

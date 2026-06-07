@@ -228,7 +228,8 @@ def test_resolve_upload_paths_by_account(tmp_path):
     accounts = {"bloxgrave": {"token_file": "youtube_tokens/bloxgrave.json"}}
     tok, sec = autopilot._resolve_upload_paths(
         {"account": "bloxgrave"}, accounts, tmp_path)
-    assert tok == Path("youtube_tokens/bloxgrave.json")
+    # relative token paths resolve against the project dir
+    assert tok == tmp_path / "youtube_tokens" / "bloxgrave.json"
     assert sec == tmp_path / "client_secret.json"
 
 
@@ -246,7 +247,7 @@ def test_resolve_upload_paths_default(tmp_path):
 def test_resolve_per_account_client_secret(tmp_path):
     accounts = {"x": {"token_file": "t.json", "client_secret": "s/x.json"}}
     tok, sec = autopilot._resolve_upload_paths({"account": "x"}, accounts, tmp_path)
-    assert sec == Path("s/x.json")
+    assert sec == tmp_path / "s" / "x.json"
 
 
 def test_client_id_secret_installed_and_web(tmp_path):
@@ -305,6 +306,17 @@ def test_load_credentials_raw_token_format(tmp_path):
     # client id/secret were injected from client_secret.json
     assert captured["client_id"] == "CID" and captured["client_secret"] == "SEC"
     assert captured["refresh_token"] == "1//refresh"
+
+
+def test_load_credentials_missing_token_no_browser(tmp_path):
+    """Unattended (allow_interactive=False) must RAISE, never block on a browser,
+    when the token file is missing."""
+    missing = tmp_path / "youtube_tokens" / "bloxgrave.json"
+    secret = tmp_path / "client_secret.json"
+    secret.write_text('{"installed":{"client_id":"c","client_secret":"s"}}')
+    with pytest.raises(RuntimeError, match="Kein gültiges Token"):
+        autopilot._load_credentials(missing, secret, log=lambda m: None,
+                                    allow_interactive=False)
 
 
 def test_run_queue_passes_account_to_upload(tmp_path, fake_cfg_load):

@@ -123,8 +123,16 @@ schtasks /create /tn "BloxGrave Autopilot" /tr "\"C:\Users\bezy\Desktop\roblox-s
 
 ## CLI-Flags
 ```
-python autopilot.py [autopilot.jobs.json] [--force] [--no-upload] [--no-shutdown]
+python autopilot.py [autopilot.jobs.json] [--force] [--no-upload] [--no-shutdown] [--auth]
 ```
 - `--force` — auch schon erledigte Jobs neu rendern.
 - `--no-upload` — diesmal nur rendern, keine Uploads.
 - `--no-shutdown` — `shutdown_when_done` ignorieren.
+- `--auth` — einmalig einen Account ohne Token interaktiv autorisieren (Browser).
+
+> **Wichtig:** Ohne `--auth` öffnet der Autopilot **NIE** einen Browser. Fehlt
+> für einen Account das Token, schlägt nur dessen Upload mit klarer Meldung fehl
+> (Video bleibt gerendert, Queue läuft weiter). So hängt ein unbeaufsichtigter
+> Lauf (Task Scheduler / während du weg bist) nicht ewig an einem Login-Fenster.
+> Hast du — wie hier — bereits fertige Token-Dateien in `youtube_tokens/`, ist
+> `--auth` gar nicht nötig: die werden direkt benutzt + automatisch erneuert.
