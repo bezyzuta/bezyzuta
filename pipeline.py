@@ -5647,7 +5647,7 @@ def _fullframe_chain(idx_input: int, image_idx: int, image_dur: float, start: fl
     return (
         f"{src}"
         f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:flags=bicubic,"
-        f"crop={target_w}:{target_h},format=rgba,"
+        f"crop={target_w}:{target_h},setsar=1,format=rgba,"
         f"fade=t=in:st=0:d={fade_in}:alpha=1,"
         f"fade=t=out:st={fade_out_start:.2f}:d={fade_out}:alpha=1,"
         f"tpad=start_duration={start:.2f}:color=black@0"
@@ -5981,7 +5981,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
                 )
         cover_chain = (
             f"crop=ih*9/16:ih:x='{crop_x}':y=0,"
-            f"scale={cfg.target_w}:{cfg.target_h}:flags=lanczos"
+            f"scale={cfg.target_w}:{cfg.target_h}:flags=lanczos,setsar=1"
         )
     else:
         # Landscape: scale-up enough to cover, then crop to exact target.
@@ -5989,7 +5989,7 @@ def compose_short(gameplay_clip: Path, voice_audio: Path, ass_path: Path,
         # >= target, so the subsequent crop never sees black bars.
         cover_chain = (
             f"scale={cfg.target_w}:{cfg.target_h}:force_original_aspect_ratio=increase:flags=lanczos,"
-            f"crop={cfg.target_w}:{cfg.target_h}"
+            f"crop={cfg.target_w}:{cfg.target_h},setsar=1"
         )
 
     use_bar = bool(progress_bar and progress_duration > 0.5)

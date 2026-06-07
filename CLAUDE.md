@@ -708,6 +708,17 @@ gemini_api_key, cloudflare_*, pexels_api_key, pixabay_api_key, tts_reference_aud
 EN), tts_language wechselt er, use_claude_cli oft an (opus), whisper_model sollte er auf
 `medium` setzen für bessere DE-Untertitel.
 
+### Fix: anamorphe Quelle quetschte das ganze Video (v.a. DE-Quellen)
+Symptom: komplettes Short horizontal in einen schmalen Streifen gestaucht
+(Gameplay + Mittelbild + Caption uniform schmal, schwarze Balken). Ursache:
+manche Quellen (yt-dlp lieferte bei DE-Quellen nach der 720p/Format-Umstellung
+anamorphe Streams, SAR != 1:1) — `crop`→`scale` setzt die SAR NICHT zurück, also
+erbte das Output-Video die krumme SAR und Player quetschten alles uniform.
+Fix: `setsar=1` an die Basis-`cover_chain` (portrait + landscape) UND an
+`_fullframe_chain` (faceless) angehängt. Erzwingt quadratische Pixel egal was die
+Quelle liefert; bei sauberen Quellen (SAR schon 1) ein No-op. Verify am File:
+`ffprobe -v error -select_streams v -show_entries stream=sample_aspect_ratio,display_aspect_ratio,width,height -of default=nk=1 <file>`
+
 ## Bekannte offene Punkte / TODO
 - **Chatterbox Multilingual DE-Qualität** unbestätigt (ich kann kein Audio testen). User
   meldete: Stimme „fast perfekt", aber gelegentliche Aussprache-Verhaspler („glauben"→
