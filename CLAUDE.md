@@ -719,6 +719,28 @@ Fix: `setsar=1` an die Basis-`cover_chain` (portrait + landscape) UND an
 Quelle liefert; bei sauberen Quellen (SAR schon 1) ein No-op. Verify am File:
 `ffprobe -v error -select_streams v -show_entries stream=sample_aspect_ratio,display_aspect_ratio,width,height -of default=nk=1 <file>`
 
+### Autopilot (token-frei): Batch-Render + YouTube-Auto-Upload (`autopilot.py`)
+User-Problem: der Dispatch/Chat verbrennt Tokens beim taeglichen Video-Machen.
+Loesung: Claude raus aus der Routine. `autopilot.py` liest eine Queue
+(`autopilot.jobs.json`, Vorlage `autopilot.example.json`) und rendert jeden Job
+ueber dieselben `run_one`/`run_multiclip` wie die GUI — **0 Claude-Tokens**
+(Gemini Free-Tier + lokales TTS/ffmpeg). Start per Doppelklick `start-autopilot.bat`
+(nutzt `.venv`) oder Aufgabenplaner. `DEFAULT_JOB` spiegelt die GUI-Defaults;
+Job-Eintrag braucht nur `topic`, Rest via Convenience-Keys / `overrides` (Job) /
+`cfg_overrides` (cfg). State in `autopilot_state.json` (erledigte Jobs werden
+uebersprungen, `--force` erzwingt). `shutdown_when_done` faehrt PC nach
+fehlerfreiem Lauf runter.
+- **YouTube-Upload** (`upload_to_youtube` in autopilot.py): Data API v3, OAuth
+  Desktop-Client (`client_secret.json` + gecachtes `youtube_token.json`),
+  resumable upload, Titel/Beschreibung/Tags aus dem `{video}.youtube.json`-Sidecar
+  (deshalb wird `youtube_metadata` bei Upload auto-an). Kategorie 20 (Gaming),
+  privacy private/unlisted/public + optional `publish_at`/`playlist_id`. Google-
+  Libs sind OPTIONAL (lazy import) — fehlen sie/Token/Quota, wird das Video
+  trotzdem gerendert und nur der Upload-Fehler geloggt; Queue laeuft weiter.
+  Erststart muss EINMAL interaktiv autorisieren (Browser), danach unbeaufsichtigt.
+  Setup-Doku: `AUTOPILOT.md`. Tests: `tests/test_autopilot.py` (16, Pipeline +
+  Upload gemockt). Bewusst NICHT in pipeline.py — eigenes Modul, optionale Dep.
+
 ## Bekannte offene Punkte / TODO
 - **Chatterbox Multilingual DE-Qualität** unbestätigt (ich kann kein Audio testen). User
   meldete: Stimme „fast perfekt", aber gelegentliche Aussprache-Verhaspler („glauben"→
