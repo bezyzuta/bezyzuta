@@ -741,6 +741,25 @@ fehlerfreiem Lauf runter.
   Setup-Doku: `AUTOPILOT.md`. **Multi-Account**: `upload.account` waehlt den Channel (Konvention `youtube_tokens/<name>.json`), `accounts`-Map optional fuer abweichende Pfade/eigene client_secret. `_load_credentials` akzeptiert BEIDE Token-Formate (authorized_user UND rohe access/refresh-Dumps) und zieht client_id/secret aus client_secret.json zum Refresh. Secrets/Tokens/jobs sind in `.gitignore` (nie ins Repo). Tests: `tests/test_autopilot.py` (16, Pipeline +
   Upload gemockt). Bewusst NICHT in pipeline.py — eigenes Modul, optionale Dep.
 
+### Google Flow (Veo) Bild-zu-Video — 2-Phasen (`flow_clips.py` + `FLOW.md`)
+Flow hat KEINE API → Gratis-Credits nur ueber die Website. Daher kein Auto-Drive,
+sondern Export/Assemble um eine Flow-Automation-Extension herum:
+- **Export**: `flow_clips.export_for_flow(entry)` setzt `job["flow_export_dir"]`
+  + ruft `run_one`. Neuer Hook in run_one (vor compose): wenn `flow_export_dir`
+  gesetzt → `pipeline.write_flow_export(...)` packt Start-Bilder (`beat_XX.png`) +
+  Image-to-Video-Prompts (`prompts.txt`, aus scene-plan motif via
+  `_flow_motion_prompt`) + `voice.mp3` + `beats.json`-Manifest und RETURNT (kein
+  compose). `plan` wird in run_one jetzt oben initialisiert.
+- **Assemble**: `flow_clips.assemble_from_flow(export_dir, clips_dir)` matcht die
+  Clips natuerlich-sortiert, ruft `run_one` mit `job["image_paths"]=clips` (Videos
+  → `_video_chain`) + neuem `job["voice_path"]`-Override (reuse EXACT export voice,
+  damit Timing/Captions passen). cfg/job aus dem Manifest rekonstruiert.
+- 2. run_one-Hook: `job["voice_path"]` (BYO-Voice, kopiert nach work/voice.mp3,
+  skippt TTS). Allgemein nuetzlich.
+- Veo-Clip = max 8s → Langvideo = viele Clips = viele Credits (AI Pro 1000/mo
+  ~50 Fast-Clips). Halb-manuell (Schritt Flow macht der User). Tests:
+  test_flow_clips.py (9, run_one gemockt). Render selbst hier nicht testbar.
+
 ## Bekannte offene Punkte / TODO
 - **Chatterbox Multilingual DE-Qualität** unbestätigt (ich kann kein Audio testen). User
   meldete: Stimme „fast perfekt", aber gelegentliche Aussprache-Verhaspler („glauben"→

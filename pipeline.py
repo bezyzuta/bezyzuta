@@ -6866,6 +6866,104 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     return outputs
 
 
+def _flow_motion_prompt(beat: dict, aspect: str) -> str:
+    """Turn a scene-plan beat into a Google-Flow image-to-video prompt: keep the
+    beat's motif and add a gentle, consistent camera-motion directive (Flow/Veo
+    animate the supplied start image)."""
+    motif = (beat.get("motif") or beat.get("prompt") or "").strip()
+    motif = re.sub(r"\s+", " ", motif)[:300]
+    return (f"{motif}. Cinematic image-to-video: slow camera push-in, subtle "
+            f"parallax and ambient motion, consistent lighting and style, "
+            f"{aspect} aspect, high detail. No text, no captions.")
+
+
+def write_flow_export(export_dir: Path, slug: str, image_paths: list,
+                      plan: list, voice: Path, voice_dur: float,
+                      job: dict, cfg: "Config", on_step=None) -> Path:
+    """Package a Google-Flow job: the per-beat START images + an image-to-video
+    prompt list + the voiceover + a manifest, into `export_dir`. You feed the
+    images/prompts into a Flow automation extension (Veo image-to-video),
+    bulk-download the clips, then run `flow_clips.py assemble`.
+
+    Returns export_dir. No ffmpeg/render — just copies + JSON, so it's cheap and
+    runs right after the pipeline has generated the start images."""
+    import shutil
+    def log(m):
+        (on_step or print)(m)
+
+    export_dir = Path(export_dir)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    voice_name = ""
+    if voice and Path(voice).is_file():
+        try:
+            shutil.copyfile(voice, export_dir / "voice.mp3")
+            voice_name = "voice.mp3"
+        except Exception as e:
+            log(f"      WARN: konnte voice nicht kopieren: {e}")
+
+    is_wide = cfg.target_w >= cfg.target_h
+    aspect = "16:9" if is_wide else "9:16"
+    continuous = bool(job.get("images_continuous", False))
+    change = max(1.0, float(job.get("image_change_secs", 3.5)))
+    img_dur = float(job.get("image_duration", 1.5))
+    gap = float(job.get("image_gap_secs", 0.5))
+    sched = _image_schedule(len(image_paths), voice_dur or 25.0,
+                            change if continuous else img_dur,
+                            continuous=continuous, gap=gap)
+
+    beats, prompts = [], []
+    for i, img in enumerate(image_paths):
+        beat = plan[i] if i < len(plan) else {}
+        name = f"beat_{i + 1:02d}.png"
+        try:
+            shutil.copyfile(img, export_dir / name)
+        except Exception:
+            name = Path(img).name
+        start, end = sched[i] if i < len(sched) else (0.0, 0.0)
+        prompt = _flow_motion_prompt(beat, aspect)
+        prompts.append(prompt)
+        beats.append({"index": i + 1, "image": name,
+                      "start": round(float(start), 2), "end": round(float(end), 2),
+                      "dur": round(float(end) - float(start), 2),
+                      "prompt": prompt, "motif": beat.get("motif", "")})
+
+    (export_dir / "prompts.txt").write_text("\n".join(prompts), encoding="utf-8")
+    # Snapshot the job so `assemble` rebuilds the exact same render (minus the
+    # image generation — clips replace the start images).
+    job_snapshot = {k: v for k, v in job.items()
+                    if k not in ("flow_export_dir", "image_paths", "image_prompts",
+                                 "image_path", "voice_path")}
+    manifest = {
+        "slug": slug, "voice": voice_name, "voice_duration": round(voice_dur, 2),
+        "aspect": aspect, "target_w": cfg.target_w, "target_h": cfg.target_h,
+        "config_path": str(job.get("_flow_config_path", "config.json")),
+        "tts_language": getattr(cfg, "tts_language", "auto"),
+        "image_style": getattr(cfg, "image_style", "auto"),
+        "image_change_secs": change, "n_beats": len(beats), "beats": beats,
+        "job": job_snapshot,
+    }
+    (export_dir / "beats.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8")
+    (export_dir / "README.txt").write_text(
+        "Google-Flow Export\n"
+        "==================\n\n"
+        f"{len(beats)} Beats. Pro Beat: ein Start-Bild (beat_XX.png) + eine\n"
+        "Image-to-Video-Prompt-Zeile (prompts.txt, gleiche Reihenfolge).\n\n"
+        "1) Lade die beat_XX.png + prompts.txt in deine Flow-Automation-Extension\n"
+        "   (Image-to-Video / Veo). Generiere die Clips.\n"
+        "2) Lade die fertigen Clips in EINEN Ordner herunter (Reihenfolge = Beat-\n"
+        "   Reihenfolge; alphabetische/natuerliche Sortierung wird gematcht).\n"
+        "3) Bau das fertige Video:\n"
+        "   python flow_clips.py assemble \"<dieser Ordner>\" \"<clips-Ordner>\"\n\n"
+        "Die Stimme (voice.mp3) + Timing kommen aus diesem Export — die Clips\n"
+        "werden auf die Voiceover-Laenge verteilt, Captions/Effekte ergaenzt.\n",
+        encoding="utf-8")
+    log(f"      Flow-Export: {len(beats)} Beats → {export_dir}")
+    return export_dir
+
+
 def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     def step(msg: str) -> None:
         if on_step:
@@ -7024,7 +7122,20 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             state.mark_done(Step.SCRIPT, {"script_text": script})
 
     # ── Voiceover ──
-    if state and state.is_done(Step.VOICEOVER):
+    voice_override = str(job.get("voice_path") or "").strip()
+    if voice_override and Path(voice_override).expanduser().is_file():
+        # BYO voiceover (used by the Flow assemble step to reuse the EXACT voice
+        # from the export, so clip timing + captions line up).
+        import shutil
+        src = Path(voice_override).expanduser()
+        vo = work / "voice.mp3"
+        if src.resolve() != vo.resolve():
+            shutil.copyfile(src, vo)
+        vo_dur = probe_duration(vo)
+        step(f"[2/5] using provided voice: {src.name} ({vo_dur:.1f}s)")
+        if state:
+            state.mark_done(Step.VOICEOVER, {"voice_path": vo, "voice_duration": vo_dur})
+    elif state and state.is_done(Step.VOICEOVER):
         vo = Path(state.get_artifact(Step.VOICEOVER, "voice_path"))
         vo_dur = float(state.get_artifact(Step.VOICEOVER, "voice_duration") or 0.0)
         if vo_dur <= 0:
@@ -7346,6 +7457,7 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             state.mark_done(Step.CAPTIONS, {"ass_path": ass})
 
     image_paths: list = []
+    plan: list = []  # per-beat scene plan (also consumed by the Flow export hook)
     image_duration = float(job.get("image_duration", 1.5))
     # Free the ~3-4 GB Chatterbox model from VRAM before a LONG image run
     # (crash/thermal mitigation) — but NOT for small shorts, where unloading
@@ -7754,6 +7866,14 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
         _release_gpu_memory()
         if state:
             state.mark_done(Step.REFRAME, {"crop_offset": crop_offset})
+
+    # Google-Flow export hook: stop after the start images are generated and
+    # package them + prompts + voice for a Flow image-to-video run. No compose.
+    flow_export_dir = str(job.get("flow_export_dir") or "").strip()
+    if flow_export_dir:
+        return write_flow_export(
+            Path(flow_export_dir).expanduser(), slug, image_paths, plan,
+            vo, vo_dur, job, cfg, on_step=step)
 
     step("[5/5] compose final short")
     out = cfg.output_dir / f"{slug}.mp4"

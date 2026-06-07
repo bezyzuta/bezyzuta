@@ -1,0 +1,9 @@
+{
+  "_comment": "Beispiel-Job fuer den Google-Flow-Export. Kopiere/aendere und ruf auf mit: python flow_clips.py export flow.example.json . Pflicht ist nur 'topic'. output_format 'faceless' = 16:9 Querformat-Story (empfohlen fuer Flow-Langvideos).",
+  "topic": "Roblox Horror Story: Das Ding im Keller",
+  "output_format": "faceless",
+  "tts_language": "de",
+  "image_style": "cinematic",
+  "config": "config.json",
+  "overrides": { "target_duration": 90 }
+}
