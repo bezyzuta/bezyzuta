@@ -738,7 +738,7 @@ fehlerfreiem Lauf runter.
   Libs sind OPTIONAL (lazy import) — fehlen sie/Token/Quota, wird das Video
   trotzdem gerendert und nur der Upload-Fehler geloggt; Queue laeuft weiter.
   Erststart muss EINMAL interaktiv autorisieren (Browser), danach unbeaufsichtigt.
-  Setup-Doku: `AUTOPILOT.md`. Tests: `tests/test_autopilot.py` (16, Pipeline +
+  Setup-Doku: `AUTOPILOT.md`. **Multi-Account**: `upload.account` waehlt den Channel (Konvention `youtube_tokens/<name>.json`), `accounts`-Map optional fuer abweichende Pfade/eigene client_secret. `_load_credentials` akzeptiert BEIDE Token-Formate (authorized_user UND rohe access/refresh-Dumps) und zieht client_id/secret aus client_secret.json zum Refresh. Secrets/Tokens/jobs sind in `.gitignore` (nie ins Repo). Tests: `tests/test_autopilot.py` (16, Pipeline +
   Upload gemockt). Bewusst NICHT in pipeline.py — eigenes Modul, optionale Dep.
 
 ## Bekannte offene Punkte / TODO

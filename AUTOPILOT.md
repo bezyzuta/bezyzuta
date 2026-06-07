@@ -68,6 +68,38 @@ Pro Job-Eintrag:
    Danach liegt `youtube_token.json` im Ordner und **alle weiteren Uploads
    laufen unbeaufsichtigt** (Token wird automatisch erneuert).
 
+## Mehrere Channels (Multi-Account)
+
+Du hast pro Channel eine eigene Token-Datei. So bindest du sie ein:
+
+1. **Ordner anlegen:** `youtube_tokens/` im Projektordner (neben `autopilot.py`).
+2. **Token-Dateien dort ablegen, sauber benannt** — ein Name pro Channel, z.B.:
+   ```
+   youtube_tokens/bloxgrave.json
+   youtube_tokens/drivebystories.json
+   youtube_tokens/obbyoverlordyt.json
+   youtube_tokens/getinho77.json
+   ```
+3. **Pro Job den Channel wählen** über `upload.account`:
+   ```json
+   "upload": { "enabled": true, "account": "bloxgrave", "privacy": "private" }
+   ```
+   Der Autopilot lädt dann `youtube_tokens/bloxgrave.json`.
+
+> **`client_secret.json` wird trotzdem gebraucht** (selbes Google-Projekt, mit
+> dem die Tokens erstellt wurden): die Token-Dateien enthalten nur den
+> `refresh_token`, aber zum *Erneuern* des abgelaufenen Access-Tokens braucht es
+> `client_id` + `client_secret` aus der `client_secret.json`. Lege sie in den
+> Projektordner. Sind mehrere Projekte im Spiel, kannst du pro Channel eine
+> eigene angeben:
+> ```json
+> "accounts": { "bloxgrave": { "token_file": "youtube_tokens/bloxgrave.json",
+>                              "client_secret": "secrets/bloxgrave_client.json" } }
+> ```
+
+> ⚠️ **Diese Dateien sind Zugangsdaten — wie Passwörter.** Sie sind in
+> `.gitignore` ausgeschlossen und landen NIE im Repo/GitHub. Teile sie nicht.
+
 ### Hinweise / Limits
 - **Quota:** Ein Upload kostet ~1600 Einheiten, Standard-Kontingent 10.000/Tag
   → **~6 Uploads/Tag** kostenlos. Mehr brauchst du nicht selten zu beantragen.

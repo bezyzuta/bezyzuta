@@ -221,3 +221,101 @@ def test_upload_failure_does_not_fail_job(tmp_path, fake_cfg_load):
 def test_main_missing_file(tmp_path):
     rc = autopilot.main([str(tmp_path / "nope.json")])
     assert rc == 2
+
+
+# ── Multi-account path resolution ────────────────────────────────────────────
+def test_resolve_upload_paths_by_account(tmp_path):
+    accounts = {"bloxgrave": {"token_file": "youtube_tokens/bloxgrave.json"}}
+    tok, sec = autopilot._resolve_upload_paths(
+        {"account": "bloxgrave"}, accounts, tmp_path)
+    assert tok == Path("youtube_tokens/bloxgrave.json")
+    assert sec == tmp_path / "client_secret.json"
+
+
+def test_resolve_upload_paths_convention(tmp_path):
+    # account with no entry in the map → youtube_tokens/<account>.json convention
+    tok, sec = autopilot._resolve_upload_paths({"account": "getinho77"}, {}, tmp_path)
+    assert tok == tmp_path / "youtube_tokens" / "getinho77.json"
+
+
+def test_resolve_upload_paths_default(tmp_path):
+    tok, sec = autopilot._resolve_upload_paths({}, {}, tmp_path)
+    assert tok == tmp_path / "youtube_token.json"
+
+
+def test_resolve_per_account_client_secret(tmp_path):
+    accounts = {"x": {"token_file": "t.json", "client_secret": "s/x.json"}}
+    tok, sec = autopilot._resolve_upload_paths({"account": "x"}, accounts, tmp_path)
+    assert sec == Path("s/x.json")
+
+
+def test_client_id_secret_installed_and_web(tmp_path):
+    p = tmp_path / "cs.json"
+    p.write_text(json.dumps({"installed": {"client_id": "CID", "client_secret": "SEC"}}))
+    assert autopilot._client_id_secret(p) == ("CID", "SEC")
+    p.write_text(json.dumps({"web": {"client_id": "W", "client_secret": "S2"}}))
+    assert autopilot._client_id_secret(p) == ("W", "S2")
+    assert autopilot._client_id_secret(tmp_path / "missing.json") == (None, None)
+
+
+def test_load_credentials_raw_token_format(tmp_path):
+    """The user's tokens are raw (access_token/refresh_token/scope) and lack
+    client_id/client_secret — those must be pulled from client_secret.json."""
+    tok = tmp_path / "youtube_tokens" / "bloxgrave.json"
+    tok.parent.mkdir(parents=True)
+    tok.write_text(json.dumps({
+        "access_token": "ya29.AAA", "refresh_token": "1//refresh",
+        "scope": "https://www.googleapis.com/auth/youtube.upload",
+        "token_type": "Bearer"}))
+    sec = tmp_path / "client_secret.json"
+    sec.write_text(json.dumps({"installed": {"client_id": "CID", "client_secret": "SEC"}}))
+
+    captured = {}
+
+    class FakeCreds:
+        def __init__(self, **kw):
+            captured.update(kw)
+            self.valid = True
+            self.refresh_token = kw.get("refresh_token")
+        def to_json(self):
+            return "{}"
+
+    import sys, types
+    # Stub the google modules _load_credentials imports lazily.
+    g = types.ModuleType("google"); oauth2 = types.ModuleType("google.oauth2")
+    creds_mod = types.ModuleType("google.oauth2.credentials")
+    creds_mod.Credentials = FakeCreds
+    transport = types.ModuleType("google.auth.transport")
+    req_mod = types.ModuleType("google.auth.transport.requests")
+    req_mod.Request = object
+    auth_mod = types.ModuleType("google.auth")
+    flow_pkg = types.ModuleType("google_auth_oauthlib")
+    flow_mod = types.ModuleType("google_auth_oauthlib.flow")
+    flow_mod.InstalledAppFlow = object
+    mods = {
+        "google": g, "google.oauth2": oauth2,
+        "google.oauth2.credentials": creds_mod, "google.auth": auth_mod,
+        "google.auth.transport": transport,
+        "google.auth.transport.requests": req_mod,
+        "google_auth_oauthlib": flow_pkg, "google_auth_oauthlib.flow": flow_mod,
+    }
+    with patch.dict(sys.modules, mods):
+        creds = autopilot._load_credentials(tok, sec, log=lambda m: None)
+    assert isinstance(creds, FakeCreds)
+    # client id/secret were injected from client_secret.json
+    assert captured["client_id"] == "CID" and captured["client_secret"] == "SEC"
+    assert captured["refresh_token"] == "1//refresh"
+
+
+def test_run_queue_passes_account_to_upload(tmp_path, fake_cfg_load):
+    q = _write_queue(
+        tmp_path,
+        [{"topic": "up", "upload": {"enabled": True, "account": "bloxgrave"}}],
+        accounts={"bloxgrave": {"token_file": "youtube_tokens/bloxgrave.json"}})
+    out = tmp_path / "v.mp4"; out.write_bytes(b"x")
+    with patch.object(autopilot, "run_one", return_value=out), \
+         patch.object(autopilot, "upload_to_youtube", return_value="VID") as up:
+        autopilot.run_queue(q, allow_shutdown=False)
+    # the accounts map was forwarded
+    assert up.call_args.kwargs.get("accounts") == {
+        "bloxgrave": {"token_file": "youtube_tokens/bloxgrave.json"}}

@@ -159,6 +159,95 @@ def build_job(entry: dict, cfg: Config, fmt_flags: dict) -> dict:
 
 
 # ── YouTube upload ──────────────────────────────────────────────────────────
+_YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+
+def _client_id_secret(secret_path: Path):
+    """Pull (client_id, client_secret) out of a Google OAuth client_secret.json
+    (works for both 'installed' and 'web' client types)."""
+    if not secret_path.is_file():
+        return None, None
+    try:
+        data = json.loads(secret_path.read_text(encoding="utf-8"))
+        block = data.get("installed") or data.get("web") or data
+        return block.get("client_id"), block.get("client_secret")
+    except Exception:
+        return None, None
+
+
+def _resolve_upload_paths(upload_cfg: dict, accounts: dict, project_dir: Path):
+    """Resolve (token_file, client_secret) for a job's upload, honouring the
+    per-job `account` name. Convention: youtube_tokens/<account>.json + a shared
+    client_secret.json, both overridable per account or per job."""
+    accounts = accounts or {}
+    account = upload_cfg.get("account")
+    acc = accounts.get(account, {}) if account else {}
+    token_file = Path(
+        upload_cfg.get("token_file") or acc.get("token_file")
+        or (project_dir / "youtube_tokens" / f"{account}.json" if account
+            else project_dir / "youtube_token.json"))
+    secret = Path(
+        upload_cfg.get("client_secret") or acc.get("client_secret")
+        or project_dir / "client_secret.json")
+    return token_file, secret
+
+
+def _load_credentials(token_file: Path, secret_file: Path, log):
+    """Build valid Google credentials. Accepts BOTH token formats:
+      - the library's `authorized_user` format (client_id/client_secret/refresh_token)
+      - a raw OAuth token dump (access_token/refresh_token/scope) — the
+        client_id/client_secret are then pulled from client_secret.json so the
+        token can be refreshed for unattended runs.
+    Falls back to a one-time interactive browser auth when no token exists.
+    Re-saves the (refreshed) creds in the clean format for next time."""
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    creds = None
+    if token_file.is_file():
+        try:
+            raw = json.loads(token_file.read_text(encoding="utf-8"))
+        except Exception:
+            raw = {}
+        scopes = (raw.get("scope") or "").split() or raw.get("scopes") or _YT_SCOPES
+        if raw.get("client_id") and raw.get("client_secret") and raw.get("refresh_token"):
+            creds = Credentials.from_authorized_user_info(raw, scopes)
+        elif raw.get("refresh_token") or raw.get("access_token") or raw.get("token"):
+            cid, csec = _client_id_secret(secret_file)
+            creds = Credentials(
+                token=raw.get("token") or raw.get("access_token"),
+                refresh_token=raw.get("refresh_token"),
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=cid, client_secret=csec, scopes=scopes)
+
+    if creds is None:
+        if not secret_file.is_file():
+            raise RuntimeError(
+                f"Kein Token ({token_file.name}) und keine {secret_file.name} zum "
+                "Autorisieren gefunden. Siehe AUTOPILOT.md.")
+        flow = InstalledAppFlow.from_client_secrets_file(str(secret_file), _YT_SCOPES)
+        log("      YouTube: Browser öffnet sich zum Autorisieren (einmalig)…")
+        creds = flow.run_local_server(port=0)
+
+    if not creds.valid:
+        if creds.refresh_token and creds.client_id and creds.client_secret:
+            creds.refresh(Request())
+        elif not creds.token:
+            raise RuntimeError(
+                f"Token {token_file.name} ist abgelaufen und nicht erneuerbar "
+                "(client_id/client_secret fehlen). Lege die passende "
+                "client_secret.json daneben (selbes Google-Projekt wie beim "
+                "Erstellen der Tokens) oder autorisiere neu.")
+
+    try:
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(creds.to_json(), encoding="utf-8")
+    except Exception:
+        pass
+    return creds
+
+
 def _load_sidecar_metadata(video_path: Path, topic: str) -> dict:
     """Read the pipeline's `{video}.youtube.json` sidecar (title/description/
     tags). Falls back to a bare title=topic when the sidecar is missing."""
@@ -177,12 +266,14 @@ def _load_sidecar_metadata(video_path: Path, topic: str) -> dict:
 
 
 def upload_to_youtube(video_path: Path, upload_cfg: dict, topic: str,
-                      project_dir: Path, on_step=None) -> str:
+                      project_dir: Path, accounts: dict = None,
+                      on_step=None) -> str:
     """Upload `video_path` to YouTube via the Data API v3. Returns the video id.
 
-    Auth: OAuth "Desktop app" client. On the FIRST run a browser opens to
-    authorize (do this once interactively, NOT while away); the token is cached
-    in youtube_token.json so later unattended runs just refresh it.
+    Multi-account: `upload_cfg["account"]` picks which token to use
+    (youtube_tokens/<account>.json by convention). Auth handles pre-made tokens
+    (any format) and refreshes them; only a first-time account with no token
+    needs an interactive browser auth.
 
     Raises RuntimeError with an actionable message on missing libs / secrets so
     the caller can log it and move on (the video is still rendered on disk).
@@ -191,9 +282,6 @@ def upload_to_youtube(video_path: Path, upload_cfg: dict, topic: str,
         (on_step or print)(m)
 
     try:
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaFileUpload
     except ImportError:
@@ -202,31 +290,10 @@ def upload_to_youtube(video_path: Path, upload_cfg: dict, topic: str,
             "  .venv\\Scripts\\python.exe -m pip install "
             "google-api-python-client google-auth-oauthlib")
 
-    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
-    secret = Path(upload_cfg.get("client_secret")
-                  or project_dir / "client_secret.json")
-    token_file = Path(upload_cfg.get("token_file")
-                      or project_dir / "youtube_token.json")
-    if not secret.is_file():
-        raise RuntimeError(
-            f"OAuth client secret not found: {secret}. Create a 'Desktop app' "
-            "OAuth client in Google Cloud (YouTube Data API v3 enabled), "
-            "download the JSON, and save it there. See AUTOPILOT.md.")
-
-    creds = None
-    if token_file.is_file():
-        try:
-            creds = Credentials.from_authorized_user_file(str(token_file), scopes)
-        except Exception:
-            creds = None
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(secret), scopes)
-            log("      YouTube: Browser öffnet sich zum Autorisieren (einmalig)…")
-            creds = flow.run_local_server(port=0)
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+    token_file, secret = _resolve_upload_paths(upload_cfg, accounts or {}, project_dir)
+    acct = upload_cfg.get("account")
+    log(f"      YouTube-Account: {acct or '(default)'} → {token_file.name}")
+    creds = _load_credentials(token_file, secret, log)
 
     meta = _load_sidecar_metadata(video_path, topic)
     privacy = str(upload_cfg.get("privacy", "private")).lower()
@@ -304,6 +371,7 @@ def run_queue(jobs_path: Path, *, force: bool = False, do_upload: bool = True,
     data = json.loads(jobs_path.read_text(encoding="utf-8"))
     default_config = data.get("config", "config.json")
     jobs = data.get("jobs", [])
+    accounts = data.get("accounts", {})
     project_dir = jobs_path.resolve().parent
     state = _load_state(jobs_path)
     state.setdefault("done", {})
@@ -343,7 +411,8 @@ def run_queue(jobs_path: Path, *, force: bool = False, do_upload: bool = True,
                     if not v.is_file():
                         continue
                     try:
-                        vid = upload_to_youtube(v, up, topic, project_dir, on_step=step)
+                        vid = upload_to_youtube(v, up, topic, project_dir,
+                                                accounts=accounts, on_step=step)
                         rec["uploads"].append(vid)
                     except Exception as e:
                         print(f"[{_ts()}] ⚠ Upload fehlgeschlagen ({v.name}): {e}")
