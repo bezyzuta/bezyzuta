@@ -168,7 +168,7 @@ def _client_id_secret(secret_path: Path):
     if not secret_path.is_file():
         return None, None
     try:
-        data = json.loads(secret_path.read_text(encoding="utf-8"))
+        data = json.loads(secret_path.read_text(encoding="utf-8-sig"))
         block = data.get("installed") or data.get("web") or data
         return block.get("client_id"), block.get("client_secret")
     except Exception:
@@ -207,7 +207,7 @@ def _load_credentials(token_file: Path, secret_file: Path, log):
     creds = None
     if token_file.is_file():
         try:
-            raw = json.loads(token_file.read_text(encoding="utf-8"))
+            raw = json.loads(token_file.read_text(encoding="utf-8-sig"))
         except Exception:
             raw = {}
         scopes = (raw.get("scope") or "").split() or raw.get("scopes") or _YT_SCOPES
@@ -254,7 +254,7 @@ def _load_sidecar_metadata(video_path: Path, topic: str) -> dict:
     side = video_path.with_name(video_path.name + ".youtube.json")
     if side.is_file():
         try:
-            data = json.loads(side.read_text(encoding="utf-8"))
+            data = json.loads(side.read_text(encoding="utf-8-sig"))
             return {
                 "title": (data.get("title") or topic or video_path.stem)[:100],
                 "description": data.get("description") or "",
@@ -351,7 +351,7 @@ def _load_state(jobs_path: Path) -> dict:
     p = _state_path(jobs_path)
     if p.is_file():
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
+            return json.loads(p.read_text(encoding="utf-8-sig"))
         except Exception:
             pass
     return {"done": {}}
@@ -368,7 +368,7 @@ def _save_state(jobs_path: Path, state: dict) -> None:
 def run_queue(jobs_path: Path, *, force: bool = False, do_upload: bool = True,
               allow_shutdown: bool = True) -> int:
     """Process every job in jobs.json. Returns the number of failed jobs."""
-    data = json.loads(jobs_path.read_text(encoding="utf-8"))
+    data = json.loads(jobs_path.read_text(encoding="utf-8-sig"))
     default_config = data.get("config", "config.json")
     jobs = data.get("jobs", [])
     accounts = data.get("accounts", {})
