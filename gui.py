@@ -1,5 +1,6 @@
 """Gradio GUI on top of pipeline.run_one. Run: python gui.py"""
 
+import os
 import queue
 import re
 import socket
@@ -1202,13 +1203,34 @@ def main() -> None:
     app = build_app()
     # Gradio 6 sandboxes file delivery; let it serve videos from the user's home
     allowed = [str(Path.home())]
-    port = find_free_port()
-    print(f"Starte GUI auf http://127.0.0.1:{port}")
+
+    # Remote-access config via env vars (local default unchanged):
+    #   BEZY_HOST  -> bind address. "127.0.0.1" (default) = local only.
+    #                 Use "0.0.0.0" to expose on the Tailscale/LAN interface.
+    #   BEZY_PORT  -> fixed port (tunnels need a stable one). Default: auto-pick.
+    #   BEZY_AUTH  -> "user:password" to require a login (for Cloudflare/public).
+    host = os.environ.get("BEZY_HOST", "127.0.0.1")
+    port_env = os.environ.get("BEZY_PORT")
+    port = int(port_env) if port_env else find_free_port()
+
+    auth = None
+    auth_env = os.environ.get("BEZY_AUTH")
+    if auth_env and ":" in auth_env:
+        user, _, pw = auth_env.partition(":")
+        auth = (user, pw)
+
+    # Only auto-open a browser when running locally for ourselves.
+    inbrowser = host in ("127.0.0.1", "localhost")
+    print(f"Starte GUI auf http://{host}:{port}"
+          + (" (Login aktiv)" if auth else ""))
+
     # Gradio 6 takes theme + css on launch() (not on Blocks). Try the
     # styled launch; fall back to a bare launch on older Gradio that
     # doesn't accept these kwargs here.
-    base_kw = dict(server_name="127.0.0.1", server_port=port,
-                   inbrowser=True, allowed_paths=allowed)
+    base_kw = dict(server_name=host, server_port=port,
+                   inbrowser=inbrowser, allowed_paths=allowed)
+    if auth:
+        base_kw["auth"] = auth
     try:
         app.launch(theme=_theme(), css=_CUSTOM_CSS, **base_kw)
     except TypeError:
