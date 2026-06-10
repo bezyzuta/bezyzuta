@@ -445,12 +445,22 @@ def ytdlp_cookie_args(cfg) -> list:
 def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
     """Turn a raw yt-dlp failure into an actionable hint for the GUI."""
     low = (output or "").lower()
+    # Missing JS runtime: yt-dlp needs one (Deno recommended) to solve
+    # YouTube's player challenges. Without it formats go missing and the
+    # bot-check fires far more often — fixing this often fixes the
+    # "not a bot" error too.
+    js_hint = ""
+    if "js runtime" in low or "jsruntime" in low or " ejs " in low or "/ejs" in low:
+        js_hint = ("\n\n→ yt-dlp braucht eine JavaScript-Runtime für YouTube. "
+                   "Einmalig installieren:  winget install DenoLand.Deno  "
+                   "— danach Terminal/GUI neu starten. Das behebt oft auch "
+                   "den 'not a bot'-Fehler gleich mit.")
     # Cookie DB locked (browser is running) or encrypted (Chrome v127+ App-Bound
     # Encryption, yt-dlp #7271). Almost always: the browser we read cookies from
     # is open. Closing it fixes the common case; a cookies.txt export sidesteps
     # both the lock and the newer encryption entirely.
     if "could not copy" in low and "cookie" in low:
-        return ("\n\n→ yt-dlp kommt nicht an die Browser-Cookies: der Browser "
+        return js_hint + ("\n\n→ yt-dlp kommt nicht an die Browser-Cookies: der Browser "
                 "läuft (DB gesperrt) oder Chrome verschlüsselt sie (v127+). "
                 "Browser GANZ schließen und neu starten — oder am stabilsten "
                 "eine cookies.txt exportieren und in config.json "
@@ -459,17 +469,19 @@ def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
     if any(s in low for s in ("sign in to confirm", "not a bot", "429",
                               "too many requests", "confirm you")):
         if had_cookies:
-            return ("\n\n→ YouTube blockt trotz Cookies. Browser GANZ schließen "
+            return js_hint + ("\n\n→ YouTube blockt trotz Cookies. Browser GANZ schließen "
                     "(damit yt-dlp die Cookies lesen kann), ein paar Minuten "
                     "warten (429), oder eine frische cookies.txt exportieren.")
-        return ("\n\n→ YouTube verlangt Login. In config.json setzen: "
-                '"youtube_cookies_from_browser": "chrome"  (oder firefox/edge/brave) '
-                "und den Browser vorm Start KOMPLETT schließen.")
+        return js_hint + ("\n\n→ YouTube verlangt Login. Am stabilsten: cookies.txt "
+                "exportieren (Browser-Extension 'Get cookies.txt LOCALLY') und in "
+                'config.json "youtube_cookies_file" setzen. Alternativ '
+                '"youtube_cookies_from_browser": "firefox" — bei Chrome/Edge '
+                "scheitert das oft an der Cookie-Verschlüsselung (v127+).")
     if "requested format is not available" in low or "format" in low and "not available" in low:
-        return "\n\n→ Format nicht verfügbar — evtl. ist das Video privat/gelöscht/region-locked."
+        return js_hint + "\n\n→ Format nicht verfügbar — evtl. ist das Video privat/gelöscht/region-locked."
     if "video unavailable" in low or "private video" in low:
-        return "\n\n→ Video ist privat/gelöscht/nicht verfügbar."
-    return ""
+        return js_hint + "\n\n→ Video ist privat/gelöscht/nicht verfügbar."
+    return js_hint
 
 
 def download_gameplay(url: str, out_dir: Path, cookies: list | None = None,
