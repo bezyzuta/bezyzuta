@@ -92,6 +92,16 @@ class Config:
     tts_reference_audio_de: str
     tts_exaggeration: float    # 0..1, default 0.5 (Chatterbox emotion; 0=flat, 1=dramatic)
     tts_cfg_weight: float      # 0..1, default 0.5 (Chatterbox guidance; lower=more natural)
+    # German-specific Chatterbox knobs (multilingual clone only). The German
+    # model articulates noticeably clearer with a HIGHER cfg_weight and
+    # slightly LOWER exaggeration than the English model's sweet spot, so
+    # the EN sliders stay untouched.
+    tts_exaggeration_de: float  # 0..1, default 0.4
+    tts_cfg_weight_de: float    # 0..1, default 0.65
+    # Whisper QA loop for the German Chatterbox clone: every generated chunk
+    # is transcribed back and compared to its text; mumbled chunks (low word
+    # match) are re-generated up to this many times. 0 = off.
+    tts_qa_retries: int
     # Auto-clean the clone reference (mono/trim/normalize) before Chatterbox
     # uses it. True for any raw recording; set False if you hand it a sample
     # that's already perfectly prepared.
@@ -224,6 +234,9 @@ class Config:
             tts_reference_audio_de=data.get("tts_reference_audio_de", ""),
             tts_exaggeration=float(data.get("tts_exaggeration", 0.5)),
             tts_cfg_weight=float(data.get("tts_cfg_weight", 0.5)),
+            tts_exaggeration_de=float(data.get("tts_exaggeration_de", 0.4)),
+            tts_cfg_weight_de=float(data.get("tts_cfg_weight_de", 0.65)),
+            tts_qa_retries=int(data.get("tts_qa_retries", 2)),
             tts_clone_autoprep=bool(data.get("tts_clone_autoprep", True)),
             tts_language=str(data.get("tts_language", "auto")).lower(),
             tts_piper_model=str(data.get("tts_piper_model", "de_DE-thorsten-medium")),
@@ -339,7 +352,9 @@ class Config:
 
         # Chatterbox knobs bounded 0..1.
         for name, val in [("tts_exaggeration", self.tts_exaggeration),
-                          ("tts_cfg_weight", self.tts_cfg_weight)]:
+                          ("tts_cfg_weight", self.tts_cfg_weight),
+                          ("tts_exaggeration_de", self.tts_exaggeration_de),
+                          ("tts_cfg_weight_de", self.tts_cfg_weight_de)]:
             if not 0.0 <= val <= 1.0:
                 warnings.append(f"{name}={val} outside [0..1] range; Chatterbox may behave oddly")
 
@@ -1397,6 +1412,10 @@ def make_color_background(duration: float, out_path: Path,
 # OOB ("srcIndex < srcSelectDimSize") that corrupts the CUDA context for
 # the rest of the process. So we always chunk Chatterbox input.
 _CHATTERBOX_MAX_CHARS = 280
+# German multilingual chunks get mushier toward the end of long chunks —
+# shorter chunks keep the articulation tight at the cost of a few more
+# generate() calls.
+_CHATTERBOX_MAX_CHARS_DE = 200
 
 
 def _split_sentences_for_tts(text: str, max_chars: int = _CHATTERBOX_MAX_CHARS) -> list[str]:
@@ -1776,14 +1795,35 @@ def _spell_numbers_for_tts(text: str, lang: str) -> str:
     """Replace bare integers with spoken words so the TTS doesn't mangle them
     (e.g. German Chatterbox read '1979' as 'neunzehnhundert neunzehn
     siebenundneunzig'). 4-digit values that look like years use year reading.
+    Decimals are read out properly ('3,5' → 'drei Komma fünf', '3.5' →
+    'three point five') instead of collapsing to a wrong integer.
     Leaves numbers with adjacent letters/units untouched only loosely — runs
     of pure digits (optionally with a thousands dot) are converted."""
     de = (lang or "de").lower().startswith("de")
     num = _de_number if de else _en_number
     year = _de_year if de else _en_year
+    # Decimal/thousands separators are swapped between the two languages.
+    dec_sep = "," if de else "."
+    thou_sep = "." if de else ","
+    dec_word = " Komma " if de else " point "
+    digit_words = _DE_ONES[:10] if de else _EN_ONES[:10]
 
     def repl(m: "re.Match") -> str:
         raw = m.group(0)
+        # Decimal number ("3,5" de / "3.5" en): integer part + separator word
+        # + fraction digits read one by one. Only for 1-3 fraction digits —
+        # longer runs after the separator are usually thousands groups.
+        if dec_sep in raw:
+            int_part, _, frac_part = raw.partition(dec_sep)
+            int_digits = int_part.replace(thou_sep, "")
+            if (int_digits.isdigit() and frac_part.isdigit()
+                    and 1 <= len(frac_part) <= 3
+                    and not (de is False and len(frac_part) == 3)):
+                try:
+                    frac_words = " ".join(digit_words[int(d)] for d in frac_part)
+                    return num(int(int_digits)) + dec_word + frac_words
+                except Exception:
+                    return raw
         digits = raw.replace(".", "").replace(",", "")
         if not digits.isdigit():
             return raw
@@ -1797,6 +1837,56 @@ def _spell_numbers_for_tts(text: str, lang: str) -> str:
 
     # Pure-digit runs (allow German thousands dots / English commas inside).
     return re.sub(r"\d[\d.,]*\d|\d", repl, text)
+
+
+# Abbreviations & symbols the TTS models reliably mumble. Spelled out before
+# synthesis. German list is the important one (Chatterbox Multilingual garbles
+# these the most); English gets a minimal set since that model is near-perfect.
+_DE_TTS_ABBREV = [
+    (re.compile(r"\bz\.\s?B\."), "zum Beispiel"),
+    (re.compile(r"\bd\.\s?h\."), "das heißt"),
+    (re.compile(r"\bu\.\s?a\."), "unter anderem"),
+    (re.compile(r"\busw\."), "und so weiter"),
+    (re.compile(r"\bbzw\."), "beziehungsweise"),
+    (re.compile(r"\bca\."), "circa"),
+    (re.compile(r"\bevtl\."), "eventuell"),
+    (re.compile(r"\bggf\."), "gegebenenfalls"),
+    (re.compile(r"\binkl\."), "inklusive"),
+    (re.compile(r"\bMio\."), "Millionen"),
+    (re.compile(r"\bMrd\."), "Milliarden"),
+    (re.compile(r"\bNr\."), "Nummer"),
+    (re.compile(r"\bkm/h\b"), "Kilometer pro Stunde"),
+    (re.compile(r"°\s?C\b"), " Grad Celsius"),
+    (re.compile(r"%"), " Prozent"),
+    (re.compile(r"€"), " Euro"),
+    (re.compile(r"\$"), " Dollar"),
+    (re.compile(r"\s&\s"), " und "),
+]
+
+_EN_TTS_ABBREV = [
+    (re.compile(r"\betc\."), "et cetera"),
+    (re.compile(r"\be\.g\."), "for example"),
+    (re.compile(r"\bi\.e\."), "that is"),
+    (re.compile(r"%"), " percent"),
+    (re.compile(r"€"), " euros"),
+    (re.compile(r"\$"), " dollars"),
+    (re.compile(r"\s&\s"), " and "),
+]
+
+
+def _spell_abbreviations_for_tts(text: str, lang: str) -> str:
+    """Expand abbreviations and currency/unit symbols into spoken words.
+    Must run BEFORE _spell_numbers_for_tts: currency symbols that PRECEDE a
+    number ('$50', '€ 100') are first moved behind it so the spoken order is
+    natural ('50 Dollar' instead of 'Dollar fünfzig')."""
+    if not text:
+        return text
+    text = re.sub(r"([€$])\s*(\d[\d.,]*\d|\d)", r"\2 \1", text)
+    rules = _DE_TTS_ABBREV if (lang or "de").lower().startswith("de") else _EN_TTS_ABBREV
+    for pat, repl in rules:
+        text = pat.sub(repl, text)
+    # Tidy doubled spaces left behind by symbol replacements.
+    return re.sub(r"[ \t]{2,}", " ", text)
 
 
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
@@ -1835,8 +1925,11 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
         print("      WARN: TTS set to German but text scans as English — "
               "overriding to Chatterbox so the pronunciation matches.")
         lang = "en"
-    # Spell out digits in the resolved language so the TTS doesn't garble them
-    # ("1979" → "neunzehnhundertneunundsiebzig" instead of digit soup).
+    # Spell out abbreviations/symbols first (moves '€50' → '50 €' before the
+    # digits get worded), then digits in the resolved language, so the TTS
+    # doesn't garble either ("1979" → "neunzehnhundertneunundsiebzig",
+    # "z.B. 3,5%" → "zum Beispiel drei Komma fünf Prozent").
+    text = _spell_abbreviations_for_tts(text, lang)
     text = _spell_numbers_for_tts(text, lang)
     if lang == "de":
         # German voice cloning (opt-in) → Chatterbox Multilingual. Uses a
@@ -1898,6 +1991,165 @@ def _synthesize_voiceover_piper(text: str, cfg: Config, out_path: Path) -> Path:
     return out_path
 
 
+def _tts_norm_words(text: str) -> list:
+    """Lowercase word list for fuzzy TTS-vs-Whisper comparison. Punctuation
+    and casing differences must not count as mismatches."""
+    t = (text or "").lower()
+    t = re.sub(r"[^a-zäöüß0-9\s]", " ", t)
+    return t.split()
+
+
+def _tts_chunk_similarity(expected: str, transcribed: str) -> float:
+    """0..1 word-level similarity between the chunk text and what Whisper
+    heard back. Mumbled words transcribe wrong, so a low ratio flags exactly
+    the unclear chunks."""
+    import difflib
+    a = _tts_norm_words(expected)
+    b = _tts_norm_words(transcribed)
+    if not a:
+        return 1.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _qa_transcribe_chunks(wav_paths: list, model_name: str,
+                          language: str = "de") -> dict | None:
+    """Transcribe several short chunk-wavs in ONE faster-whisper subprocess
+    (model loads once, then ~0.3s per chunk on GPU). Subprocess isolation
+    keeps ctranslate2/cuDNN teardown faults away from the GUI process, same
+    as the caption transcribers. Returns {wav_path_str: text} or None if the
+    subprocess failed entirely."""
+    if not wav_paths:
+        return {}
+    out_json = Path(wav_paths[0]).with_suffix(".qa.json")
+    try:
+        if out_json.exists():
+            out_json.unlink()
+    except Exception:
+        pass
+    child_code = (
+        "import json, os, sys, importlib.util\n"
+        "if sys.platform == 'win32':\n"
+        "    for pkg in ('nvidia.cublas','nvidia.cudnn','nvidia.cuda_runtime','nvidia.cuda_nvrtc'):\n"
+        "        try:\n"
+        "            spec = importlib.util.find_spec(pkg)\n"
+        "        except Exception:\n"
+        "            spec = None\n"
+        "        if spec and spec.submodule_search_locations:\n"
+        "            for loc in spec.submodule_search_locations:\n"
+        "                b = os.path.join(loc, 'bin')\n"
+        "                if os.path.isdir(b):\n"
+        "                    try: os.add_dll_directory(b)\n"
+        "                    except Exception: pass\n"
+        "                    os.environ['PATH'] = b + os.pathsep + os.environ.get('PATH','')\n"
+        "from faster_whisper import WhisperModel\n"
+        "model_name, lang, out_json = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+        "files = sys.argv[4:]\n"
+        "try:\n"
+        "    model = WhisperModel(model_name, device='cuda', compute_type='float16')\n"
+        "except Exception:\n"
+        "    model = WhisperModel(model_name, device='cpu', compute_type='int8')\n"
+        "out = {}\n"
+        "for f in files:\n"
+        "    try:\n"
+        "        segs, _ = model.transcribe(f, language=lang, beam_size=1)\n"
+        "        out[f] = ' '.join(s.text.strip() for s in segs)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "with open(out_json, 'w', encoding='utf-8') as fh:\n"
+        "    json.dump(out, fh)\n"
+        "print(f'QA OK {len(out)}/{len(files)}', flush=True)\n"
+    )
+    try:
+        subprocess.run(
+            [sys.executable, "-c", child_code, model_name, language,
+             str(out_json), *[str(p) for p in wav_paths]],
+            capture_output=True, text=True, timeout=900,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if not out_json.exists():
+        return None
+    try:
+        result = json.loads(out_json.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    try:
+        out_json.unlink()
+    except Exception:
+        pass
+    return result
+
+
+def _chatterbox_qa_pass(model, chunks: list, pieces: list, gen_kwargs: dict,
+                        whisper_model: str, work_dir: Path, retries: int,
+                        language: str = "de",
+                        threshold: float = 0.82) -> list:
+    """Quality-control loop for Chatterbox chunks: transcribe each generated
+    chunk back with Whisper and compare word-by-word against its text. Chunks
+    below `threshold` similarity (= mumbled/unclear words) get re-generated
+    up to `retries` times; the best-scoring attempt per chunk wins. Chatterbox
+    sampling is stochastic, so a re-roll usually fixes a bad word."""
+    import torchaudio as ta  # type: ignore
+    qa_dir = work_dir / "tts_qa"
+    qa_dir.mkdir(parents=True, exist_ok=True)
+    sr = int(getattr(model, "sr", 24000))
+
+    best_pieces = list(pieces)
+    best_scores = {i: -1.0 for i in range(len(chunks))}
+    candidates = {i: pieces[i] for i in range(len(chunks))}
+    pending = list(range(len(chunks)))
+    made_files: list = []
+
+    for round_no in range(retries + 1):
+        if not pending:
+            break
+        if round_no > 0:
+            for i in pending:
+                candidates[i] = model.generate(chunks[i], **gen_kwargs)
+        wavs = {}
+        for i in pending:
+            p = qa_dir / f"chunk_{i:02d}_try{round_no}.wav"
+            ta.save(str(p), candidates[i], sr)
+            wavs[i] = p
+            made_files.append(p)
+        texts = _qa_transcribe_chunks(list(wavs.values()), whisper_model, language=language)
+        if texts is None:
+            print("      tts-qa: Whisper-Subprocess fehlgeschlagen — überspringe Kontrolle")
+            break
+        next_pending = []
+        for i, p in wavs.items():
+            heard = texts.get(str(p), "")
+            score = _tts_chunk_similarity(chunks[i], heard)
+            if score > best_scores[i]:
+                best_scores[i] = score
+                best_pieces[i] = candidates[i]
+            if score < threshold:
+                if round_no < retries:
+                    print(f"      tts-qa: Chunk {i + 1}/{len(chunks)} undeutlich "
+                          f"(Wort-Match {score:.0%}) → generiere neu")
+                    next_pending.append(i)
+                else:
+                    print(f"      tts-qa: Chunk {i + 1}/{len(chunks)} bleibt bei "
+                          f"{best_scores[i]:.0%} nach {retries} Versuchen — nehme besten")
+            elif round_no > 0:
+                print(f"      tts-qa: Chunk {i + 1}/{len(chunks)} jetzt sauber "
+                      f"(Wort-Match {score:.0%})")
+        pending = next_pending
+
+    ok = sum(1 for s in best_scores.values() if s >= threshold)
+    print(f"      tts-qa: {ok}/{len(chunks)} Chunks über {threshold:.0%} Wort-Match")
+    for p in made_files:
+        try:
+            p.unlink()
+        except Exception:
+            pass
+    try:
+        qa_dir.rmdir()
+    except Exception:
+        pass
+    return best_pieces
+
+
 def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path, *,
                                      multilingual: bool = False,
                                      language_id: str | None = None,
@@ -1935,10 +2187,22 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path, *,
             "  .venv\\Scripts\\python.exe -m pip install torchaudio"
         ) from e
 
-    kwargs: dict = {
-        "exaggeration": float(getattr(cfg, "tts_exaggeration", 0.5)),
-        "cfg_weight": float(getattr(cfg, "tts_cfg_weight", 0.5)),
-    }
+    is_de = bool(multilingual and (language_id or "").lower().startswith("de"))
+    if is_de:
+        # German-specific knobs: the multilingual model articulates German
+        # clearly only with a higher cfg_weight; the EN sweet spot stays
+        # untouched on its own sliders.
+        kwargs: dict = {
+            "exaggeration": float(getattr(cfg, "tts_exaggeration_de", 0.4)),
+            "cfg_weight": float(getattr(cfg, "tts_cfg_weight_de", 0.65)),
+        }
+        print(f"      chatterbox DE: exaggeration={kwargs['exaggeration']:.2f}, "
+              f"cfg_weight={kwargs['cfg_weight']:.2f}")
+    else:
+        kwargs = {
+            "exaggeration": float(getattr(cfg, "tts_exaggeration", 0.5)),
+            "cfg_weight": float(getattr(cfg, "tts_cfg_weight", 0.5)),
+        }
     ref_path_str = (ref_override if ref_override is not None
                     else getattr(cfg, "tts_reference_audio", "") or "").strip()
     if ref_path_str:
@@ -1971,7 +2235,8 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path, *,
     # OOB ("srcIndex < srcSelectDimSize") that poisons the process state.
     # Chunking + concatenation produces identical-sounding output without
     # the crash, at the cost of a couple of extra generate() calls.
-    chunks = _split_sentences_for_tts(text, max_chars=_CHATTERBOX_MAX_CHARS)
+    max_chars = _CHATTERBOX_MAX_CHARS_DE if is_de else _CHATTERBOX_MAX_CHARS
+    chunks = _split_sentences_for_tts(text, max_chars=max_chars)
     if not chunks:
         raise RuntimeError("Chatterbox: empty text after chunking")
     if len(chunks) > 1:
@@ -1988,6 +2253,21 @@ def _synthesize_voiceover_chatterbox(text: str, cfg: Config, out_path: Path, *,
                 print(f"      chatterbox chunk {i}/{len(chunks)} ({len(chunk_text)} chars)")
             piece = model.generate(chunk_text, **gen_kwargs)
             pieces.append(piece)
+        # Whisper QA loop (German clone): transcribe each chunk back and
+        # re-roll the mumbled ones. Best-effort — any QA failure just keeps
+        # the first-attempt audio.
+        qa_retries = int(getattr(cfg, "tts_qa_retries", 2)) if is_de else 0
+        if qa_retries > 0:
+            try:
+                pieces = _chatterbox_qa_pass(
+                    model, chunks, pieces, gen_kwargs,
+                    whisper_model=getattr(cfg, "whisper_model", "base"),
+                    work_dir=out_path.parent, retries=qa_retries,
+                    language=(language_id or "de"),
+                )
+            except Exception as e:
+                print(f"      tts-qa: Kontrolle fehlgeschlagen ({str(e)[:160]}) "
+                      "— nutze ungeprüfte Chunks")
         wav = pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=-1)
     except Exception as e:
         raise RuntimeError(f"Chatterbox generation failed: {e}") from e
