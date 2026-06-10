@@ -681,12 +681,12 @@ def build_app() -> gr.Blocks:
             with gr.Row():
                 tts_exaggeration = gr.Slider(
                     0.0, 1.0, value=_defaults.get("tts_exaggeration", 0.5), step=0.05,
-                    label="Chatterbox Emotion (nur EN)",
-                    info="0 = ruhig/flach, 0.5 = neutral, 1 = dramatisch. Für Shorts: 0.6-0.8 funktioniert gut.",
+                    label="Chatterbox Emotion (EN + DE-Klon)",
+                    info="0 = ruhig/flach, 0.5 = neutral, 1 = dramatisch. Für Shorts: 0.6-0.8 funktioniert gut. Gilt für Englisch UND den deutschen Klon (Piper hat keine Regler).",
                 )
                 tts_cfg_weight = gr.Slider(
                     0.0, 1.0, value=_defaults.get("tts_cfg_weight", 0.5), step=0.05,
-                    label="Chatterbox CFG Weight (nur EN)",
+                    label="Chatterbox CFG Weight (EN + DE-Klon)",
                     info="Niedriger = natürlicheres Sprachtempo, höher = wörtlicher.",
                 )
 
