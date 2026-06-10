@@ -3089,6 +3089,9 @@ def _subject_pct_to_crop_offset(subject_pct: float) -> float:
             t = (pct - x1) / (x2 - x1)
             return y1 + t * (y2 - y1)
     return 0.5
+
+
+def _gemini_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
     """Send one image to Gemini and return (text, err)."""
     import base64
     if not cfg.gemini_api_key:
@@ -6493,6 +6496,26 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
     dur_min = int(src_dur // 60)
     dur_sec_rem = int(src_dur % 60)
     third = src_dur / 3.0
+    region_lo = min(s[0] for s in segments) if segments else 0.0
+    if n_clips == 1:
+        # Per-region call (transcript chunk): no distribution rule — it would
+        # bias the single pick toward a fixed part of the region. Content only.
+        rule1 = (
+            f"REGEL 1 — AUSWAHL:\n"
+            f"- Dieses Transkript deckt den Bereich {int(region_lo)}s bis {int(src_dur)}s ab.\n"
+            f"- Finde den EINEN viralsten Moment irgendwo in diesem Bereich — "
+            f"Anfang, Mitte oder Ende, rein nach Inhalt entscheiden.\n\n"
+        )
+    else:
+        rule1 = (
+            f"REGEL 1 — VERTEILUNG (kritisch!):\n"
+            f"- Die {n_clips} Momente müssen ÜBER DAS GANZE VIDEO verteilt sein (0 bis {int(src_dur)}s).\n"
+            f"- Picke NICHT alle nur aus dem Anfang. Auch der mittlere und späte Teil hat "
+            f"  virale Momente — such sie aktiv.\n"
+            f"- Faustregel: ~{max(1, n_clips//3)} Momente aus 0–{int(third):.0f}s, "
+            f"~{max(1, n_clips//3)} aus {int(third):.0f}–{int(2*third):.0f}s, "
+            f"~{max(1, n_clips - 2*(n_clips//3))} aus {int(2*third):.0f}–{int(src_dur):.0f}s.\n\n"
+        )
     prompt = (
         f"Du analysierst ein deutsches Voll-Transkript eines Podcasts/Talks/Streams "
         f"und findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
@@ -6500,13 +6523,7 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
         f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n\n"
         f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
         f"Finde EXAKT {n_clips} Momente. Beachte BEIDE Regeln strikt:\n\n"
-        f"REGEL 1 — VERTEILUNG (kritisch!):\n"
-        f"- Die {n_clips} Momente müssen ÜBER DAS GANZE VIDEO verteilt sein (0 bis {int(src_dur)}s).\n"
-        f"- Picke NICHT alle nur aus dem Anfang. Auch der mittlere und späte Teil hat "
-        f"  virale Momente — such sie aktiv.\n"
-        f"- Faustregel: ~{n_clips//3} Momente aus 0–{int(third):.0f}s, "
-        f"~{n_clips//3} aus {int(third):.0f}–{int(2*third):.0f}s, "
-        f"~{n_clips - 2*(n_clips//3)} aus {int(2*third):.0f}–{int(src_dur):.0f}s.\n\n"
+        f"{rule1}"
         f"REGEL 2 — LÄNGE (kritisch!):\n"
         f"- Jeder Moment muss MINDESTENS 25 Sekunden lang sein (lieber 30–60s).\n"
         f"- Schneide NIE mitten im Satz — IMMER am Ende eines vollständigen Gedankens.\n"
