@@ -5709,12 +5709,24 @@ def _image_chain(idx_input: int, image_idx: int, image_dur: float, start: float,
         settled_w = f"{overlay_w}*(1+0.06*(t/{image_dur:.2f}))"
     else:
         settled_w = f"{overlay_w}"
+    # Tilt: rotating needs a bigger canvas, and the following scale-to-
+    # overlay_w shrinks that canvas — so the VISIBLE image gets smaller than
+    # the slider promises. The old ow=hypot(iw,ih) reserved the full diagonal
+    # (~41% extra for a square → image rendered ~30% too small, EVEN WITH
+    # TILT OFF since the rotate node always ran). Now: no rotate node at all
+    # when there's no tilt, and the exact rotated bounding box (rotw/roth,
+    # ~6% for 3°) when there is one.
+    if abs(angle_deg) > 0.01:
+        rotate_step = (f"rotate={angle_rad:.4f}:c=black@0:"
+                       f"ow=rotw({angle_rad:.4f}):oh=roth({angle_rad:.4f}),")
+    else:
+        rotate_step = ""
     return (
         f"[{idx_input}:v]"
         f"trim=duration={image_dur:.2f},setpts=PTS-STARTPTS,"
         f"format=rgba,"
         f"pad=iw+18:ih+18:9:9:color=white@0.95,"
-        f"rotate={angle_rad:.4f}:c=black@0:ow=hypot(iw\\,ih):oh=ow,"
+        f"{rotate_step}"
         f"scale=w='if(lt(t\\,{pop_dur:.2f})\\,{pop_start_w}-{pop_delta}*(t/{pop_dur:.2f})\\,{settled_w})'"
         f":h=-1:eval=frame:flags=bicubic,"
         f"fade=t=in:st=0:d={fade_in}:alpha=1,"
