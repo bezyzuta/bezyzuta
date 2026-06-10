@@ -84,9 +84,6 @@ def generate(
     tts_de_clone: bool,
     tts_exaggeration: float,
     tts_cfg_weight: float,
-    tts_exaggeration_de: float,
-    tts_cfg_weight_de: float,
-    tts_qa: bool,
     enable_music: bool,
     music_dir: str,
     music_track: str,
@@ -154,10 +151,6 @@ def generate(
         cfg.tts_de_clone = bool(tts_de_clone)
         cfg.tts_exaggeration = float(tts_exaggeration)
         cfg.tts_cfg_weight = float(tts_cfg_weight)
-        cfg.tts_exaggeration_de = float(tts_exaggeration_de)
-        cfg.tts_cfg_weight_de = float(tts_cfg_weight_de)
-        if not tts_qa:
-            cfg.tts_qa_retries = 0
         cfg.tts_language = (tts_language or "auto").lower()
         cfg.tts_piper_model = (tts_piper_model or "de_DE-thorsten-medium").strip()
         # Apply orientation toggle: override target_w/target_h on cfg so the
@@ -389,9 +382,6 @@ def _config_defaults(config_path: str = "config.json") -> dict:
             "tts_reference_audio": getattr(cfg, "tts_reference_audio", "") or "",
             "tts_exaggeration": getattr(cfg, "tts_exaggeration", 0.5),
             "tts_cfg_weight": getattr(cfg, "tts_cfg_weight", 0.5),
-            "tts_exaggeration_de": getattr(cfg, "tts_exaggeration_de", 0.4),
-            "tts_cfg_weight_de": getattr(cfg, "tts_cfg_weight_de", 0.65),
-            "tts_qa": int(getattr(cfg, "tts_qa_retries", 2)) > 0,
             "tts_language": getattr(cfg, "tts_language", "auto") or "auto",
             "tts_de_clone": bool(getattr(cfg, "tts_de_clone", False)),
         }
@@ -699,24 +689,6 @@ def build_app() -> gr.Blocks:
                     label="Chatterbox CFG Weight (nur EN)",
                     info="Niedriger = natürlicheres Sprachtempo, höher = wörtlicher.",
                 )
-            with gr.Row():
-                tts_exaggeration_de = gr.Slider(
-                    0.0, 1.0, value=_defaults.get("tts_exaggeration_de", 0.4), step=0.05,
-                    label="Chatterbox Emotion (nur DE-Klon)",
-                    info="Deutsch artikuliert mit weniger Emotion deutlicher: 0.3-0.5 empfohlen.",
-                )
-                tts_cfg_weight_de = gr.Slider(
-                    0.0, 1.0, value=_defaults.get("tts_cfg_weight_de", 0.65), step=0.05,
-                    label="Chatterbox CFG Weight (nur DE-Klon)",
-                    info="Höher = deutlichere Aussprache. Deutsch braucht mehr als Englisch: 0.6-0.7 empfohlen.",
-                )
-            tts_qa = gr.Checkbox(
-                value=bool(_defaults.get("tts_qa", True)),
-                label="🛡️ Whisper-Qualitätskontrolle (DE-Klon)",
-                info=("Hört jeden generierten Sprach-Chunk mit Whisper gegen und "
-                      "generiert undeutliche Chunks automatisch neu (bis 2x). "
-                      "Fängt genau die genuschelten Wörter ab. ~10-20s extra pro Short."),
-            )
 
         # ───────────── Audio (BGM + SFX) ─────────────
         with gr.Accordion("🎵 Audio (Musik + SFX)", open=False):
@@ -1170,7 +1142,6 @@ def build_app() -> gr.Blocks:
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_de_clone, tts_exaggeration, tts_cfg_weight,
-                tts_exaggeration_de, tts_cfg_weight_de, tts_qa,
                 enable_music, music_dir, music_track, music_volume_pct,
                 smart_music_start, normalize_audio, target_lufs,
                 enable_sfx, sfx_dir, sfx_track, sfx_volume_pct,
@@ -1240,7 +1211,18 @@ def main() -> None:
     #   BEZY_AUTH  -> "user:password" to require a login (for Cloudflare/public).
     host = os.environ.get("BEZY_HOST", "127.0.0.1")
     port_env = os.environ.get("BEZY_PORT")
-    port = int(port_env) if port_env else find_free_port()
+    if port_env:
+        # Fixed port requested (tunnels/remote want a stable one) — but if
+        # it's already taken (an older GUI window or a zombie python.exe is
+        # still holding it), don't crash: take the next free one and say so.
+        wanted = int(port_env)
+        port = find_free_port(wanted, wanted + 20)
+        if port != wanted:
+            print(f"WARN: Port {wanted} ist belegt (läuft noch eine alte GUI?) "
+                  f"— nutze stattdessen Port {port}. Im Browser/Handy die URL "
+                  f"entsprechend anpassen, oder die alte Instanz schließen.")
+    else:
+        port = find_free_port()
 
     auth = None
     auth_env = os.environ.get("BEZY_AUTH")

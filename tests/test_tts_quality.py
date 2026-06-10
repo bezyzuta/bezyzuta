@@ -1,9 +1,5 @@
-"""Tests for the German TTS clarity upgrades: abbreviation/symbol spell-out,
-decimal number reading, the Whisper-QA similarity scoring, and the
-German-specific Chatterbox knobs in Config."""
-
-import json
-from pathlib import Path
+"""Tests for the TTS text-normalization upgrades: abbreviation/symbol
+spell-out and decimal number reading."""
 
 import pipeline as p
 
@@ -74,61 +70,3 @@ class TestDecimalNumbers:
         text = p._spell_abbreviations_for_tts("z.B. 3,5% Bonus", "de")
         text = p._spell_numbers_for_tts(text, "de")
         assert text == "zum Beispiel drei Komma fünf Prozent Bonus"
-
-
-# ───────────────────────── QA similarity scoring ─────────────────────────
-
-class TestQaSimilarity:
-    def test_identical_ignoring_case_punctuation(self):
-        score = p._tts_chunk_similarity(
-            "Bro, schau dir DAS an!", "bro schau dir das an")
-        assert score > 0.95
-
-    def test_mumbled_words_score_low(self):
-        score = p._tts_chunk_similarity(
-            "Bro, schau dir das an!", "bro war irgendwas raus")
-        assert score < 0.82
-
-    def test_empty_expected_is_perfect(self):
-        assert p._tts_chunk_similarity("", "whatever") == 1.0
-
-    def test_umlauts_survive_normalization(self):
-        assert p._tts_norm_words("Schöne Grüße, läuft!") == [
-            "schöne", "grüße", "läuft"]
-
-
-# ───────────────────────── config wiring ─────────────────────────
-
-class TestGermanTtsConfig:
-    def test_example_config_defaults(self):
-        cfg = p.Config.load(Path(__file__).parent.parent / "config.example.json")
-        assert cfg.tts_exaggeration_de == 0.4
-        assert cfg.tts_cfg_weight_de == 0.65
-        assert cfg.tts_qa_retries == 2
-
-    def test_defaults_when_keys_missing(self, tmp_path):
-        minimal = dict(json.loads(
-            (Path(__file__).parent.parent / "config.example.json").read_text(
-                encoding="utf-8")))
-        for k in ("tts_exaggeration_de", "tts_cfg_weight_de", "tts_qa_retries"):
-            minimal.pop(k, None)
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps(minimal), encoding="utf-8")
-        cfg = p.Config.load(cfg_file)
-        assert cfg.tts_exaggeration_de == 0.4
-        assert cfg.tts_cfg_weight_de == 0.65
-        assert cfg.tts_qa_retries == 2
-
-    def test_validate_flags_out_of_range_de_knobs(self, tmp_path):
-        data = dict(json.loads(
-            (Path(__file__).parent.parent / "config.example.json").read_text(
-                encoding="utf-8")))
-        data["tts_cfg_weight_de"] = 1.7
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps(data), encoding="utf-8")
-        cfg = p.Config.load(cfg_file)
-        _errors, warnings = cfg.validate()
-        assert any("tts_cfg_weight_de" in w for w in warnings)
-
-    def test_german_chunk_limit_smaller(self):
-        assert p._CHATTERBOX_MAX_CHARS_DE < p._CHATTERBOX_MAX_CHARS
