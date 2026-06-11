@@ -5771,6 +5771,100 @@ def apply_playback_speed(video_path: Path, speed: float) -> None:
     tmp.replace(video_path)
 
 
+def apply_auto_editor(video_path: Path, margin: float = 0.18,
+                      threshold: float = 0.04, on_step=None) -> bool:
+    """Cut silent/dead-air stretches out of the FINISHED video in place using
+    the `auto-editor` package (https://github.com/WyattBlue/auto-editor).
+
+    Runs on the fully composed mp4 (picture + voice + burned-in captions all
+    cut together), so audio/caption sync can never drift. `margin` keeps a
+    short pad of silence around each kept chunk so speech doesn't get clipped
+    or feel machine-gun-tight; `threshold` is the loudness level below which a
+    stretch counts as silence (0.04 = 4%).
+
+    Best-effort: if auto-editor isn't installed or errors, the original video
+    is left untouched and we return False — a render is never blocked by it.
+    """
+    def log(msg: str) -> None:
+        if on_step:
+            try:
+                on_step(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+
+    margin = max(0.0, float(margin))
+    threshold = max(0.0, min(1.0, float(threshold)))
+    tmp = video_path.with_suffix(".autoedit.mp4")
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+    cmd = [
+        sys.executable, "-m", "auto_editor", str(video_path),
+        "--edit", f"audio:threshold={threshold * 100:.0f}%",
+        "--margin", f"{margin:.2f}sec",
+        # NVENC if available, else x264 — matches the rest of the pipeline.
+        "--video-codec", ("h264_nvenc" if _nvenc_available() else "libx264"),
+        "--no-open",
+        "--output", str(tmp),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except FileNotFoundError:
+        log("      auto-editor: nicht installiert — überspringe "
+            "(installieren mit:  .venv\\Scripts\\python.exe -m pip install auto-editor )")
+        return False
+    except subprocess.TimeoutExpired:
+        log("      auto-editor: Timeout (>15min) — behalte ungeschnittenes Video")
+        return False
+    except Exception as e:
+        log(f"      auto-editor: Fehler ({str(e)[:160]}) — behalte ungeschnittenes Video")
+        return False
+
+    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size < 1024:
+        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-4:])
+        low = (proc.stderr or "").lower()
+        # `python -m auto_editor` returns exit 1 (not FileNotFoundError) when
+        # the package isn't installed — surface the install command instead.
+        if "no module named auto_editor" in low:
+            log("      auto-editor: nicht installiert — überspringe "
+                "(installieren mit:  .venv\\Scripts\\python.exe -m pip install auto-editor )")
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+            return False
+        # auto-editor exits non-zero when it would output an EMPTY file (i.e.
+        # the whole clip is "silent" by the threshold) — keep the original.
+        if "resulted in an empty" in low or "empty" in tail.lower():
+            log("      auto-editor: alles unter der Stille-Schwelle — behalte "
+                "Original (Schwelle evtl. zu hoch / Musik zu leise)")
+        else:
+            log(f"      auto-editor fehlgeschlagen (exit {proc.returncode}): {tail[:200]} "
+                "— behalte ungeschnittenes Video")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        return False
+
+    old_dur = _media_duration(video_path)
+    new_dur = _media_duration(tmp)
+    tmp.replace(video_path)
+    if old_dur > 0 and new_dur > 0:
+        saved = old_dur - new_dur
+        log(f"      auto-editor: Stille rausgeschnitten — {old_dur:.1f}s → "
+            f"{new_dur:.1f}s ({saved:+.1f}s)")
+    else:
+        log("      auto-editor: Stille rausgeschnitten")
+    return True
+
+
 def apply_voice_tempo(voice_path: Path, tempo: float) -> Path:
     """Slow down / speed up just the VOICEOVER audio in place, pitch-preserved.
     tempo < 1.0 = slower (calmer, good for long-form), > 1.0 = faster.
@@ -8014,6 +8108,17 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             effects=effects_plan,
             faceless=faceless_mode,
         )
+        # Opt-in: cut silent/dead-air stretches out of the finished video.
+        # Runs on the composed mp4 (picture+voice+captions cut together → no
+        # sync drift), before the global speed pass.
+        if bool(job.get("auto_editor", False)):
+            step("      auto-editor: schneide Stille/Pausen raus")
+            apply_auto_editor(
+                out,
+                margin=float(job.get("auto_editor_margin", 0.18)),
+                threshold=float(job.get("auto_editor_threshold", 0.04)),
+                on_step=step,
+            )
         speed = float(job.get("playback_speed", 1.0))
         if abs(speed - 1.0) > 0.01:
             step(f"      retiming final video to {speed:.2f}x playback speed")

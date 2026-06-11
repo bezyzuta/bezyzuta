@@ -70,6 +70,7 @@ def generate(
     target_duration: float,
     clip_segments: int,
     playback_speed: float,
+    auto_editor: bool,
     voice_tempo: float,
     scene_pick_mode: str,
     manual_ranges: str,
@@ -220,6 +221,7 @@ def generate(
             "target_duration": float(target_duration),
             "clip_segments": int(clip_segments),
             "playback_speed": float(playback_speed),
+            "auto_editor": bool(auto_editor),
             "voice_tempo": float(voice_tempo),
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "manual_ranges": str(manual_ranges or ""),
@@ -566,6 +568,15 @@ def build_app() -> gr.Blocks:
                           "0.85 = ruhiger (gut für lange Videos), 0.9 = leicht "
                           "langsamer. Für Shorts 1.0 lassen."),
                 )
+            auto_editor = gr.Checkbox(
+                value=False,
+                label="✂️ Auto-Editor (Stille/Pausen automatisch rausschneiden)",
+                info=("Schneidet stille Stellen & lange Pausen aus dem fertigen "
+                      "Video — strafferes, schnelleres Tempo (wie bei vielen "
+                      "viralen Shorts). Läuft nach dem Compose, Bild+Ton+Untertitel "
+                      "bleiben synchron. Einmalig installieren:  "
+                      ".venv\\Scripts\\python.exe -m pip install auto-editor"),
+            )
             with gr.Accordion("🎬 Szenen-Auswahl", open=False):
                 scene_pick_mode = gr.Radio(
                     choices=[("Standard — gleichmäßig verteilt", "even"),
@@ -1138,7 +1149,7 @@ def build_app() -> gr.Blocks:
                 config_path, use_claude_cli, claude_cli_model,
                 source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, extend_script, target_duration,
-                clip_segments, playback_speed, voice_tempo, scene_pick_mode, manual_ranges, auto_reframe,
+                clip_segments, playback_speed, auto_editor, voice_tempo, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_de_clone, tts_exaggeration, tts_cfg_weight,
