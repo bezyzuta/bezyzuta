@@ -5771,19 +5771,28 @@ def apply_playback_speed(video_path: Path, speed: float) -> None:
     tmp.replace(video_path)
 
 
-def apply_auto_editor(video_path: Path, margin: float = 0.18,
-                      threshold: float = 0.04, on_step=None) -> bool:
-    """Cut silent/dead-air stretches out of the FINISHED video in place using
-    the `auto-editor` package (https://github.com/WyattBlue/auto-editor).
+def apply_auto_editor(media_path: Path, margin: float = 0.18,
+                      threshold: float = 0.04, on_step=None,
+                      is_audio: bool = False) -> bool:
+    """Cut silent/dead-air stretches out of `media_path` in place using the
+    `auto-editor` package (https://github.com/WyattBlue/auto-editor).
 
-    Runs on the fully composed mp4 (picture + voice + burned-in captions all
-    cut together), so audio/caption sync can never drift. `margin` keeps a
-    short pad of silence around each kept chunk so speech doesn't get clipped
-    or feel machine-gun-tight; `threshold` is the loudness level below which a
-    stretch counts as silence (0.04 = 4%).
+    Two modes:
+      • is_audio=True  → trims the bare VOICEOVER mp3 BEFORE music is mixed.
+        This is the better path for shorts: the voice track has real silence
+        in the pauses, so the pauses get cut cleanly, and everything built
+        afterwards (captions, image schedule, SFX, music) lands on the tight
+        voice automatically. (Once music is under it the track is never
+        'silent', so cutting the finished video would barely trim anything.)
+      • is_audio=False → trims the finished mp4 (picture+voice+captions cut
+        together). Used as a fallback when there's no voiceover to trim.
 
-    Best-effort: if auto-editor isn't installed or errors, the original video
-    is left untouched and we return False — a render is never blocked by it.
+    `margin` keeps a short pad of silence around each kept chunk so speech
+    isn't clipped / machine-gun-tight; `threshold` is the loudness level below
+    which a stretch counts as silence (0.04 = 4%).
+
+    Best-effort: if auto-editor isn't installed or errors, the original file is
+    left untouched and we return False — a render is never blocked by it.
     """
     def log(msg: str) -> None:
         if on_step:
@@ -5796,21 +5805,26 @@ def apply_auto_editor(video_path: Path, margin: float = 0.18,
 
     margin = max(0.0, float(margin))
     threshold = max(0.0, min(1.0, float(threshold)))
-    tmp = video_path.with_suffix(".autoedit.mp4")
+    suffix = ".autoedit" + media_path.suffix
+    tmp = media_path.with_suffix(suffix)
     if tmp.exists():
         try:
             tmp.unlink()
         except Exception:
             pass
     cmd = [
-        sys.executable, "-m", "auto_editor", str(video_path),
+        sys.executable, "-m", "auto_editor", str(media_path),
         "--edit", f"audio:threshold={threshold * 100:.0f}%",
         "--margin", f"{margin:.2f}sec",
-        # NVENC if available, else x264 — matches the rest of the pipeline.
-        "--video-codec", ("h264_nvenc" if _nvenc_available() else "libx264"),
         "--no-open",
         "--output", str(tmp),
     ]
+    if not is_audio:
+        # NVENC if available, else x264 — matches the rest of the pipeline.
+        cmd[len(cmd)-2:len(cmd)-2] = [
+            "--video-codec", ("h264_nvenc" if _nvenc_available() else "libx264"),
+        ]
+    kind = "Stimme" if is_audio else "Video"
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     except FileNotFoundError:
@@ -5818,13 +5832,13 @@ def apply_auto_editor(video_path: Path, margin: float = 0.18,
             "(installieren mit:  .venv\\Scripts\\python.exe -m pip install auto-editor )")
         return False
     except subprocess.TimeoutExpired:
-        log("      auto-editor: Timeout (>15min) — behalte ungeschnittenes Video")
+        log(f"      auto-editor: Timeout (>15min) — behalte ungeschnittene {kind}")
         return False
     except Exception as e:
-        log(f"      auto-editor: Fehler ({str(e)[:160]}) — behalte ungeschnittenes Video")
+        log(f"      auto-editor: Fehler ({str(e)[:160]}) — behalte ungeschnittene {kind}")
         return False
 
-    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size < 1024:
+    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size < 256:
         tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-4:])
         low = (proc.stderr or "").lower()
         # `python -m auto_editor` returns exit 1 (not FileNotFoundError) when
@@ -5842,10 +5856,10 @@ def apply_auto_editor(video_path: Path, margin: float = 0.18,
         # the whole clip is "silent" by the threshold) — keep the original.
         if "resulted in an empty" in low or "empty" in tail.lower():
             log("      auto-editor: alles unter der Stille-Schwelle — behalte "
-                "Original (Schwelle evtl. zu hoch / Musik zu leise)")
+                "Original (Schwelle evtl. zu hoch)")
         else:
             log(f"      auto-editor fehlgeschlagen (exit {proc.returncode}): {tail[:200]} "
-                "— behalte ungeschnittenes Video")
+                f"— behalte ungeschnittene {kind}")
         try:
             if tmp.exists():
                 tmp.unlink()
@@ -5853,15 +5867,14 @@ def apply_auto_editor(video_path: Path, margin: float = 0.18,
             pass
         return False
 
-    old_dur = _media_duration(video_path)
+    old_dur = _media_duration(media_path)
     new_dur = _media_duration(tmp)
-    tmp.replace(video_path)
+    tmp.replace(media_path)
     if old_dur > 0 and new_dur > 0:
-        saved = old_dur - new_dur
-        log(f"      auto-editor: Stille rausgeschnitten — {old_dur:.1f}s → "
-            f"{new_dur:.1f}s ({saved:+.1f}s)")
+        log(f"      auto-editor: Pausen rausgeschnitten ({kind}) — {old_dur:.1f}s → "
+            f"{new_dur:.1f}s ({new_dur - old_dur:+.1f}s)")
     else:
-        log("      auto-editor: Stille rausgeschnitten")
+        log(f"      auto-editor: Pausen rausgeschnitten ({kind})")
     return True
 
 
@@ -7358,6 +7371,18 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             step(f"      voice tempo: {voice_tempo:.2f}x "
                  f"({'langsamer' if voice_tempo < 1 else 'schneller'})")
             apply_voice_tempo(vo, voice_tempo)
+        # Opt-in: cut speech pauses out of the bare voice NOW, before music is
+        # mixed and before we measure the duration — so captions, image
+        # schedule, SFX and music all build on the tightened voice and stay in
+        # sync. (Cutting the finished video instead barely works once music
+        # fills every pause.)
+        if bool(job.get("auto_editor", False)):
+            step("      auto-editor: schneide Sprechpausen aus der Stimme")
+            apply_auto_editor(
+                vo, margin=float(job.get("auto_editor_margin", 0.18)),
+                threshold=float(job.get("auto_editor_threshold", 0.04)),
+                on_step=step, is_audio=True,
+            )
         vo_dur = probe_duration(vo)
         # Long-form length is only correct once we measure the REAL spoken
         # duration: the wps estimate that sized the script is unreliable (the
@@ -8108,16 +8133,16 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             effects=effects_plan,
             faceless=faceless_mode,
         )
-        # Opt-in: cut silent/dead-air stretches out of the finished video.
-        # Runs on the composed mp4 (picture+voice+captions cut together → no
-        # sync drift), before the global speed pass.
-        if bool(job.get("auto_editor", False)):
-            step("      auto-editor: schneide Stille/Pausen raus")
+        # Opt-in fallback: with NO voiceover there's no voice to trim earlier,
+        # so cut dead air from the finished video here instead. (When voice is
+        # enabled, the trim already happened on the bare voice track above.)
+        if bool(job.get("auto_editor", False)) and not enable_voice:
+            step("      auto-editor: schneide Stille/Pausen aus dem fertigen Video")
             apply_auto_editor(
                 out,
                 margin=float(job.get("auto_editor_margin", 0.18)),
                 threshold=float(job.get("auto_editor_threshold", 0.04)),
-                on_step=step,
+                on_step=step, is_audio=False,
             )
         speed = float(job.get("playback_speed", 1.0))
         if abs(speed - 1.0) > 0.01:

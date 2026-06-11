@@ -71,6 +71,24 @@ class TestAutoEditorCommand:
         assert "audio:threshold=6%" in joined
         assert "0.25sec" in joined
         assert "--no-open" in joined
+        # Default (video) mode includes a video codec.
+        assert "--video-codec" in joined
+
+    def test_audio_mode_omits_video_codec(self, tmp_path):
+        aud = tmp_path / "voice.mp3"
+        aud.write_bytes(b"\x00" * 4096)
+        captured = {}
+
+        def fake_run(cmd, *a, **kw):
+            captured["cmd"] = cmd
+            return mock.Mock(returncode=1, stderr="No module named auto_editor", stdout="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            p.apply_auto_editor(aud, is_audio=True)
+        joined = " ".join(captured["cmd"])
+        assert "--video-codec" not in joined
+        # Output keeps the audio suffix.
+        assert ".autoedit.mp3" in joined
 
     def test_threshold_clamped_to_unit_range(self, tmp_path):
         vid = tmp_path / "out.mp4"

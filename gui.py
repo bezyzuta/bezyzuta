@@ -570,11 +570,12 @@ def build_app() -> gr.Blocks:
                 )
             auto_editor = gr.Checkbox(
                 value=False,
-                label="✂️ Auto-Editor (Stille/Pausen automatisch rausschneiden)",
-                info=("Schneidet stille Stellen & lange Pausen aus dem fertigen "
-                      "Video — strafferes, schnelleres Tempo (wie bei vielen "
-                      "viralen Shorts). Läuft nach dem Compose, Bild+Ton+Untertitel "
-                      "bleiben synchron. Einmalig installieren:  "
+                label="✂️ Auto-Editor (Sprechpausen automatisch rausschneiden)",
+                info=("Schneidet stille Stellen & lange Pausen direkt aus der "
+                      "Stimme — strafferes, schnelleres Tempo (wie bei vielen "
+                      "viralen Shorts). Passiert VOR dem Musik-Mix, daher bleiben "
+                      "Untertitel, Bilder & Effekte exakt synchron — und es greift "
+                      "auch wenn Hintergrundmusik läuft. Einmalig installieren:  "
                       ".venv\\Scripts\\python.exe -m pip install auto-editor"),
             )
             with gr.Accordion("🎬 Szenen-Auswahl", open=False):
