@@ -470,7 +470,7 @@ def build_app() -> gr.Blocks:
                 "Nur für lokalen Privatgebrauch gedacht."
             )
             use_claude_cli = gr.Checkbox(
-                value=False,
+                value=True,
                 label="🧠 Claude CLI für Text-Aufgaben nutzen (Moment-Picking, Skript, Metadaten)",
                 info="Voraussetzung: 'claude' CLI installiert und eingeloggt (claude login).",
             )
@@ -481,7 +481,7 @@ def build_app() -> gr.Blocks:
                     ("Opus — beste Qualität, mehr Abo-Verbrauch", "opus"),
                     ("Haiku — am schnellsten, schwächer", "haiku"),
                 ],
-                value="sonnet",
+                value="opus",
                 label="Claude-Modell",
                 info="Für Moment-Picking lohnt sich Sonnet oder Opus — beide deutlich besser als Gemini Flash.",
             )
@@ -725,7 +725,7 @@ def build_app() -> gr.Blocks:
                     )
                     music_refresh = gr.Button("🔄", scale=1)
                 music_volume_pct = gr.Slider(
-                    0, 30, value=5, step=1,
+                    0, 30, value=1, step=1,
                     label="Hintergrundmusik Lautstärke (%)",
                     info="Quadratisch skaliert — 3% ist quasi unhörbar, 10% sehr leise, 30% deutlich.",
                 )
@@ -765,7 +765,7 @@ def build_app() -> gr.Blocks:
                     )
                     sfx_refresh = gr.Button("🔄", scale=1)
                 sfx_volume_pct = gr.Slider(
-                    0, 100, value=40, step=1,
+                    0, 100, value=27, step=1,
                     label="SFX Lautstärke (%)",
                 )
 
@@ -877,18 +877,18 @@ def build_app() -> gr.Blocks:
                       "dann manuell in CapCut auf die Timeline ziehen."),
             )
             image_change_secs = gr.Slider(
-                1.0, 6.0, value=3.5, step=0.5,
+                1.0, 6.0, value=1.5, step=0.5,
                 label="⏱️ Sekunden pro Bild (bei durchgehend)",
                 info="Wie oft das Mittelbild wechselt. 3-4s wie im Referenz-Video.",
             )
             image_gap_secs = gr.Slider(
-                0.0, 1.5, value=0.5, step=0.1,
+                0.0, 1.5, value=0.3, step=0.1,
                 label="⏸️ Pause zwischen Bildern (Sek)",
                 info=("Kurze Lücke nur mit Gameplay, bevor das nächste Bild kommt. "
                       "Das Bild startet weiterhin genau auf seinem Wort. 0 = nahtlos."),
             )
             image_allow_photos = gr.Checkbox(
-                value=True,
+                value=False,
                 label="📷 Auch echte Fotos verwenden (free via Openverse, kein KI)",
                 info=("An = Mix aus KI-Roblox-Renders UND echten lizenzfreien Fotos, die zum "
                       "Text passen (geschockte Person, Geldstapel, Pokal …) — wie virale Shorts. "
@@ -926,7 +926,9 @@ def build_app() -> gr.Blocks:
                     ("🫣 Horror: Creep-Zoom (langsam schleichende Anspannung)", "creep"),
                     ("🎬 Horror: Color-Grade (kalt, entsättigt, dunkle Vignette)", "horror_grade"),
                 ],
-                value=[],
+                value=["color_grade", "flash", "shake", "punch", "ken_burns",
+                       "slide_in", "keyword_pop", "word_karaoke", "caption_polish",
+                       "caption_box", "caption_buildup"],
                 label="Effekte erlauben (leer = aus)",
                 info=("Color-Grade/Horror-Grade/Ken-Burns/Slide-In/Keyword-Pop gelten global. "
                       "Flash/Shake/Punch und die Horror-Effekte (Roter Blitz/Dunkel-Puls/"
@@ -1007,7 +1009,7 @@ def build_app() -> gr.Blocks:
                 caption_color = gr.ColorPicker(value="#FFFFFF", label="Textfarbe")
                 caption_stroke_color = gr.ColorPicker(value="#000000", label="Randfarbe (Stroke)")
             caption_font_size = gr.Slider(
-                30, 90, value=80, step=1,
+                30, 90, value=85, step=1,
                 label="Schriftgröße",
             )
 
@@ -1045,7 +1047,7 @@ def build_app() -> gr.Blocks:
         # ───────────── Resume & Logging ─────────────
         with gr.Accordion("🔄 Resume & Logging", open=False):
             resume_enabled = gr.Checkbox(
-                value=False,
+                value=True,
                 label="♻️ Resume aktiv (Job kann unterbrochen + fortgesetzt werden)",
                 info=("Speichert nach jedem Pipeline-Schritt einen Checkpoint in "
                       "{output_dir}/{slug}/job_state.json. Beim nächsten Lauf mit "
@@ -1074,12 +1076,12 @@ def build_app() -> gr.Blocks:
             )
             with gr.Row():
                 youtube_thumbnail = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="🖼️ Thumbnail-Bild dazu generieren",
                     info="Erzeugt zusätzlich {slug}_thumb.png via Cloudflare Flux / Pollinations.",
                 )
                 youtube_thumb_from_video = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="🎬 Thumbnail aus dem Video (Action-Frame + Hook-Text)",
                     info=("Empfohlen: nimmt einen Action-Frame aus deinem fertigen Video und "
                           "schreibt den Hook in großem gelben Impact-Text drüber — typischer "
