@@ -732,12 +732,12 @@ def build_app() -> gr.Blocks:
                     info="Quadratisch skaliert — 3% ist quasi unhörbar, 10% sehr leise, 30% deutlich.",
                 )
                 smart_music_start = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="🎯 Smart Music Start (lauteste Stelle / Drop finden)",
                     info="Analysiert den Track und startet nicht zwingend bei 0:00, sondern wo es richtig losgeht. +2–5s pro Track.",
                 )
                 normalize_audio = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="🔊 Lautheit normalisieren (laut + konsistent wie die Profis)",
                     info="EBU-R128 loudnorm auf den fertigen Mix — so laut und gleichmäßig wie virale Shorts. Empfohlen AN.",
                 )
