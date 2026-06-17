@@ -8060,6 +8060,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             audio_for_compose = mix_voice_with_music(
                 audio_for_compose, track, music_pct, work / "audio_final.mp3",
                 start_offset=offset,
+                # Music plays at a CONSTANT level by default (no ducking under
+                # the voice — the user found the pumping annoying). Re-enable
+                # per job with "music_ducking": true.
+                sidechain=bool(job.get("music_ducking", False)),
             )
             using_bgm = True
 
