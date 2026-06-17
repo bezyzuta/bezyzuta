@@ -470,31 +470,62 @@ def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
 
 
 def download_gameplay(url: str, out_dir: Path, cookies: list | None = None,
-                      max_height: int = 1080) -> Path:
+                      max_height: int = 1080, on_step=None) -> Path:
+    """Download the source video. Strategy that dodges the recurring Chrome-
+    cookie pain: try CLEAN (no cookies) first — most public/no-copyright
+    gameplay downloads fine and never touches the lockable/encrypted browser
+    cookie DB. Only if YouTube throws the bot-wall ("sign in to confirm…")
+    do we retry WITH the configured cookies. So cookies become a safety net,
+    not the default path that breaks every time the browser is open."""
+    def log(m):
+        if on_step:
+            try: on_step(m)
+            except Exception: pass
+
     out_dir.mkdir(parents=True, exist_ok=True)
     template = str(out_dir / "%(id)s.%(ext)s")
     h = max(360, int(max_height or 1080))
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        *(cookies or []),
-        "--no-playlist",                       # never accidentally pull a whole playlist
-        "--concurrent-fragments", "5",         # download DASH fragments in parallel — big speedup
-        "--retries", "3", "--fragment-retries", "3",
-        "-f", f"bv*[height<={h}]+ba/b[height<={h}]",
-        "--merge-output-format", "mp4",
-        "-o", template,
-        url,
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
+
+    # Attempt order: clean first, then cookies (only if configured).
+    attempts: list = [[]]
+    if cookies:
+        attempts.append(cookies)
+
+    last = ""
+    for i, ck in enumerate(attempts):
+        if ck:
+            log("      YouTube verlangt Login — versuche es jetzt mit Cookies…")
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            *ck,
+            "--no-playlist",                       # never accidentally pull a whole playlist
+            "--concurrent-fragments", "5",         # download DASH fragments in parallel — big speedup
+            "--retries", "3", "--fragment-retries", "3",
+            "-f", f"bv*[height<={h}]+ba/b[height<={h}]",
+            "--merge-output-format", "mp4",
+            "-o", template,
+            url,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode == 0:
+            files = sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if files:
+                return files[0]
+            last = "yt-dlp meldete Erfolg, aber keine mp4 gefunden"
+            continue
         combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
-        tail = combined[-700:]
-        hint = _ytdlp_error_hint(combined, bool(cookies))
-        raise RuntimeError(f"yt-dlp download failed (exit {proc.returncode}):\n{tail}{hint}")
-    files = sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not files:
-        raise RuntimeError("yt-dlp produced no mp4")
-    return files[0]
+        last = combined[-700:]
+        # Retry with cookies ONLY when this failure is the bot-wall — for any
+        # other error (private/deleted/region/format) cookies won't help.
+        low = combined.lower()
+        is_botwall = any(s in low for s in (
+            "sign in to confirm", "not a bot", "429",
+            "too many requests", "confirm you", "use --cookies"))
+        if i == 0 and cookies and not is_botwall:
+            break  # clean attempt failed for a non-auth reason; cookies are useless here
+
+    hint = _ytdlp_error_hint(last, bool(cookies))
+    raise RuntimeError(f"yt-dlp download failed:\n{last}{hint}")
 
 
 def list_channel_videos(channel_url: str, limit: int = 50, cookies: list | None = None) -> list:
@@ -6941,7 +6972,8 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     else:
         step(f"[MULTI 1/4] download source: {source_url}")
         raw = download_gameplay(source_url, work_root, cookies=ytdlp_cookie_args(cfg),
-                                max_height=int(getattr(cfg, 'download_max_height', 1080)))
+                                max_height=int(getattr(cfg, 'download_max_height', 1080)),
+                                on_step=step)
         if state:
             state.mark_done(Step.MULTI_DOWNLOAD, {"raw_path": raw})
 
@@ -7249,7 +7281,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     else:
         step(f"[1/5] download: {source_url}")
         raw = download_gameplay(source_url, work / "source", cookies=ytdlp_cookie_args(cfg),
-                                max_height=int(getattr(cfg, 'download_max_height', 1080)))
+                                max_height=int(getattr(cfg, 'download_max_height', 1080)),
+                                on_step=step)
         if state:
             state.mark_done(Step.DOWNLOAD, {"raw_path": raw})
 
