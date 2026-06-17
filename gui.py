@@ -725,7 +725,7 @@ def build_app() -> gr.Blocks:
                     )
                     music_refresh = gr.Button("🔄", scale=1)
                 music_volume_pct = gr.Slider(
-                    0, 30, value=1, step=1,
+                    0, 30, value=21, step=1,
                     label="Hintergrundmusik Lautstärke (%)",
                     info="Quadratisch skaliert — 3% ist quasi unhörbar, 10% sehr leise, 30% deutlich.",
                 )

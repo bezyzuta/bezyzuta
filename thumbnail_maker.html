@@ -31,7 +31,7 @@
           font-size:13px; opacity:.85; cursor:pointer; }
   .drop.hot { border-color:var(--accent); background:#1d1a10; }
   .preview { background:var(--panel); border-radius:14px; padding:16px; box-shadow:0 6px 24px rgba(0,0,0,.35); }
-  canvas { width:720px; max-width:100%; border-radius:10px; display:block; background:#000; }
+  canvas { border-radius:10px; display:block; background:#000; margin:0 auto; }
   .big { width:100%; margin-top:14px; padding:14px; font-size:16px; font-weight:800; cursor:pointer;
          border:none; border-radius:10px; color:#1a1205;
          background:linear-gradient(120deg,#f59e0b,#f97316); }
@@ -43,13 +43,20 @@
 <header>🎬 Bezys Thumbnail-Maker — 1280×720 für YouTube</header>
 <div class="wrap">
   <div class="panel">
-    <h2>1 · Hintergrundbild</h2>
+    <h2>1 · Format</h2>
+    <div class="seg" id="fmtSeg">
+      <button data-fmt="short" class="active">📱 Short 9:16</button>
+      <button data-fmt="video">🖥️ Video 16:9</button>
+    </div>
+    <div class="hint" style="margin-top:6px">Short = 1080×1920 (YouTube-Shorts/TikTok). Video = 1280×720.</div>
+
+    <h2 style="margin-top:18px">2 · Hintergrundbild</h2>
     <div id="drop" class="drop">Bild hierher ziehen oder klicken<br><small>(Videoframe, KI-Bild, Screenshot…)</small></div>
     <input id="file" type="file" accept="image/*" style="display:none">
     <label>Bild abdunkeln <span id="dimVal">35%</span></label>
     <input id="dim" type="range" min="0" max="80" value="35">
 
-    <h2 style="margin-top:18px">2 · Titel</h2>
+    <h2 style="margin-top:18px">3 · Titel</h2>
     <label>Text (Enter = neue Zeile)</label>
     <textarea id="title" placeholder="DAS DING&#10;IM KELLER">DAS DING&#10;IM KELLER</textarea>
     <label>Schriftart</label>
@@ -69,7 +76,7 @@
   </div>
 
   <div class="panel">
-    <h2>3 · Position & Stil</h2>
+    <h2>4 · Position & Stil</h2>
     <label>Vertikale Position</label>
     <div class="seg" id="posSeg">
       <button data-pos="top">Oben</button>
@@ -107,6 +114,24 @@
 const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 let bgImg = null;
 let pos = 'bottom', align = 'center';
+
+// Format toggle: Short 9:16 (default) or Video 16:9. Changes the export
+// resolution and rescales the on-screen preview so it always fits.
+function setFormat(fmt) {
+  if (fmt === 'short') { cv.width = 1080; cv.height = 1920; }
+  else { cv.width = 1280; cv.height = 720; }
+  applyDisplaySize();
+  draw();
+}
+function applyDisplaySize() {
+  const scale = Math.min(760 / cv.width, 600 / cv.height);
+  cv.style.width = Math.round(cv.width * scale) + 'px';
+  cv.style.height = Math.round(cv.height * scale) + 'px';
+}
+document.querySelectorAll('#fmtSeg button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#fmtSeg button').forEach(x => x.classList.remove('active'));
+  b.classList.add('active'); setFormat(b.dataset.fmt);
+});
 
 const el = id => document.getElementById(id);
 const ids = ['title','font','size','color','stroke','bord','dim','grad','shadow','badge','badgeColor'];
@@ -216,7 +241,7 @@ el('dl').onclick = () => {
   a.click();
 };
 
-draw();
+setFormat('short');   // default to 9:16 Shorts; toggle for 16:9
 </script>
 </body>
 </html>
