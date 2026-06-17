@@ -331,3 +331,44 @@ def test_run_queue_passes_account_to_upload(tmp_path, fake_cfg_load):
     # the accounts map was forwarded
     assert up.call_args.kwargs.get("accounts") == {
         "bloxgrave": {"token_file": "youtube_tokens/bloxgrave.json"}}
+
+
+# ── upload-only CLI mode (--upload) ──────────────────────────────────────────
+import tempfile
+from pathlib import Path as _P
+from unittest import mock as _mock
+
+
+def test_upload_only_missing_file_returns_2():
+    assert autopilot.main(["--upload", "/no/such/file.mp4", "--account", "x"]) == 2
+
+
+def test_upload_only_missing_account_returns_2():
+    with tempfile.TemporaryDirectory() as d:
+        f = _P(d) / "v.mp4"; f.write_bytes(b"x" * 2048)
+        assert autopilot.main(["--upload", str(f)]) == 2
+
+
+def test_upload_only_builds_correct_cfg_and_calls_api():
+    with tempfile.TemporaryDirectory() as d:
+        f = _P(d) / "v.mp4"; f.write_bytes(b"x" * 2048)
+        seen = {}
+
+        def fake(video, upload_cfg, topic, project_dir, accounts,
+                 allow_interactive, on_step):
+            seen.update(upload_cfg)
+            return "VID123"
+
+        with _mock.patch.object(autopilot, "upload_to_youtube", side_effect=fake):
+            rc = autopilot.main([
+                "--upload", str(f), "--account", "obbyoverlordus",
+                "--title", "Test Titel", "--privacy", "unlisted",
+                "--publish-at", "2026-06-18T10:45:00Z", "--thumbnail", "/tmp/t.png",
+                "--playlist", "PL123"])
+        assert rc == 0
+        assert seen["account"] == "obbyoverlordus"
+        assert seen["title"] == "Test Titel"
+        assert seen["privacy"] == "unlisted"
+        assert seen["publish_at"] == "2026-06-18T10:45:00Z"
+        assert seen["thumbnail"] == "/tmp/t.png"
+        assert seen["playlist_id"] == "PL123"
