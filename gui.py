@@ -196,24 +196,30 @@ def generate(
         if n > 1:
             base_slug = f"{base_slug}-{run_i + 1}"
 
-        # When resume is OFF, the user wants a fresh render. Auto-suffix the
-        # slug if a folder or final mp4 with the same name already exists, so
-        # we never collide with a previous run's artifacts (which would
-        # otherwise overwrite/confuse). When resume IS on, the slug stays
-        # stable on purpose — that's how resume finds the cached state.
-        if not resume_enabled:
-            try:
-                out_root = Path(Config.load(Path(config_path)).output_dir).expanduser()
+        # Decide the slug so reusing the SAME topic always makes a NEW video,
+        # while resume still continues a genuinely crashed/unfinished job:
+        #   • Resume ON + work folder exists + NO final mp4 → crashed job,
+        #     keep the slug so resume continues it.
+        #   • Otherwise (resume off, OR the previous run with this slug already
+        #     FINISHED) → auto-suffix to the next free slug (bezy, bezy-2, …)
+        #     so the same topic doesn't reuse/overwrite the old video.
+        try:
+            out_root = Path(Config.load(Path(config_path)).output_dir).expanduser()
+            final_mp4 = out_root / f"{base_slug}.mp4"
+            work_dir = out_root / base_slug
+            resume_crashed = (resume_enabled and work_dir.exists()
+                              and not final_mp4.exists())
+            if not resume_crashed:
                 candidate = base_slug
                 counter = 2
-                while (out_root / candidate).exists() or (out_root / f"{candidate}.mp4").exists():
+                while (out_root / f"{candidate}.mp4").exists() or (out_root / candidate).exists():
                     candidate = f"{base_slug}-{counter}"
                     counter += 1
                 base_slug = candidate
-            except Exception:
-                # If output_dir isn't resolvable yet, fall back to base_slug —
-                # pipeline.py will raise a clearer error downstream.
-                pass
+        except Exception:
+            # If output_dir isn't resolvable yet, fall back to base_slug —
+            # pipeline.py will raise a clearer error downstream.
+            pass
 
         job = {
             "slug": base_slug,
