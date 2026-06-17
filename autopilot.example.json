@@ -10,7 +10,7 @@
     "drivebystories": { "token_file": "youtube_tokens/drivebystories.json" },
     "obbyoverlordyt": { "token_file": "youtube_tokens/obbyoverlordyt.json" },
     "obbyoverlordus": { "token_file": "youtube_tokens/obbyoverlordus.json" },
-    "getinho77":      { "token_file": "youtube_tokens/getinho77.json" }
+    "ZapCrafted":     { "token_file": "youtube_tokens/ZapCrafted.json" }
   },
 
   "jobs": [
