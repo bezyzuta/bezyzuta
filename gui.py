@@ -675,20 +675,22 @@ def build_app() -> gr.Blocks:
                     ("Besmir (clone.wav, aufbereitet)", r"C:\Users\bezy\Desktop\Agenten\voice.clone.wav"),
                     ("Besmir (Rohaufnahme besmir.wav)", r"C:\Users\bezy\Desktop\Agenten\besmir.wav"),
                 ],
-                value=_defaults.get("tts_reference_audio", ""),
+                value=_defaults.get("tts_reference_audio") or r"C:\Users\bezy\Desktop\Agenten\besmir.wav",
                 allow_custom_value=True,
-                label="🎤 Stimme zum Klonen (auswählen oder Pfad eintippen — nur EN)",
+                label="🎤 Stimme zum Klonen (auswählen oder Pfad eintippen — EN + DE)",
                 info=("Deine Klon-Stimmen zur Auswahl, oder einen beliebigen Pfad "
                       "eintippen. '.clone.wav' wird direkt genutzt, eine Rohaufnahme "
-                      "wird automatisch aufbereitet. Vorbefüllt aus config.json. "
+                      "wird automatisch aufbereitet. Standard: Besmir (besmir.wav). "
+                      "Gilt für Englisch UND Deutsch (wenn 'Deutsche Stimme klonen' an). "
                       "Leer = Chatterbox' Default-Stimme."),
             )
             tts_de_clone = gr.Checkbox(
-                value=bool(_defaults.get("tts_de_clone", False)),
+                value=True,
                 label="🇩🇪 Deutsche Stimme klonen (statt Piper)",
-                info=("Nur bei Sprache = Deutsch. An = klont die oben gewählte "
-                      "Stimme auf Deutsch via Chatterbox Multilingual (~3GB Modell "
-                      "beim 1. Lauf). Aus = feste Piper-Stimme (schnell, kein Cloning)."),
+                info=("An (empfohlen) = Deutsch nutzt deine geklonte Stimme via "
+                      "Chatterbox Multilingual (~3GB Modell beim 1. Lauf). "
+                      "Aus = feste Piper-Stimme. So oder so wählst du nur die "
+                      "Sprache, die Stimme bleibt deine."),
             )
             with gr.Row():
                 tts_exaggeration = gr.Slider(

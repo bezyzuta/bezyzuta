@@ -220,7 +220,7 @@ class Config:
         return cls(
             output_dir=Path(data["output_dir"]).expanduser(),
             tts_reference_audio=data.get("tts_reference_audio", ""),
-            tts_de_clone=bool(data.get("tts_de_clone", False)),
+            tts_de_clone=bool(data.get("tts_de_clone", True)),
             tts_reference_audio_de=data.get("tts_reference_audio_de", ""),
             tts_exaggeration=float(data.get("tts_exaggeration", 0.5)),
             tts_cfg_weight=float(data.get("tts_cfg_weight", 0.5)),
