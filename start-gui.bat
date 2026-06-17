@@ -36,6 +36,26 @@ if not exist ".venv\Scripts\python.exe" (
     echo.
 )
 
+REM --- Auto-Update: neueste Aenderungen von GitHub holen ---
+REM Blockiert den Start NIE: bei lokalen Aenderungen / keinem Fast-Forward
+REM wird einfach uebersprungen und die GUI startet trotzdem.
+where git >nul 2>nul
+if not errorlevel 1 (
+    if exist ".git" (
+        echo Suche nach Updates...
+        git pull --ff-only
+        if errorlevel 1 (
+            echo.
+            echo Hinweis: Auto-Update uebersprungen ^(lokale Aenderungen oder kein Fast-Forward^).
+            echo Bei Bedarf einmalig manuell:  git stash ^&^& git pull
+            echo.
+        ) else (
+            echo Auf dem neuesten Stand.
+        )
+        echo.
+    )
+)
+
 echo ===========================================
 echo  Bezys Shorts Generator
 echo ===========================================
