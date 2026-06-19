@@ -5012,6 +5012,25 @@ _PHOTO_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 bezyzuta-shorts/1.0")
 
 
+def _image_is_too_blank(im) -> bool:
+    """True if the image is (near-)pure black or a flat single colour — the
+    tell-tale of a generator that returned a failed/blank frame (the black
+    middle-images bug). Tolerant of legitimately DARK images that still carry
+    bright content (a glowing dot, a subscribe button on a dark screen): those
+    have a high max-luminance and real variation, so they pass."""
+    try:
+        from PIL import ImageStat
+        g = im.convert("L")
+        _lo, hi = g.getextrema()
+        if hi < 10:                      # even the brightest pixel is ~black
+            return True
+        if ImageStat.Stat(g).stddev[0] < 2.0:   # essentially one flat colour
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def _save_square_image(data: bytes, out_path: Path) -> bool:
     """Center-crop image bytes to a square RGBA PNG (<=1024). Returns True on
     success. Shared by all free-photo fetchers."""
@@ -5021,6 +5040,8 @@ def _save_square_image(data: bytes, out_path: Path) -> bool:
         from PIL import Image
         import io
         im = Image.open(io.BytesIO(data)).convert("RGBA")
+        if _image_is_too_blank(im):       # reject black/blank frames → caller falls back
+            return False
         w, h = im.size
         side = min(w, h)
         im = im.crop(((w - side) // 2, (h - side) // 2,
@@ -5062,6 +5083,8 @@ def _save_aspect_image(data: bytes, out_path: Path, ar: float = 16 / 9,
         from PIL import Image
         import io
         im = Image.open(io.BytesIO(data)).convert("RGBA")
+        if _image_is_too_blank(im):       # reject black/blank frames → caller falls back
+            return False
         w, h = im.size
         if w / h > ar:           # too wide → crop width
             new_w = int(round(h * ar))
