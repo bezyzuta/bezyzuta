@@ -469,6 +469,25 @@ def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
     return js_hint
 
 
+_YTDLP_EJS_PROBED = None  # cache: does the installed yt-dlp support --remote-components?
+
+
+def _ytdlp_ejs_args() -> list:
+    """Return the flag that lets yt-dlp auto-download the EJS JS-challenge
+    solver (YouTube now returns HTTP 403 without a solved 'n challenge').
+    Probes --help once and caches; returns [] when the installed yt-dlp is too
+    old to know the flag, so we never break the call with an unknown argument."""
+    global _YTDLP_EJS_PROBED
+    if _YTDLP_EJS_PROBED is None:
+        try:
+            r = subprocess.run([sys.executable, "-m", "yt_dlp", "--help"],
+                               capture_output=True, text=True, timeout=30)
+            _YTDLP_EJS_PROBED = "--remote-components" in (r.stdout or "")
+        except Exception:
+            _YTDLP_EJS_PROBED = False
+    return ["--remote-components", "ejs:github"] if _YTDLP_EJS_PROBED else []
+
+
 def download_gameplay(url: str, out_dir: Path, cookies: list | None = None,
                       max_height: int = 1080, on_step=None) -> Path:
     """Download the source video. Strategy that dodges the recurring Chrome-
@@ -499,6 +518,10 @@ def download_gameplay(url: str, out_dir: Path, cookies: list | None = None,
             sys.executable, "-m", "yt_dlp",
             *ck,
             "--no-playlist",                       # never accidentally pull a whole playlist
+            # YouTube now requires solving a JS "n challenge" or it returns
+            # HTTP 403. Let yt-dlp auto-fetch the EJS solver script; it still
+            # needs a JS runtime (Deno) on PATH — start-gui.bat installs it.
+            *_ytdlp_ejs_args(),
             "--concurrent-fragments", "5",         # download DASH fragments in parallel — big speedup
             "--retries", "3", "--fragment-retries", "3",
             "-f", f"bv*[height<={h}]+ba/b[height<={h}]",

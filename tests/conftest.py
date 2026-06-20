@@ -27,6 +27,9 @@ def _reset_module_globals():
     import pipeline
     pipeline._VIDEO_ENCODER_MODE = "auto"
     pipeline._NVENC_CACHED = None
+    # Pretend yt-dlp lacks --remote-components so download tests don't spend a
+    # subprocess call probing --help (keeps their mock call sequence clean).
+    pipeline._YTDLP_EJS_PROBED = False
     try:
         pipeline._DISABLED_PHOTO_SOURCES.clear()
     except Exception:

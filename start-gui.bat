@@ -56,6 +56,24 @@ if not errorlevel 1 (
     )
 )
 
+REM --- Deno: JS-Runtime fuer yt-dlp (YouTube braucht den Challenge-Solver, sonst 403) ---
+REM winget legt einen stabilen Shim unter %LOCALAPPDATA%\Microsoft\WinGet\Links an;
+REM den haengen wir an PATH, damit die GUI im selben Fenster deno findet.
+set "PATH=%PATH%;%LOCALAPPDATA%\Microsoft\WinGet\Links"
+where deno >nul 2>nul
+if errorlevel 1 (
+    echo Deno nicht gefunden - wird fuer YouTube-Downloads installiert...
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo HINWEIS: winget fehlt. Installiere Deno manuell von https://deno.land
+        echo          sonst koennen YouTube-Videos evtl. nicht geladen werden.
+    ) else (
+        winget install DenoLand.Deno --accept-source-agreements --accept-package-agreements --silent
+        set "PATH=%PATH%;%LOCALAPPDATA%\Microsoft\WinGet\Links"
+        echo.
+    )
+)
+
 echo ===========================================
 echo  Bezys Shorts Generator
 echo ===========================================
