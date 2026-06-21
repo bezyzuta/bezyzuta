@@ -157,27 +157,44 @@ def _render_snippet_from_clip(clip: Path, song: Path, song_start: float, dur: fl
     P.run_capture_stderr(cmd, cwd=str(ass_path.parent))
 
 
+# Ken-Burns-Varianten (zoom_in, dx, dy): pro Clip eine andere → die vielen
+# Snippets bewegen sich unterschiedlich statt alle gleich. dx/dy = Schwenk-
+# richtung (-1/0/1).
+_KB_VARIANTS = [
+    (True,  1,  0), (True, -1,  0), (True,  0,  1), (True,  1,  1),
+    (True, -1,  1), (False, 1,  0), (False, -1, -1), (False, 0, -1),
+    (False, 1, -1), (True, -1, -1),
+]
+
+
+def _ken_burns_zoompan(frames: int, fps: int, w: int, h: int, variant) -> str:
+    """zoompan-Filter für eine Ken-Burns-Variante (rein/raus + Schwenkrichtung).
+    on-basierte lineare Kurve = vorhersehbar (kein zappeln)."""
+    zoom_in, dx, dy = variant
+    f = max(1, frames)
+    # 1.0↔1.30 linear über den Clip.
+    zexpr = f"1.0+0.30*on/{f}" if zoom_in else f"1.30-0.30*on/{f}"
+    xexpr = f"iw/2-(iw/zoom/2)+(iw*0.09)*{dx}*(on/{f}-0.5)"
+    yexpr = f"ih/2-(ih/zoom/2)+(ih*0.06)*{dy}*(on/{f}-0.5)"
+    return (f"zoompan=z='{zexpr}':d={f}:x='{xexpr}':y='{yexpr}'"
+            f":s={w}x{h}:fps={fps}")
+
+
 def _render_snippet(image: Path, song: Path, song_start: float, dur: float,
-                    ass_path: Path, out_path: Path, cfg, on_step=None) -> None:
-    """Einen 9:16-Clip rendern: Standbild → Ken-Burns-Zoom, S/W + dunkel +
-    Filmkorn, zentrierte Lyrics, darunter der Song-Ausschnitt. ffmpeg-Filter
-    nach bewährtem Muster; subtitles liest die ASS aus dem cwd (wie in
-    compose_short)."""
+                    ass_path: Path, out_path: Path, cfg, on_step=None,
+                    kb_variant=None) -> None:
+    """Einen 9:16-Clip rendern: Standbild → Ken-Burns (variabel pro Clip),
+    S/W + dunkel + Filmkorn, zentrierte Lyrics, darunter der Song-Ausschnitt."""
     w, h = int(cfg.target_w), int(cfg.target_h)
     fps = 30
     frames = max(1, int(round(dur * fps)))
     # 2x vorskalieren glättet zoompan (sonst ruckelt es auf kleinen Bildern).
-    # Kräftige Ken-Burns: deutlich reinzoomen (bis 1.30) UND diagonal driften,
-    # damit echte Bewegung sichtbar ist (nicht nur ein Hauch Zoom).
     big_w, big_h = w * 2, h * 2
-    zexpr = "min(zoom+0.0022,1.30)"
-    xexpr = f"iw/2-(iw/zoom/2)+(iw*0.08)*(on/{frames}-0.5)"   # ←→ Schwenk
-    yexpr = f"ih/2-(ih/zoom/2)+(ih*0.05)*(on/{frames}-0.5)"   # ↕ leichter Schwenk
+    variant = kb_variant or _KB_VARIANTS[0]
     vf = (
         f"scale={big_w}:{big_h}:force_original_aspect_ratio=increase,"
         f"crop={big_w}:{big_h},"
-        f"zoompan=z='{zexpr}':d={frames}"
-        f":x='{xexpr}':y='{yexpr}':s={w}x{h}:fps={fps},"
+        f"{_ken_burns_zoompan(frames, fps, w, h, variant)},"
         f"hue=s=0,"                                   # Schwarzweiss
         f"eq=contrast=1.08:brightness=-0.06:gamma=0.95,"  # abgedunkelt
         f"noise=alls=9:allf=t,"                       # Filmkorn
@@ -305,7 +322,11 @@ def run_music_snippet(job: dict, cfg, on_step=None) -> list:
             if anim_clip is not None:
                 _render_snippet_from_clip(anim_clip, song, s_start, dur, ass, out_mp4, cfg)
             else:
-                _render_snippet(img, song, s_start, dur, ass, out_mp4, cfg, on_step=step)
+                # Pro Clip eine zufällige Ken-Burns-Variante → jeder Clip
+                # bewegt sich anders (rein/raus, andere Schwenkrichtung).
+                kb = random.choice(_KB_VARIANTS)
+                _render_snippet(img, song, s_start, dur, ass, out_mp4, cfg,
+                                on_step=step, kb_variant=kb)
             outputs.append(out_mp4)
             step(f"      ✓ {out_mp4.name}")
         except Exception as e:
