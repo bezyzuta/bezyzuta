@@ -24,6 +24,7 @@ def find_free_port(start: int = 7860, end: int = 7880) -> int:
     return start
 
 from pipeline import Config, run_one, run_multiclip
+from music_snippet import run_music_snippet
 
 
 _MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
@@ -167,10 +168,13 @@ def generate(
         # but PORTRAIT 9:16 and WITHOUT the forced hand-drawn style (uses the
         # normal AI-image chain — Grok first if enabled). No YouTube source.
         _ai_image_short = _fmt == "ai_image_short"
-        _no_source = _faceless or _ai_image_short
+        # Music-Snippet: eigener Pfad (music_snippet.run_music_snippet), 9:16,
+        # kein YouTube-Source, kein Voice/Skript — viele Clips für 1 Song.
+        _music_snippet = _fmt == "music_snippet"
+        _no_source = _faceless or _ai_image_short or _music_snippet
         if _fmt in ("landscape", "faceless"):
             cfg.target_w, cfg.target_h = 1920, 1080
-        else:  # portrait OR ai_image_short
+        else:  # portrait OR ai_image_short OR music_snippet
             cfg.target_w, cfg.target_h = 1080, 1920
         # Claude-CLI provider toggle (overrides config.json for this run).
         cfg.use_claude_cli = bool(use_claude_cli)
@@ -189,7 +193,9 @@ def generate(
         return
 
     last_video = None
-    n = max(1, int(batch_count))
+    # Music-Snippet: EIN Aufruf, der intern batch_count Clips baut (sonst
+    # würde die äußere Schleife batch_count× je batch_count Clips erzeugen).
+    n = 1 if _music_snippet else max(1, int(batch_count))
 
     for run_i in range(n):
         base_slug = slugify(topic)
@@ -280,6 +286,11 @@ def generate(
             # crash-prone in faceless mode, so force it off there.
             "multiclip_enabled": bool(multiclip_enabled) and not _no_source,
             "multiclip_count": int(multiclip_count),
+            # Music-Snippet-Modus: eigener Render-Pfad. batch_count = Anzahl
+            # Clips, target_duration = Clip-Länge, music_dir/track = der Song.
+            "music_snippet": bool(_music_snippet),
+            "snippet_count": int(batch_count),
+            "snippet_duration": float(target_duration),
             "enable_music": bool(enable_music),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
@@ -332,7 +343,11 @@ def generate(
 
         def worker(job=job, q=q, result=result):
             try:
-                if bool(job.get("multiclip_enabled")):
+                if bool(job.get("music_snippet")):
+                    outs = run_music_snippet(job, cfg, on_step=lambda m: q.put(m))
+                    result["out"] = outs[-1] if outs else None
+                    result["outs"] = outs
+                elif bool(job.get("multiclip_enabled")):
                     outs = run_multiclip(job, cfg, on_step=lambda m: q.put(m))
                     result["out"] = outs[-1] if outs else None
                     result["outs"] = outs
@@ -450,6 +465,7 @@ def build_app() -> gr.Blocks:
                 ("🎬 Lang-Video — 16:9 Querformat (1920×1080)", "landscape"),
                 ("📝 Faceless Story — 16:9 Querformat, handgezeichneter Stil", "faceless"),
                 ("🎨 KI-Bild-Short — 9:16 Hochformat, KI-Bilder (Grok), kein YT nötig", "ai_image_short"),
+                ("🎵 Musik-Snippet — viele 9:16-Clips für 1 Song (TikTok-Push)", "music_snippet"),
             ],
             value="portrait",
             label="🖼️ Output-Format",
