@@ -176,11 +176,12 @@ def run_music_snippet(job: dict, cfg, on_step=None) -> list:
     """N optisch verschiedene Musik-Snippets aus einem Song bauen. Gibt die
     Liste der erzeugten mp4-Pfade zurück."""
     def step(msg: str):
+        # Immer ins Terminal UND (wenn vorhanden) in die GUI — sonst sieht man
+        # im Terminal nichts, weil die GUI on_step abfängt.
         if on_step:
             try: on_step(msg)
             except Exception: pass
-        else:
-            print(msg)
+        print(msg)
 
     base_slug = job.get("slug") or "snippet"
     n = max(1, min(int(job.get("snippet_count", job.get("batch_count", 5))), 50))

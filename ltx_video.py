@@ -95,11 +95,15 @@ def animate_image(image_path: Path, out_clip: Path, theme: str, cfg,
     cmd = [py, "-c", _LTXV_CHILD, str(image_path), prompt, str(out_clip),
            str(frames), str(w), str(h), str(steps), str(fps), model]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        # NICHT capturen: so streamt die Diffusion-Fortschrittsanzeige (tqdm)
+        # live ins Terminal — sonst sieht man 1-3 Min lang kein Lebenszeichen.
+        proc = subprocess.run(cmd, timeout=900)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError("LTX-Video Timeout (>15 Min)") from e
     if proc.returncode != 0 or not out_clip.is_file() or out_clip.stat().st_size < 1024:
-        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-6:])
-        raise RuntimeError(f"LTX-Video fehlgeschlagen (exit {proc.returncode}): {tail[:300]}")
+        raise RuntimeError(
+            f"LTX-Video fehlgeschlagen (exit {proc.returncode}) — Details im "
+            "Terminal (z.B. CUDA out-of-memory → ltxv_width/height oder "
+            "ltxv_frames in config.json senken).")
     log(f"      LTX-Video: Clip fertig → {out_clip.name}")
     return out_clip
