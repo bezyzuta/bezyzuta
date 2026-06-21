@@ -198,7 +198,12 @@ def run_music_snippet(job: dict, cfg, on_step=None) -> list:
     song_dur = P._media_duration(song)
     if song_dur <= 1.0:
         raise RuntimeError(f"Song-Dauer nicht lesbar: {song}")
-    step(f"      Song: {song.name} ({song_dur:.0f}s) → {n} Snippets à {dur:.0f}s")
+    # Ein Snippet darf NIE länger sein als der Song selbst (sonst läuft am Ende
+    # Stille / das Bild ohne Ton weiter). Bei kürzerem Song: Clip = Songlänge.
+    if song_dur < dur:
+        step(f"      Song nur {song_dur:.1f}s — Snippet-Länge von {dur:.0f}s auf {song_dur:.1f}s gekürzt")
+        dur = song_dur
+    step(f"      Song: {song.name} ({song_dur:.0f}s) → {n} Snippets à {dur:.1f}s")
 
     # Lyrics EINMAL transkribieren (teuer), dann pro Clip ein Fenster nehmen.
     words: list = []

@@ -41,7 +41,7 @@ try:
 except Exception:
     pipe.to("cuda" if torch.cuda.is_available() else "cpu")
 
-image = load_image(img)
+image = load_image(img).convert("RGB").resize((width, height))
 result = pipe(
     image=image,
     prompt=prompt,
@@ -94,16 +94,23 @@ def animate_image(image_path: Path, out_clip: Path, theme: str, cfg,
     log(f"      LTX-Video: animiere Bild ({w}x{h}, {frames}f, {steps} steps) — kann 1-3 Min dauern")
     cmd = [py, "-c", _LTXV_CHILD, str(image_path), prompt, str(out_clip),
            str(frames), str(w), str(h), str(steps), str(fps), model]
+    # Vollständige Ausgabe (inkl. tqdm + Traceback) in eine Log-Datei schreiben,
+    # damit wir bei einem Fehlschlag NACH 5 Min wissen WARUM (statt zu raten).
+    log_file = out_clip.parent / "ltxv_log.txt"
     try:
-        # NICHT capturen: so streamt die Diffusion-Fortschrittsanzeige (tqdm)
-        # live ins Terminal — sonst sieht man 1-3 Min lang kein Lebenszeichen.
-        proc = subprocess.run(cmd, timeout=900)
+        with open(log_file, "w", encoding="utf-8", errors="ignore") as lf:
+            proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, timeout=1800)
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError("LTX-Video Timeout (>15 Min)") from e
+        raise RuntimeError("LTX-Video Timeout (>30 Min)") from e
     if proc.returncode != 0 or not out_clip.is_file() or out_clip.stat().st_size < 1024:
+        tail = ""
+        try:
+            tail = "\n".join(log_file.read_text(encoding="utf-8", errors="ignore")
+                             .strip().splitlines()[-8:])
+        except Exception:
+            pass
         raise RuntimeError(
-            f"LTX-Video fehlgeschlagen (exit {proc.returncode}) — Details im "
-            "Terminal (z.B. CUDA out-of-memory → ltxv_width/height oder "
-            "ltxv_frames in config.json senken).")
+            f"LTX-Video fehlgeschlagen (exit {proc.returncode}). Letzte Zeilen "
+            f"(volles Log: {log_file}):\n{tail[:500]}")
     log(f"      LTX-Video: Clip fertig → {out_clip.name}")
     return out_clip
