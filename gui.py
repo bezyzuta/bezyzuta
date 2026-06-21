@@ -25,6 +25,7 @@ def find_free_port(start: int = 7860, end: int = 7880) -> int:
 
 from pipeline import Config, run_one, run_multiclip
 from music_snippet import run_music_snippet
+from caption_video import run_caption_video
 
 
 _MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
@@ -171,7 +172,10 @@ def generate(
         # Music-Snippet: eigener Pfad (music_snippet.run_music_snippet), 9:16,
         # kein YouTube-Source, kein Voice/Skript — viele Clips für 1 Song.
         _music_snippet = _fmt == "music_snippet"
-        _no_source = _faceless or _ai_image_short or _music_snippet
+        # Eigenes Video + Untertitel: User-Video hochladen, WhisperX-Text mittig
+        # drüber (caption_video.run_caption_video). Keine YouTube-Quelle.
+        _caption_video = _fmt == "caption_video"
+        _no_source = _faceless or _ai_image_short or _music_snippet or _caption_video
         if _fmt in ("landscape", "faceless"):
             cfg.target_w, cfg.target_h = 1920, 1080
         else:  # portrait OR ai_image_short OR music_snippet
@@ -193,9 +197,9 @@ def generate(
         return
 
     last_video = None
-    # Music-Snippet: EIN Aufruf, der intern batch_count Clips baut (sonst
-    # würde die äußere Schleife batch_count× je batch_count Clips erzeugen).
-    n = 1 if _music_snippet else max(1, int(batch_count))
+    # Music-Snippet (ein Aufruf baut intern batch_count Clips) und Caption-Video
+    # (ein hochgeladenes Video) laufen je EINMAL — nicht batch_count-mal.
+    n = 1 if (_music_snippet or _caption_video) else max(1, int(batch_count))
 
     for run_i in range(n):
         base_slug = slugify(topic)
@@ -291,6 +295,7 @@ def generate(
             "music_snippet": bool(_music_snippet),
             "snippet_count": int(batch_count),
             "snippet_duration": float(target_duration),
+            "caption_video": bool(_caption_video),
             "enable_music": bool(enable_music),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
@@ -320,6 +325,9 @@ def generate(
                     uploaded_paths.append(f)
         if uploaded_paths:
             job["image_paths"] = uploaded_paths
+        # Caption-Video-Modus: das hochgeladene File IST das zu untertitelnde Video.
+        if _caption_video and uploaded_paths:
+            job["caption_video_path"] = uploaded_paths[0]
         # Faceless / KI-Bild-Short have no gameplay background → no URL needed.
         if _no_source:
             pass
@@ -343,7 +351,10 @@ def generate(
 
         def worker(job=job, q=q, result=result):
             try:
-                if bool(job.get("music_snippet")):
+                if bool(job.get("caption_video")):
+                    out = run_caption_video(job, cfg, on_step=lambda m: q.put(m))
+                    result["out"] = out
+                elif bool(job.get("music_snippet")):
                     outs = run_music_snippet(job, cfg, on_step=lambda m: q.put(m))
                     result["out"] = outs[-1] if outs else None
                     result["outs"] = outs
@@ -466,6 +477,7 @@ def build_app() -> gr.Blocks:
                 ("📝 Faceless Story — 16:9 Querformat, handgezeichneter Stil", "faceless"),
                 ("🎨 KI-Bild-Short — 9:16 Hochformat, KI-Bilder (Grok), kein YT nötig", "ai_image_short"),
                 ("🎵 Musik-Snippet — viele 9:16-Clips für 1 Song (TikTok-Push)", "music_snippet"),
+                ("📹 Eigenes Video + Untertitel — dein Canva-Video, WhisperX-Text mittig", "caption_video"),
             ],
             value="portrait",
             label="🖼️ Output-Format",
@@ -870,8 +882,8 @@ def build_app() -> gr.Blocks:
             )
             uploaded_images = gr.File(
                 file_count="multiple",
-                file_types=["image"],
-                label="Eigene Bilder hochladen (überschreibt Auto-Generierung komplett)",
+                file_types=["image", "video"],
+                label="Eigene Bilder hochladen (überschreibt Auto-Generierung) — oder dein fertiges Video im '📹 Eigenes Video + Untertitel'-Modus",
             )
             skip_images = gr.Checkbox(value=False, label="Bilder komplett überspringen")
             image_tilt = gr.Checkbox(
