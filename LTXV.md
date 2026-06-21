@@ -24,8 +24,10 @@ per Subprozess aufgerufen — genau wie WhisperX. Dein Haupt-venv bleibt sauber.
    ```
    ltxv-venv\Scripts\python.exe -m pip install --upgrade pip
    ltxv-venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-   ltxv-venv\Scripts\python.exe -m pip install "diffusers>=0.32" transformers accelerate imageio imageio-ffmpeg sentencepiece
+   ltxv-venv\Scripts\python.exe -m pip install "diffusers>=0.32" transformers accelerate imageio imageio-ffmpeg sentencepiece protobuf tiktoken
    ```
+   > `protobuf` + `tiktoken` sind PFLICHT — der Text-Encoder von LTX-Video lädt
+   > sonst seinen Tokenizer nicht und bricht erst NACH dem Modell-Laden ab.
 
 3. **In `config.json` eintragen** (Pfad zur python.exe des neuen venv, doppelte Backslashes!):
    ```json
