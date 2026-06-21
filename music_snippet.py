@@ -173,15 +173,20 @@ def run_music_snippet(job: dict, cfg, on_step=None) -> list:
     if bool(job.get("snippet_lyrics", True)):
         step(f"[SNIPPET 2/3] Songtext mit Whisper transkribieren")
         try:
+            # Songs können in JEDER Sprache sein (z.B. brasilianisches
+            # Portugiesisch) — daher Lyrics IMMER automatisch erkennen, nicht
+            # die Stimmen-Sprache (tts_language) nehmen. Per job-Feld
+            # "snippet_lyrics_lang" überschreibbar (z.B. "pt" erzwingen).
+            lyrics_lang = str(job.get("snippet_lyrics_lang", "auto") or "auto")
             words, _dev = P.transcribe_words_best(
                 song, cfg.whisper_model,
                 device=str(job.get("whisper_device", "auto")),
                 use_whisperx=bool(getattr(cfg, "use_whisperx", False)),
-                language=str(job.get("tts_language", "auto") or "auto"),
+                language=lyrics_lang,
                 whisperx_python=str(getattr(cfg, "whisperx_python", "") or ""),
                 on_step=step,
             )
-            step(f"      {len(words)} Wörter transkribiert")
+            step(f"      {len(words)} Wörter transkribiert (Sprache: {lyrics_lang})")
         except Exception as e:
             step(f"      WARN: Transkription fehlgeschlagen ({str(e)[:140]}) — Snippets ohne Text")
             words = []
