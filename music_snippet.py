@@ -140,7 +140,8 @@ def _make_pingpong(clip: Path, out_path: Path) -> Path:
 
 
 def _render_snippet_from_clip(clip: Path, song: Path, song_start: float, dur: float,
-                              ass_path: Path, out_path: Path, cfg) -> None:
+                              ass_path: Path, out_path: Path, cfg,
+                              saturation: float = 0.15) -> None:
     """Wie _render_snippet, aber Quelle ist ein ANIMIERTER Clip (LTX-Video)
     statt eines Standbilds. Der Clip wird zu einem nahtlosen Ping-Pong gemacht,
     formatfüllend skaliert, geloopt bis er die Snippet-Länge erreicht, dann
@@ -155,7 +156,7 @@ def _render_snippet_from_clip(clip: Path, song: Path, song_start: float, dur: fl
     vf = (
         f"scale={w}:{h}:force_original_aspect_ratio=increase,"
         f"crop={w}:{h},"
-        f"hue=s=0,"
+        f"hue=s={max(0.0, float(saturation)):.2f},"   # fast S/W, nur ein Hauch Farbe
         f"eq=contrast=1.08:brightness=-0.06:gamma=0.95,"
         f"noise=alls=9:allf=t,"
         f"subtitles={ass_path.name},setsar=1"
@@ -201,9 +202,9 @@ def _ken_burns_zoompan(frames: int, fps: int, w: int, h: int, variant) -> str:
 
 def _render_snippet(image: Path, song: Path, song_start: float, dur: float,
                     ass_path: Path, out_path: Path, cfg, on_step=None,
-                    kb_variant=None) -> None:
+                    kb_variant=None, saturation: float = 0.15) -> None:
     """Einen 9:16-Clip rendern: Standbild → Ken-Burns (variabel pro Clip),
-    S/W + dunkel + Filmkorn, zentrierte Lyrics, darunter der Song-Ausschnitt."""
+    fast S/W + dunkel + Filmkorn, zentrierte Lyrics, darunter der Song-Ausschnitt."""
     w, h = int(cfg.target_w), int(cfg.target_h)
     fps = 30
     frames = max(1, int(round(dur * fps)))
@@ -214,7 +215,7 @@ def _render_snippet(image: Path, song: Path, song_start: float, dur: float,
         f"scale={big_w}:{big_h}:force_original_aspect_ratio=increase,"
         f"crop={big_w}:{big_h},"
         f"{_ken_burns_zoompan(frames, fps, w, h, variant)},"
-        f"hue=s=0,"                                   # Schwarzweiss
+        f"hue=s={max(0.0, float(saturation)):.2f},"   # fast S/W, nur ein Hauch Farbe
         f"eq=contrast=1.08:brightness=-0.06:gamma=0.95,"  # abgedunkelt
         f"noise=alls=9:allf=t,"                       # Filmkorn
         f"subtitles={ass_path.name},setsar=1"
@@ -338,15 +339,19 @@ def run_music_snippet(job: dict, cfg, on_step=None) -> list:
                 anim_clip = None
         # Render
         out_mp4 = out_root / f"{base_slug}_snippet_{i:02d}.mp4"
+        # Sättigung: 0 = komplett S/W, ~0.15 = nur ein Hauch Farbe (Default),
+        # per job["snippet_saturation"] einstellbar.
+        sat = float(job.get("snippet_saturation", 0.15))
         try:
             if anim_clip is not None:
-                _render_snippet_from_clip(anim_clip, song, s_start, dur, ass, out_mp4, cfg)
+                _render_snippet_from_clip(anim_clip, song, s_start, dur, ass, out_mp4, cfg,
+                                          saturation=sat)
             else:
                 # Pro Clip eine zufällige Ken-Burns-Variante → jeder Clip
                 # bewegt sich anders (rein/raus, andere Schwenkrichtung).
                 kb = random.choice(_KB_VARIANTS)
                 _render_snippet(img, song, s_start, dur, ass, out_mp4, cfg,
-                                on_step=step, kb_variant=kb)
+                                on_step=step, kb_variant=kb, saturation=sat)
             outputs.append(out_mp4)
             step(f"      ✓ {out_mp4.name}")
         except Exception as e:
