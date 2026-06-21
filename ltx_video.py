@@ -55,11 +55,13 @@ print("OK", flush=True)
 
 
 def _motion_prompt(theme: str) -> str:
-    """Bewegungs-Prompt aus dem Bild-Thema bauen — ruhige, cinematische
-    Kamera-Bewegung passend zum dunklen Musik-Look."""
+    """Bewegungs-Prompt aus dem Bild-Thema bauen. Bewusst BEWEGUNGS-betont
+    (nicht 'subtle/slow' — das ergab fast statische Clips), damit LTX-Video
+    sichtbar animiert: Bewegung im Motiv + Kamerafahrt."""
     base = (theme or "cinematic scene").strip()
-    return (f"{base}, slow cinematic camera push-in, subtle atmospheric motion, "
-            "drifting light and shadow, film grain, moody dark aesthetic")
+    return (f"{base}, the scene is in motion, people and elements moving "
+            "naturally, smooth dynamic cinematic camera movement, flowing "
+            "motion, drifting light and shadow, moody dark cinematic aesthetic")
 
 
 def animate_image(image_path: Path, out_clip: Path, theme: str, cfg,
