@@ -45,7 +45,7 @@ image = load_image(img).convert("RGB").resize((width, height))
 result = pipe(
     image=image,
     prompt=prompt,
-    negative_prompt="worst quality, blurry, distorted, watermark, text",
+    negative_prompt="static, still image, frozen, motionless, no motion, worst quality, blurry, distorted, watermark, text",
     width=width, height=height, num_frames=frames,
     num_inference_steps=steps,
 )
