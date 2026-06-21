@@ -117,6 +117,18 @@ class Config:
     # out-of-process in its own env. Empty = use the main interpreter (only
     # works if whisperx is somehow installed here too — usually it can't be).
     whisperx_python: str
+    # Local AI image-to-video (LTX-Video) for the music-snippet mode. Heavy
+    # diffusion deps conflict with the main venv (torch/numpy), so it runs in
+    # its OWN venv via subprocess — ltxv_python points at that interpreter.
+    # All opt-in; falls back to the Ken-Burns still on any failure.
+    use_ltx_video: bool
+    ltxv_python: str
+    ltxv_model: str
+    ltxv_steps: int
+    ltxv_frames: int
+    ltxv_width: int
+    ltxv_height: int
+    ltxv_fps: int
     # Max height for the downloaded gameplay source. 1080 default; drop to 720
     # for much faster downloads (a vertical short is cropped+scaled anyway).
     download_max_height: int
@@ -230,6 +242,14 @@ class Config:
             whisper_model=data.get("whisper_model", "small"),
             use_whisperx=bool(data.get("use_whisperx", False)),
             whisperx_python=str(data.get("whisperx_python", "")).strip(),
+            use_ltx_video=bool(data.get("use_ltx_video", False)),
+            ltxv_python=str(data.get("ltxv_python", "")).strip(),
+            ltxv_model=str(data.get("ltxv_model", "Lightricks/LTX-Video")).strip(),
+            ltxv_steps=int(data.get("ltxv_steps", 30)),
+            ltxv_frames=int(data.get("ltxv_frames", 97)),
+            ltxv_width=int(data.get("ltxv_width", 480)),
+            ltxv_height=int(data.get("ltxv_height", 832)),
+            ltxv_fps=int(data.get("ltxv_fps", 24)),
             download_max_height=int(data.get("download_max_height", 1080)),
             target_w=int(w),
             target_h=int(h),

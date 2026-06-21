@@ -104,6 +104,37 @@ def _generate_dark_image(prompt: str, out_path: Path, cfg, on_step=None) -> bool
     return False
 
 
+def _render_snippet_from_clip(clip: Path, song: Path, song_start: float, dur: float,
+                              ass_path: Path, out_path: Path, cfg) -> None:
+    """Wie _render_snippet, aber Quelle ist ein ANIMIERTER Clip (LTX-Video)
+    statt eines Standbilds. Der Clip wird formatfüllend skaliert, geloopt bis
+    er die Snippet-Länge erreicht, dann S/W + dunkel + Korn + zentrierte
+    Lyrics, darunter der Song-Ausschnitt."""
+    w, h = int(cfg.target_w), int(cfg.target_h)
+    vf = (
+        f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+        f"crop={w}:{h},"
+        f"hue=s=0,"
+        f"eq=contrast=1.08:brightness=-0.06:gamma=0.95,"
+        f"noise=alls=9:allf=t,"
+        f"subtitles={ass_path.name},setsar=1"
+    )
+    cmd = [
+        "ffmpeg", "-y",
+        # Clip loopen, bis die Snippet-Länge erreicht ist (LTX macht nur ~4s).
+        "-stream_loop", "-1", "-t", f"{dur:.2f}", "-i", str(clip),
+        "-ss", f"{song_start:.2f}", "-t", f"{dur:.2f}", "-i", str(song),
+        "-filter_complex", f"[0:v]{vf}[v]",
+        "-map", "[v]", "-map", "1:a",
+        *P._vcodec("standard"),
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-t", f"{dur:.2f}", "-movflags", "+faststart",
+        str(out_path),
+    ]
+    P.run_capture_stderr(cmd, cwd=str(ass_path.parent))
+
+
 def _render_snippet(image: Path, song: Path, song_start: float, dur: float,
                     ass_path: Path, out_path: Path, cfg, on_step=None) -> None:
     """Einen 9:16-Clip rendern: Standbild → Ken-Burns-Zoom, S/W + dunkel +
@@ -224,10 +255,24 @@ def run_music_snippet(job: dict, cfg, on_step=None) -> list:
             # Leere ASS, damit der subtitles-Filter nicht crasht.
             ass.write_text("[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\n\n[Events]\n",
                            encoding="utf-8")
+        # Optional: das Standbild per LTX-Video zu echtem Bewegtbild animieren
+        # (eigener venv, GPU). Fällt bei JEDEM Fehler auf Ken-Burns zurück.
+        anim_clip = None
+        if bool(getattr(cfg, "use_ltx_video", False)):
+            try:
+                import ltx_video
+                anim_clip = ltx_video.animate_image(
+                    img, work / f"anim_{i:02d}.mp4", theme, cfg, on_step=step)
+            except Exception as e:
+                step(f"      LTX-Video übersprungen ({str(e)[:140]}) — nutze Ken-Burns-Standbild")
+                anim_clip = None
         # Render
         out_mp4 = out_root / f"{base_slug}_snippet_{i:02d}.mp4"
         try:
-            _render_snippet(img, song, s_start, dur, ass, out_mp4, cfg, on_step=step)
+            if anim_clip is not None:
+                _render_snippet_from_clip(anim_clip, song, s_start, dur, ass, out_mp4, cfg)
+            else:
+                _render_snippet(img, song, s_start, dur, ass, out_mp4, cfg, on_step=step)
             outputs.append(out_mp4)
             step(f"      ✓ {out_mp4.name}")
         except Exception as e:
