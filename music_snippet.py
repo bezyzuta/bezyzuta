@@ -270,7 +270,8 @@ def run_music_snippet(job: dict, cfg, on_step=None) -> list:
                 anim_clip = ltx_video.animate_image(
                     img, work / f"anim_{i:02d}.mp4", theme, cfg, on_step=step)
             except Exception as e:
-                step(f"      LTX-Video übersprungen ({str(e)[:140]}) — nutze Ken-Burns-Standbild")
+                step(f"      LTX-Video übersprungen — nutze Ken-Burns-Standbild:")
+                step(f"      {str(e)[:600]}")
                 anim_clip = None
         # Render
         out_mp4 = out_root / f"{base_slug}_snippet_{i:02d}.mp4"
