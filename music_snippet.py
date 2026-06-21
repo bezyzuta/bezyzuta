@@ -31,6 +31,25 @@ _DARK_BW_SUFFIX = (
     "no text, no watermark"
 )
 
+# Pro Clip ein anderer Bild-„Winkel", damit nicht jedes Snippet dasselbe Bild
+# bekommt (Grok liefert bei identischem Prompt sonst dasselbe Bild).
+_IMAGE_VARIATIONS = [
+    "wide establishing shot", "intimate close-up", "low angle shot",
+    "high angle overhead shot", "side profile view", "shot from behind",
+    "dramatic over-the-shoulder framing", "symmetrical centered composition",
+    "rule-of-thirds composition", "dutch angle, tilted frame",
+    "extreme close-up detail", "full body wide framing",
+]
+
+
+def _vary_theme(theme: str, i: int) -> str:
+    """Das Bild-Thema pro Clip leicht abwandeln (andere Perspektive + Marker),
+    damit jeder Clip ein anderes Bild erhält — auch bei Grok (kein Seed)."""
+    import random as _r
+    angle = _IMAGE_VARIATIONS[(i - 1) % len(_IMAGE_VARIATIONS)]
+    # zusätzlicher Zufalls-Marker erzwingt bei Grok eine neue Generierung
+    return f"{theme.strip()}, {angle}, variation {i} seed {_r.randint(1, 999999)}"
+
 
 def _resolve_song(job: dict, cfg) -> Path:
     """Den zu pushenden Song bestimmen: explizit job['song_path'], sonst der in
@@ -278,9 +297,10 @@ def run_music_snippet(job: dict, cfg, on_step=None) -> list:
     small_size = int(job.get("snippet_font_size", max(40, int(cfg.target_h * 0.030))))
     for i in range(1, n + 1):
         step(f"  ── Clip {i}/{n}")
-        # Bild
+        # Bild — Thema PRO CLIP variieren, sonst kommt überall dasselbe Bild.
         img = work / f"img_{i:02d}.png"
-        if not _generate_dark_image(theme, img, cfg, on_step=step):
+        clip_theme = _vary_theme(theme, i)
+        if not _generate_dark_image(clip_theme, img, cfg, on_step=step):
             step(f"  ── Clip {i}: kein Bild erzeugt — übersprungen")
             continue
         # Song-Fenster (zufällig, für Abwechslung)
