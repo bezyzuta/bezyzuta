@@ -166,14 +166,18 @@ def _render_snippet(image: Path, song: Path, song_start: float, dur: float,
     w, h = int(cfg.target_w), int(cfg.target_h)
     fps = 30
     frames = max(1, int(round(dur * fps)))
-    # 2x vorskalieren glättet zoompan (sonst ruckelt es auf kleinen Bildern),
-    # dann langsam von 1.0 auf 1.12 zoomen, mittig.
+    # 2x vorskalieren glättet zoompan (sonst ruckelt es auf kleinen Bildern).
+    # Kräftige Ken-Burns: deutlich reinzoomen (bis 1.30) UND diagonal driften,
+    # damit echte Bewegung sichtbar ist (nicht nur ein Hauch Zoom).
     big_w, big_h = w * 2, h * 2
+    zexpr = "min(zoom+0.0022,1.30)"
+    xexpr = f"iw/2-(iw/zoom/2)+(iw*0.08)*(on/{frames}-0.5)"   # ←→ Schwenk
+    yexpr = f"ih/2-(ih/zoom/2)+(ih*0.05)*(on/{frames}-0.5)"   # ↕ leichter Schwenk
     vf = (
         f"scale={big_w}:{big_h}:force_original_aspect_ratio=increase,"
         f"crop={big_w}:{big_h},"
-        f"zoompan=z='min(zoom+0.0009,1.12)':d={frames}"
-        f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={fps},"
+        f"zoompan=z='{zexpr}':d={frames}"
+        f":x='{xexpr}':y='{yexpr}':s={w}x{h}:fps={fps},"
         f"hue=s=0,"                                   # Schwarzweiss
         f"eq=contrast=1.08:brightness=-0.06:gamma=0.95,"  # abgedunkelt
         f"noise=alls=9:allf=t,"                       # Filmkorn
