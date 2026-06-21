@@ -104,13 +104,35 @@ def _generate_dark_image(prompt: str, out_path: Path, cfg, on_step=None) -> bool
     return False
 
 
+def _make_pingpong(clip: Path, out_path: Path) -> Path:
+    """Aus dem kurzen LTX-Clip eine nahtlose Ping-Pong-Version bauen (vorwärts
+    + rückwärts aneinandergehängt). Beim späteren Loopen springt es so nicht
+    hart auf den Anfang zurück, sondern läuft durchgehend hin und her — kein
+    sichtbarer Loop-Sprung. `reverse` puffert den ganzen Clip; bei ~4-8s ok."""
+    P.run_capture_stderr([
+        "ffmpeg", "-y", "-i", str(clip),
+        "-filter_complex", "[0:v]split[a][b];[b]reverse[r];[a][r]concat=n=2:v=1[v]",
+        "-map", "[v]", "-an",
+        *P._vcodec("fast"),
+        "-pix_fmt", "yuv420p",
+        str(out_path),
+    ])
+    return out_path
+
+
 def _render_snippet_from_clip(clip: Path, song: Path, song_start: float, dur: float,
                               ass_path: Path, out_path: Path, cfg) -> None:
     """Wie _render_snippet, aber Quelle ist ein ANIMIERTER Clip (LTX-Video)
-    statt eines Standbilds. Der Clip wird formatfüllend skaliert, geloopt bis
-    er die Snippet-Länge erreicht, dann S/W + dunkel + Korn + zentrierte
-    Lyrics, darunter der Song-Ausschnitt."""
+    statt eines Standbilds. Der Clip wird zu einem nahtlosen Ping-Pong gemacht,
+    formatfüllend skaliert, geloopt bis er die Snippet-Länge erreicht, dann
+    S/W + dunkel + Korn + zentrierte Lyrics, darunter der Song-Ausschnitt."""
     w, h = int(cfg.target_w), int(cfg.target_h)
+    # Nahtlose Ping-Pong-Quelle bauen; klappt das nicht, den Roh-Clip nehmen.
+    src = clip
+    try:
+        src = _make_pingpong(clip, clip.with_name(clip.stem + "_pp.mp4"))
+    except Exception:
+        src = clip
     vf = (
         f"scale={w}:{h}:force_original_aspect_ratio=increase,"
         f"crop={w}:{h},"
@@ -121,8 +143,8 @@ def _render_snippet_from_clip(clip: Path, song: Path, song_start: float, dur: fl
     )
     cmd = [
         "ffmpeg", "-y",
-        # Clip loopen, bis die Snippet-Länge erreicht ist (LTX macht nur ~4s).
-        "-stream_loop", "-1", "-t", f"{dur:.2f}", "-i", str(clip),
+        # Ping-Pong-Clip nahtlos loopen, bis die Snippet-Länge erreicht ist.
+        "-stream_loop", "-1", "-t", f"{dur:.2f}", "-i", str(src),
         "-ss", f"{song_start:.2f}", "-t", f"{dur:.2f}", "-i", str(song),
         "-filter_complex", f"[0:v]{vf}[v]",
         "-map", "[v]", "-map", "1:a",
