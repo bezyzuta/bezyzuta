@@ -1281,17 +1281,36 @@ def main() -> None:
     print(f"Starte GUI auf http://{host}:{port}"
           + (" (Login aktiv)" if auth else ""))
 
-    # Gradio 6 takes theme + css on launch() (not on Blocks). Try the
-    # styled launch; fall back to a bare launch on older Gradio that
-    # doesn't accept these kwargs here.
+    # Event-Handler (v.a. der Generator `generate`) brauchen die Queue.
+    try:
+        app.queue()
+    except Exception:
+        pass
+
     base_kw = dict(server_name=host, server_port=port,
                    inbrowser=inbrowser, allowed_paths=allowed)
     if auth:
         base_kw["auth"] = auth
-    try:
-        app.launch(theme=_theme(), css=_CUSTOM_CSS, **base_kw)
-    except TypeError:
-        app.launch(**base_kw)
+
+    # WICHTIG für Tailscale/LAN-Zugriff: ssr_mode=False. Mit dem (ab Gradio 5/6
+    # standardmäßig aktiven) Server-Side-Rendering zeigen die Interaktions-
+    # Aufrufe der Oberfläche auf localhost — ein entferntes Gerät erreicht das
+    # nicht, dann funktionieren Umschalter/Buttons nicht. Ohne SSR laufen die
+    # Events über die normale API und klappen auch remote.
+    # Gradio 6 nimmt theme + css auf launch(). Nacheinander von voll → schlicht
+    # probieren, damit ältere Gradio-Versionen (die ein kwarg nicht kennen)
+    # nicht crashen.
+    for kw in (
+        dict(theme=_theme(), css=_CUSTOM_CSS, ssr_mode=False, **base_kw),
+        dict(ssr_mode=False, **base_kw),
+        dict(theme=_theme(), css=_CUSTOM_CSS, **base_kw),
+        dict(**base_kw),
+    ):
+        try:
+            app.launch(**kw)
+            break
+        except TypeError:
+            continue
 
 
 if __name__ == "__main__":
