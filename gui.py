@@ -526,11 +526,14 @@ def build_app() -> gr.Blocks:
                 ["Kanal scrapen", "Direkt-URL"],
                 value="Kanal scrapen",
                 label="Modus",
+                info="Wähle den Modus und fülle das passende Feld darunter aus. "
+                     "Beide Felder sind immer sichtbar, damit es auch über "
+                     "Tailscale/Handy zuverlässig funktioniert.",
             )
             with gr.Group() as channel_group:
                 channel_url = gr.Textbox(
                     value="https://www.youtube.com/@DopeGameplays/videos",
-                    label="YouTube-Kanal-URL",
+                    label="YouTube-Kanal-URL (nur im Modus 'Kanal scrapen')",
                 )
                 title_filter = gr.Textbox(
                     value="roblox, doors, blox fruits, brookhaven, tower of hell, obby, blox, evade, adopt me, jailbreak, bedwars, piggy",
@@ -540,10 +543,13 @@ def build_app() -> gr.Blocks:
                     30, 500, value=200, step=10,
                     label="Channel-Tiefe (wie viele letzte Videos im Pool)",
                 )
-            with gr.Group(visible=False) as url_group:
+            # Immer sichtbar (KEIN visible=False): der Sichtbarkeits-Umschalter
+            # braucht einen Server-Event, der über Tailscale/LAN nicht ankommt —
+            # so bleibt das URL-Feld remote erreichbar.
+            with gr.Group() as url_group:
                 source_url = gr.Textbox(
                     value="",
-                    label="YouTube-Video-URL",
+                    label="YouTube-Video-URL (nur im Modus 'Direkt-URL')",
                     placeholder="https://www.youtube.com/watch?v=...",
                     interactive=True,
                 )
@@ -636,8 +642,8 @@ def build_app() -> gr.Blocks:
                     ),
                     info='Beispiele: "1:18-1:25" (M:SS), "0:01:30-0:01:45" (H:MM:SS), "78-85" (Sekunden). '
                          'Die ausgewählten Bereiche werden in der Reihenfolge zusammen­geschnitten. '
-                         'Ziel-Länge und Anzahl Szenen-Cuts werden ignoriert wenn dieser Modus aktiv ist.',
-                    visible=False,
+                         'Ziel-Länge und Anzahl Szenen-Cuts werden ignoriert wenn dieser Modus aktiv ist. '
+                         'Nur relevant im Szenen-Modus "Manuell".',
                 )
             auto_reframe = gr.Checkbox(
                 value=False,
