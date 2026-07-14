@@ -313,6 +313,8 @@ def upload_to_youtube(video_path: Path, upload_cfg: dict, topic: str,
                               allow_interactive=allow_interactive)
 
     meta = _load_sidecar_metadata(video_path, topic)
+    # An explicit title (e.g. from the --title CLI flag) wins over the sidecar.
+    title = (str(upload_cfg.get("title") or meta["title"]) or video_path.stem)[:100]
     privacy = str(upload_cfg.get("privacy", "private")).lower()
     if privacy not in ("private", "unlisted", "public"):
         privacy = "private"
@@ -324,7 +326,7 @@ def upload_to_youtube(video_path: Path, upload_cfg: dict, topic: str,
 
     body = {
         "snippet": {
-            "title": meta["title"],
+            "title": title,
             "description": meta["description"],
             "tags": meta["tags"],
             "categoryId": str(upload_cfg.get("category_id", "20")),  # 20 = Gaming
@@ -356,6 +358,23 @@ def upload_to_youtube(video_path: Path, upload_cfg: dict, topic: str,
             log(f"      ✓ zur Playlist hinzugefügt")
         except Exception as e:
             log(f"      WARN: Playlist-Zuordnung fehlgeschlagen: {str(e)[:120]}")
+
+    # Optional custom thumbnail (any size video, incl. Shorts). Best-effort:
+    # a thumbnail failure never invalidates the successful upload.
+    thumb = upload_cfg.get("thumbnail")
+    if thumb and vid:
+        tp = Path(thumb).expanduser()
+        if tp.is_file():
+            try:
+                from googleapiclient.http import MediaFileUpload as _MFU
+                yt.thumbnails().set(
+                    videoId=vid,
+                    media_body=_MFU(str(tp), mimetype="image/png")).execute()
+                log(f"      ✓ Thumbnail gesetzt: {tp.name}")
+            except Exception as e:
+                log(f"      WARN: Thumbnail setzen fehlgeschlagen: {str(e)[:160]}")
+        else:
+            log(f"      WARN: Thumbnail-Datei nicht gefunden: {tp}")
     return vid
 
 
@@ -461,6 +480,48 @@ def run_queue(jobs_path: Path, *, force: bool = False, do_upload: bool = True,
     return failures
 
 
+def _upload_only(args) -> int:
+    """Upload one already-rendered file via the YouTube API token and exit.
+    Bypasses the browser's 10 MB file-input cap and the Chrome account switcher
+    entirely — the token points straight at the right channel."""
+    video = Path(args.upload).expanduser()
+    if not video.is_file():
+        print(f"Video nicht gefunden: {video}")
+        return 2
+    if not args.account:
+        print("Fehlt: --account <kanalname> (Token: youtube_tokens/<name>.json)")
+        return 2
+    project_dir = Path(__file__).resolve().parent
+    # Allow an accounts map from the jobs file (for per-account overrides), but
+    # the youtube_tokens/<name>.json convention works without it.
+    accounts = {}
+    jp = Path(args.jobs)
+    if jp.is_file():
+        try:
+            accounts = (json.loads(jp.read_text(encoding="utf-8-sig")) or {}).get("accounts", {})
+        except Exception:
+            accounts = {}
+    upload_cfg = {
+        "enabled": True,
+        "account": args.account,
+        "privacy": args.privacy,
+        "title": args.title,
+        "publish_at": args.publish_at,
+        "thumbnail": args.thumbnail,
+        "playlist_id": args.playlist,
+    }
+    try:
+        vid = upload_to_youtube(
+            video, upload_cfg, topic=(args.title or video.stem),
+            project_dir=project_dir, accounts=accounts,
+            allow_interactive=args.auth, on_step=print)
+    except Exception as e:
+        print(f"Upload fehlgeschlagen: {e}")
+        return 1
+    print(f"FERTIG: https://youtu.be/{vid}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Token-free batch renderer + YouTube uploader")
     ap.add_argument("jobs", nargs="?", default="autopilot.jobs.json", help="queue JSON file")
@@ -470,7 +531,23 @@ def main(argv=None) -> int:
     ap.add_argument("--auth", action="store_true",
                     help="allow one-time interactive browser auth for accounts "
                          "without a token (otherwise uploads never open a browser)")
+    # ── Upload-only mode: push an already-rendered file via the API token ──
+    # (no rendering, no 10 MB browser cap, no Chrome account switcher).
+    ap.add_argument("--upload", metavar="VIDEO",
+                    help="upload an existing video file via token and exit")
+    ap.add_argument("--account", help="channel name (youtube_tokens/<name>.json)")
+    ap.add_argument("--title", help="video title (else the {video}.youtube.json sidecar / filename)")
+    ap.add_argument("--privacy", default="private",
+                    choices=["private", "unlisted", "public"])
+    ap.add_argument("--publish-at", dest="publish_at",
+                    help="RFC3339 time for scheduled publish, e.g. 2026-06-18T10:45:00Z (privacy stays private until then)")
+    ap.add_argument("--thumbnail", help="path to a thumbnail PNG to set on the video")
+    ap.add_argument("--playlist", help="playlist id to add the video to")
+    ap.add_argument("--config", default="config.json", help="config.json (for output_dir etc.)")
     args = ap.parse_args(argv)
+
+    if args.upload:
+        return _upload_only(args)
 
     jobs_path = Path(args.jobs)
     if not jobs_path.is_file():

@@ -179,3 +179,48 @@ class TestResolveGrokCli:
         with patch("shutil.which", return_value=None), \
              patch("pathlib.Path.is_file", return_value=False):
             assert pipeline._resolve_grok_cli("grok") == ""
+
+
+# ── black/blank image rejection (the "2 black middle images" bug) ────────────
+import io as _io
+import tempfile as _tf
+from pathlib import Path as _PP
+
+
+def _jpg(color, size=(640, 640)):
+    from PIL import Image
+    b = _io.BytesIO()
+    Image.new("RGB", size, color).save(b, "JPEG")
+    return b.getvalue()
+
+
+def test_black_image_rejected_by_save_square():
+    import pipeline
+    with _tf.TemporaryDirectory() as d:
+        out = _PP(d) / "o.png"
+        assert pipeline._save_square_image(_jpg((0, 0, 0)), out) is False
+
+
+def test_black_image_rejected_by_save_aspect():
+    import pipeline
+    with _tf.TemporaryDirectory() as d:
+        out = _PP(d) / "o.png"
+        assert pipeline._save_aspect_image(_jpg((0, 0, 0)), out) is False
+
+
+def test_flat_grey_rejected():
+    import pipeline
+    with _tf.TemporaryDirectory() as d:
+        out = _PP(d) / "o.png"
+        assert pipeline._save_square_image(_jpg((128, 128, 128)), out) is False
+
+
+def test_dark_image_with_bright_content_is_kept():
+    import pipeline
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (640, 640), (2, 2, 2))
+    ImageDraw.Draw(im).ellipse((300, 300, 340, 340), fill=(255, 255, 255))
+    b = _io.BytesIO(); im.save(b, "JPEG")
+    with _tf.TemporaryDirectory() as d:
+        out = _PP(d) / "o.png"
+        assert pipeline._save_square_image(b.getvalue(), out) is True

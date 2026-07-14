@@ -24,6 +24,8 @@ def find_free_port(start: int = 7860, end: int = 7880) -> int:
     return start
 
 from pipeline import Config, run_one, run_multiclip
+from music_snippet import run_music_snippet
+from caption_video import run_caption_video
 
 
 _MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
@@ -70,6 +72,7 @@ def generate(
     target_duration: float,
     clip_segments: int,
     playback_speed: float,
+    auto_editor: bool,
     voice_tempo: float,
     scene_pick_mode: str,
     manual_ranges: str,
@@ -166,10 +169,16 @@ def generate(
         # but PORTRAIT 9:16 and WITHOUT the forced hand-drawn style (uses the
         # normal AI-image chain — Grok first if enabled). No YouTube source.
         _ai_image_short = _fmt == "ai_image_short"
-        _no_source = _faceless or _ai_image_short
+        # Music-Snippet: eigener Pfad (music_snippet.run_music_snippet), 9:16,
+        # kein YouTube-Source, kein Voice/Skript — viele Clips für 1 Song.
+        _music_snippet = _fmt == "music_snippet"
+        # Eigenes Video + Untertitel: User-Video hochladen, WhisperX-Text mittig
+        # drüber (caption_video.run_caption_video). Keine YouTube-Quelle.
+        _caption_video = _fmt == "caption_video"
+        _no_source = _faceless or _ai_image_short or _music_snippet or _caption_video
         if _fmt in ("landscape", "faceless"):
             cfg.target_w, cfg.target_h = 1920, 1080
-        else:  # portrait OR ai_image_short
+        else:  # portrait OR ai_image_short OR music_snippet
             cfg.target_w, cfg.target_h = 1080, 1920
         # Claude-CLI provider toggle (overrides config.json for this run).
         cfg.use_claude_cli = bool(use_claude_cli)
@@ -188,31 +197,39 @@ def generate(
         return
 
     last_video = None
-    n = max(1, int(batch_count))
+    # Music-Snippet (ein Aufruf baut intern batch_count Clips) und Caption-Video
+    # (ein hochgeladenes Video) laufen je EINMAL — nicht batch_count-mal.
+    n = 1 if (_music_snippet or _caption_video) else max(1, int(batch_count))
 
     for run_i in range(n):
         base_slug = slugify(topic)
         if n > 1:
             base_slug = f"{base_slug}-{run_i + 1}"
 
-        # When resume is OFF, the user wants a fresh render. Auto-suffix the
-        # slug if a folder or final mp4 with the same name already exists, so
-        # we never collide with a previous run's artifacts (which would
-        # otherwise overwrite/confuse). When resume IS on, the slug stays
-        # stable on purpose — that's how resume finds the cached state.
-        if not resume_enabled:
-            try:
-                out_root = Path(Config.load(Path(config_path)).output_dir).expanduser()
+        # Decide the slug so reusing the SAME topic always makes a NEW video,
+        # while resume still continues a genuinely crashed/unfinished job:
+        #   • Resume ON + work folder exists + NO final mp4 → crashed job,
+        #     keep the slug so resume continues it.
+        #   • Otherwise (resume off, OR the previous run with this slug already
+        #     FINISHED) → auto-suffix to the next free slug (bezy, bezy-2, …)
+        #     so the same topic doesn't reuse/overwrite the old video.
+        try:
+            out_root = Path(Config.load(Path(config_path)).output_dir).expanduser()
+            final_mp4 = out_root / f"{base_slug}.mp4"
+            work_dir = out_root / base_slug
+            resume_crashed = (resume_enabled and work_dir.exists()
+                              and not final_mp4.exists())
+            if not resume_crashed:
                 candidate = base_slug
                 counter = 2
-                while (out_root / candidate).exists() or (out_root / f"{candidate}.mp4").exists():
+                while (out_root / f"{candidate}.mp4").exists() or (out_root / candidate).exists():
                     candidate = f"{base_slug}-{counter}"
                     counter += 1
                 base_slug = candidate
-            except Exception:
-                # If output_dir isn't resolvable yet, fall back to base_slug —
-                # pipeline.py will raise a clearer error downstream.
-                pass
+        except Exception:
+            # If output_dir isn't resolvable yet, fall back to base_slug —
+            # pipeline.py will raise a clearer error downstream.
+            pass
 
         job = {
             "slug": base_slug,
@@ -220,6 +237,7 @@ def generate(
             "target_duration": float(target_duration),
             "clip_segments": int(clip_segments),
             "playback_speed": float(playback_speed),
+            "auto_editor": bool(auto_editor),
             "voice_tempo": float(voice_tempo),
             "scene_pick_mode": str(scene_pick_mode or "even"),
             "manual_ranges": str(manual_ranges or ""),
@@ -272,6 +290,12 @@ def generate(
             # crash-prone in faceless mode, so force it off there.
             "multiclip_enabled": bool(multiclip_enabled) and not _no_source,
             "multiclip_count": int(multiclip_count),
+            # Music-Snippet-Modus: eigener Render-Pfad. batch_count = Anzahl
+            # Clips, target_duration = Clip-Länge, music_dir/track = der Song.
+            "music_snippet": bool(_music_snippet),
+            "snippet_count": int(batch_count),
+            "snippet_duration": float(target_duration),
+            "caption_video": bool(_caption_video),
             "enable_music": bool(enable_music),
             "music_dir": str(music_dir or ""),
             "music_volume_pct": float(music_volume_pct),
@@ -301,6 +325,9 @@ def generate(
                     uploaded_paths.append(f)
         if uploaded_paths:
             job["image_paths"] = uploaded_paths
+        # Caption-Video-Modus: das hochgeladene File IST das zu untertitelnde Video.
+        if _caption_video and uploaded_paths:
+            job["caption_video_path"] = uploaded_paths[0]
         # Faceless / KI-Bild-Short have no gameplay background → no URL needed.
         if _no_source:
             pass
@@ -324,7 +351,14 @@ def generate(
 
         def worker(job=job, q=q, result=result):
             try:
-                if bool(job.get("multiclip_enabled")):
+                if bool(job.get("caption_video")):
+                    out = run_caption_video(job, cfg, on_step=lambda m: q.put(m))
+                    result["out"] = out
+                elif bool(job.get("music_snippet")):
+                    outs = run_music_snippet(job, cfg, on_step=lambda m: q.put(m))
+                    result["out"] = outs[-1] if outs else None
+                    result["outs"] = outs
+                elif bool(job.get("multiclip_enabled")):
                     outs = run_multiclip(job, cfg, on_step=lambda m: q.put(m))
                     result["out"] = outs[-1] if outs else None
                     result["outs"] = outs
@@ -442,6 +476,8 @@ def build_app() -> gr.Blocks:
                 ("🎬 Lang-Video — 16:9 Querformat (1920×1080)", "landscape"),
                 ("📝 Faceless Story — 16:9 Querformat, handgezeichneter Stil", "faceless"),
                 ("🎨 KI-Bild-Short — 9:16 Hochformat, KI-Bilder (Grok), kein YT nötig", "ai_image_short"),
+                ("🎵 Musik-Snippet — viele 9:16-Clips für 1 Song (TikTok-Push)", "music_snippet"),
+                ("📹 Eigenes Video + Untertitel — dein Canva-Video, WhisperX-Text mittig", "caption_video"),
             ],
             value="portrait",
             label="🖼️ Output-Format",
@@ -468,7 +504,7 @@ def build_app() -> gr.Blocks:
                 "Nur für lokalen Privatgebrauch gedacht."
             )
             use_claude_cli = gr.Checkbox(
-                value=False,
+                value=True,
                 label="🧠 Claude CLI für Text-Aufgaben nutzen (Moment-Picking, Skript, Metadaten)",
                 info="Voraussetzung: 'claude' CLI installiert und eingeloggt (claude login).",
             )
@@ -479,7 +515,7 @@ def build_app() -> gr.Blocks:
                     ("Opus — beste Qualität, mehr Abo-Verbrauch", "opus"),
                     ("Haiku — am schnellsten, schwächer", "haiku"),
                 ],
-                value="sonnet",
+                value="opus",
                 label="Claude-Modell",
                 info="Für Moment-Picking lohnt sich Sonnet oder Opus — beide deutlich besser als Gemini Flash.",
             )
@@ -490,11 +526,14 @@ def build_app() -> gr.Blocks:
                 ["Kanal scrapen", "Direkt-URL"],
                 value="Kanal scrapen",
                 label="Modus",
+                info="Wähle den Modus und fülle das passende Feld darunter aus. "
+                     "Beide Felder sind immer sichtbar, damit es auch über "
+                     "Tailscale/Handy zuverlässig funktioniert.",
             )
             with gr.Group() as channel_group:
                 channel_url = gr.Textbox(
                     value="https://www.youtube.com/@DopeGameplays/videos",
-                    label="YouTube-Kanal-URL",
+                    label="YouTube-Kanal-URL (nur im Modus 'Kanal scrapen')",
                 )
                 title_filter = gr.Textbox(
                     value="roblox, doors, blox fruits, brookhaven, tower of hell, obby, blox, evade, adopt me, jailbreak, bedwars, piggy",
@@ -504,10 +543,13 @@ def build_app() -> gr.Blocks:
                     30, 500, value=200, step=10,
                     label="Channel-Tiefe (wie viele letzte Videos im Pool)",
                 )
-            with gr.Group(visible=False) as url_group:
+            # Immer sichtbar (KEIN visible=False): der Sichtbarkeits-Umschalter
+            # braucht einen Server-Event, der über Tailscale/LAN nicht ankommt —
+            # so bleibt das URL-Feld remote erreichbar.
+            with gr.Group() as url_group:
                 source_url = gr.Textbox(
                     value="",
-                    label="YouTube-Video-URL",
+                    label="YouTube-Video-URL (nur im Modus 'Direkt-URL')",
                     placeholder="https://www.youtube.com/watch?v=...",
                     interactive=True,
                 )
@@ -566,6 +608,16 @@ def build_app() -> gr.Blocks:
                           "0.85 = ruhiger (gut für lange Videos), 0.9 = leicht "
                           "langsamer. Für Shorts 1.0 lassen."),
                 )
+            auto_editor = gr.Checkbox(
+                value=False,
+                label="✂️ Auto-Editor (Sprechpausen automatisch rausschneiden)",
+                info=("Schneidet stille Stellen & lange Pausen direkt aus der "
+                      "Stimme — strafferes, schnelleres Tempo (wie bei vielen "
+                      "viralen Shorts). Passiert VOR dem Musik-Mix, daher bleiben "
+                      "Untertitel, Bilder & Effekte exakt synchron — und es greift "
+                      "auch wenn Hintergrundmusik läuft. Einmalig installieren:  "
+                      ".venv\\Scripts\\python.exe -m pip install auto-editor"),
+            )
             with gr.Accordion("🎬 Szenen-Auswahl", open=False):
                 scene_pick_mode = gr.Radio(
                     choices=[("Standard — gleichmäßig verteilt", "even"),
@@ -590,8 +642,8 @@ def build_app() -> gr.Blocks:
                     ),
                     info='Beispiele: "1:18-1:25" (M:SS), "0:01:30-0:01:45" (H:MM:SS), "78-85" (Sekunden). '
                          'Die ausgewählten Bereiche werden in der Reihenfolge zusammen­geschnitten. '
-                         'Ziel-Länge und Anzahl Szenen-Cuts werden ignoriert wenn dieser Modus aktiv ist.',
-                    visible=False,
+                         'Ziel-Länge und Anzahl Szenen-Cuts werden ignoriert wenn dieser Modus aktiv ist. '
+                         'Nur relevant im Szenen-Modus "Manuell".',
                 )
             auto_reframe = gr.Checkbox(
                 value=False,
@@ -659,34 +711,32 @@ def build_app() -> gr.Blocks:
             )
             voice_ref_audio = gr.Dropdown(
                 choices=[
-                    ("— Chatterbox Default-Stimme (kein Cloning) —", ""),
-                    ("Besmir (clone.wav, aufbereitet)", r"C:\Users\bezy\Desktop\Agenten\voice.clone.wav"),
-                    ("Besmir (Rohaufnahme besmir.wav)", r"C:\Users\bezy\Desktop\Agenten\besmir.wav"),
+                    ("Besmir", r"C:\Users\bezy\Desktop\Agenten\besmir.wav"),
                 ],
-                value=_defaults.get("tts_reference_audio", ""),
+                value=r"C:\Users\bezy\Desktop\Agenten\besmir.wav",
                 allow_custom_value=True,
-                label="🎤 Stimme zum Klonen (auswählen oder Pfad eintippen — nur EN)",
-                info=("Deine Klon-Stimmen zur Auswahl, oder einen beliebigen Pfad "
-                      "eintippen. '.clone.wav' wird direkt genutzt, eine Rohaufnahme "
-                      "wird automatisch aufbereitet. Vorbefüllt aus config.json. "
-                      "Leer = Chatterbox' Default-Stimme."),
+                label="🎤 Stimme (Besmir, fest)",
+                info=("Besmir-Stimme, immer vorausgewählt — für Englisch UND "
+                      "Deutsch (Klon). Hier muss nichts geändert werden. Nur falls "
+                      "du ausnahmsweise eine andere Stimme willst, einen Pfad eintippen."),
             )
             tts_de_clone = gr.Checkbox(
-                value=bool(_defaults.get("tts_de_clone", False)),
+                value=True,
                 label="🇩🇪 Deutsche Stimme klonen (statt Piper)",
-                info=("Nur bei Sprache = Deutsch. An = klont die oben gewählte "
-                      "Stimme auf Deutsch via Chatterbox Multilingual (~3GB Modell "
-                      "beim 1. Lauf). Aus = feste Piper-Stimme (schnell, kein Cloning)."),
+                info=("An (empfohlen) = Deutsch nutzt deine geklonte Stimme via "
+                      "Chatterbox Multilingual (~3GB Modell beim 1. Lauf). "
+                      "Aus = feste Piper-Stimme. So oder so wählst du nur die "
+                      "Sprache, die Stimme bleibt deine."),
             )
             with gr.Row():
                 tts_exaggeration = gr.Slider(
                     0.0, 1.0, value=_defaults.get("tts_exaggeration", 0.5), step=0.05,
-                    label="Chatterbox Emotion (nur EN)",
-                    info="0 = ruhig/flach, 0.5 = neutral, 1 = dramatisch. Für Shorts: 0.6-0.8 funktioniert gut.",
+                    label="Chatterbox Emotion (EN + DE-Klon)",
+                    info="0 = ruhig/flach, 0.5 = neutral, 1 = dramatisch. Für Shorts: 0.6-0.8 funktioniert gut. Gilt für Englisch UND den deutschen Klon (Piper hat keine Regler).",
                 )
                 tts_cfg_weight = gr.Slider(
                     0.0, 1.0, value=_defaults.get("tts_cfg_weight", 0.5), step=0.05,
-                    label="Chatterbox CFG Weight (nur EN)",
+                    label="Chatterbox CFG Weight (EN + DE-Klon)",
                     info="Niedriger = natürlicheres Sprachtempo, höher = wörtlicher.",
                 )
 
@@ -713,17 +763,17 @@ def build_app() -> gr.Blocks:
                     )
                     music_refresh = gr.Button("🔄", scale=1)
                 music_volume_pct = gr.Slider(
-                    0, 30, value=5, step=1,
+                    0, 30, value=21, step=1,
                     label="Hintergrundmusik Lautstärke (%)",
                     info="Quadratisch skaliert — 3% ist quasi unhörbar, 10% sehr leise, 30% deutlich.",
                 )
                 smart_music_start = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="🎯 Smart Music Start (lauteste Stelle / Drop finden)",
                     info="Analysiert den Track und startet nicht zwingend bei 0:00, sondern wo es richtig losgeht. +2–5s pro Track.",
                 )
                 normalize_audio = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="🔊 Lautheit normalisieren (laut + konsistent wie die Profis)",
                     info="EBU-R128 loudnorm auf den fertigen Mix — so laut und gleichmäßig wie virale Shorts. Empfohlen AN.",
                 )
@@ -753,7 +803,7 @@ def build_app() -> gr.Blocks:
                     )
                     sfx_refresh = gr.Button("🔄", scale=1)
                 sfx_volume_pct = gr.Slider(
-                    0, 100, value=40, step=1,
+                    0, 100, value=27, step=1,
                     label="SFX Lautstärke (%)",
                 )
 
@@ -838,8 +888,8 @@ def build_app() -> gr.Blocks:
             )
             uploaded_images = gr.File(
                 file_count="multiple",
-                file_types=["image"],
-                label="Eigene Bilder hochladen (überschreibt Auto-Generierung komplett)",
+                file_types=["image", "video"],
+                label="Eigene Bilder hochladen (überschreibt Auto-Generierung) — oder dein fertiges Video im '📹 Eigenes Video + Untertitel'-Modus",
             )
             skip_images = gr.Checkbox(value=False, label="Bilder komplett überspringen")
             image_tilt = gr.Checkbox(
@@ -865,18 +915,18 @@ def build_app() -> gr.Blocks:
                       "dann manuell in CapCut auf die Timeline ziehen."),
             )
             image_change_secs = gr.Slider(
-                1.0, 6.0, value=3.5, step=0.5,
+                1.0, 6.0, value=1.5, step=0.5,
                 label="⏱️ Sekunden pro Bild (bei durchgehend)",
                 info="Wie oft das Mittelbild wechselt. 3-4s wie im Referenz-Video.",
             )
             image_gap_secs = gr.Slider(
-                0.0, 1.5, value=0.5, step=0.1,
+                0.0, 1.5, value=0.3, step=0.1,
                 label="⏸️ Pause zwischen Bildern (Sek)",
                 info=("Kurze Lücke nur mit Gameplay, bevor das nächste Bild kommt. "
                       "Das Bild startet weiterhin genau auf seinem Wort. 0 = nahtlos."),
             )
             image_allow_photos = gr.Checkbox(
-                value=True,
+                value=False,
                 label="📷 Auch echte Fotos verwenden (free via Openverse, kein KI)",
                 info=("An = Mix aus KI-Roblox-Renders UND echten lizenzfreien Fotos, die zum "
                       "Text passen (geschockte Person, Geldstapel, Pokal …) — wie virale Shorts. "
@@ -914,7 +964,9 @@ def build_app() -> gr.Blocks:
                     ("🫣 Horror: Creep-Zoom (langsam schleichende Anspannung)", "creep"),
                     ("🎬 Horror: Color-Grade (kalt, entsättigt, dunkle Vignette)", "horror_grade"),
                 ],
-                value=[],
+                value=["color_grade", "flash", "shake", "punch", "ken_burns",
+                       "slide_in", "keyword_pop", "word_karaoke", "caption_polish",
+                       "caption_box", "caption_buildup"],
                 label="Effekte erlauben (leer = aus)",
                 info=("Color-Grade/Horror-Grade/Ken-Burns/Slide-In/Keyword-Pop gelten global. "
                       "Flash/Shake/Punch und die Horror-Effekte (Roter Blitz/Dunkel-Puls/"
@@ -995,7 +1047,7 @@ def build_app() -> gr.Blocks:
                 caption_color = gr.ColorPicker(value="#FFFFFF", label="Textfarbe")
                 caption_stroke_color = gr.ColorPicker(value="#000000", label="Randfarbe (Stroke)")
             caption_font_size = gr.Slider(
-                30, 90, value=80, step=1,
+                30, 90, value=85, step=1,
                 label="Schriftgröße",
             )
 
@@ -1033,7 +1085,7 @@ def build_app() -> gr.Blocks:
         # ───────────── Resume & Logging ─────────────
         with gr.Accordion("🔄 Resume & Logging", open=False):
             resume_enabled = gr.Checkbox(
-                value=False,
+                value=True,
                 label="♻️ Resume aktiv (Job kann unterbrochen + fortgesetzt werden)",
                 info=("Speichert nach jedem Pipeline-Schritt einen Checkpoint in "
                       "{output_dir}/{slug}/job_state.json. Beim nächsten Lauf mit "
@@ -1062,12 +1114,12 @@ def build_app() -> gr.Blocks:
             )
             with gr.Row():
                 youtube_thumbnail = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="🖼️ Thumbnail-Bild dazu generieren",
                     info="Erzeugt zusätzlich {slug}_thumb.png via Cloudflare Flux / Pollinations.",
                 )
                 youtube_thumb_from_video = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="🎬 Thumbnail aus dem Video (Action-Frame + Hook-Text)",
                     info=("Empfohlen: nimmt einen Action-Frame aus deinem fertigen Video und "
                           "schreibt den Hook in großem gelben Impact-Text drüber — typischer "
@@ -1138,7 +1190,7 @@ def build_app() -> gr.Blocks:
                 config_path, use_claude_cli, claude_cli_model,
                 source_mode, source_url, channel_url, title_filter,
                 channel_scan_limit, topic, custom_script, extend_script, target_duration,
-                clip_segments, playback_speed, voice_tempo, scene_pick_mode, manual_ranges, auto_reframe,
+                clip_segments, playback_speed, auto_editor, voice_tempo, scene_pick_mode, manual_ranges, auto_reframe,
                 reframe_v2, reframe_samples_per_seg, speaker_detection,
                 enable_voice, tts_language, tts_piper_model,
                 voice_ref_audio, tts_de_clone, tts_exaggeration, tts_cfg_weight,
@@ -1211,7 +1263,18 @@ def main() -> None:
     #   BEZY_AUTH  -> "user:password" to require a login (for Cloudflare/public).
     host = os.environ.get("BEZY_HOST", "127.0.0.1")
     port_env = os.environ.get("BEZY_PORT")
-    port = int(port_env) if port_env else find_free_port()
+    if port_env:
+        # Fixed port requested (tunnels/remote want a stable one) — but if
+        # it's already taken (an older GUI window or a zombie python.exe is
+        # still holding it), don't crash: take the next free one and say so.
+        wanted = int(port_env)
+        port = find_free_port(wanted, wanted + 20)
+        if port != wanted:
+            print(f"WARN: Port {wanted} ist belegt (läuft noch eine alte GUI?) "
+                  f"— nutze stattdessen Port {port}. Im Browser/Handy die URL "
+                  f"entsprechend anpassen, oder die alte Instanz schließen.")
+    else:
+        port = find_free_port()
 
     auth = None
     auth_env = os.environ.get("BEZY_AUTH")
@@ -1224,17 +1287,36 @@ def main() -> None:
     print(f"Starte GUI auf http://{host}:{port}"
           + (" (Login aktiv)" if auth else ""))
 
-    # Gradio 6 takes theme + css on launch() (not on Blocks). Try the
-    # styled launch; fall back to a bare launch on older Gradio that
-    # doesn't accept these kwargs here.
+    # Event-Handler (v.a. der Generator `generate`) brauchen die Queue.
+    try:
+        app.queue()
+    except Exception:
+        pass
+
     base_kw = dict(server_name=host, server_port=port,
                    inbrowser=inbrowser, allowed_paths=allowed)
     if auth:
         base_kw["auth"] = auth
-    try:
-        app.launch(theme=_theme(), css=_CUSTOM_CSS, **base_kw)
-    except TypeError:
-        app.launch(**base_kw)
+
+    # WICHTIG für Tailscale/LAN-Zugriff: ssr_mode=False. Mit dem (ab Gradio 5/6
+    # standardmäßig aktiven) Server-Side-Rendering zeigen die Interaktions-
+    # Aufrufe der Oberfläche auf localhost — ein entferntes Gerät erreicht das
+    # nicht, dann funktionieren Umschalter/Buttons nicht. Ohne SSR laufen die
+    # Events über die normale API und klappen auch remote.
+    # Gradio 6 nimmt theme + css auf launch(). Nacheinander von voll → schlicht
+    # probieren, damit ältere Gradio-Versionen (die ein kwarg nicht kennen)
+    # nicht crashen.
+    for kw in (
+        dict(theme=_theme(), css=_CUSTOM_CSS, ssr_mode=False, **base_kw),
+        dict(ssr_mode=False, **base_kw),
+        dict(theme=_theme(), css=_CUSTOM_CSS, **base_kw),
+        dict(**base_kw),
+    ):
+        try:
+            app.launch(**kw)
+            break
+        except TypeError:
+            continue
 
 
 if __name__ == "__main__":

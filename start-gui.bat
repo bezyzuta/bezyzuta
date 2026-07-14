@@ -36,6 +36,44 @@ if not exist ".venv\Scripts\python.exe" (
     echo.
 )
 
+REM --- Auto-Update: neueste Aenderungen von GitHub holen ---
+REM Blockiert den Start NIE: bei lokalen Aenderungen / keinem Fast-Forward
+REM wird einfach uebersprungen und die GUI startet trotzdem.
+where git >nul 2>nul
+if not errorlevel 1 (
+    if exist ".git" (
+        echo Suche nach Updates...
+        git pull --ff-only
+        if errorlevel 1 (
+            echo.
+            echo Hinweis: Auto-Update uebersprungen ^(lokale Aenderungen oder kein Fast-Forward^).
+            echo Bei Bedarf einmalig manuell:  git stash ^&^& git pull
+            echo.
+        ) else (
+            echo Auf dem neuesten Stand.
+        )
+        echo.
+    )
+)
+
+REM --- Deno: JS-Runtime fuer yt-dlp (YouTube braucht den Challenge-Solver, sonst 403) ---
+REM winget legt einen stabilen Shim unter %LOCALAPPDATA%\Microsoft\WinGet\Links an;
+REM den haengen wir an PATH, damit die GUI im selben Fenster deno findet.
+set "PATH=%PATH%;%LOCALAPPDATA%\Microsoft\WinGet\Links"
+where deno >nul 2>nul
+if errorlevel 1 (
+    echo Deno nicht gefunden - wird fuer YouTube-Downloads installiert...
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo HINWEIS: winget fehlt. Installiere Deno manuell von https://deno.land
+        echo          sonst koennen YouTube-Videos evtl. nicht geladen werden.
+    ) else (
+        winget install DenoLand.Deno --accept-source-agreements --accept-package-agreements --silent
+        set "PATH=%PATH%;%LOCALAPPDATA%\Microsoft\WinGet\Links"
+        echo.
+    )
+)
+
 echo ===========================================
 echo  Bezys Shorts Generator
 echo ===========================================

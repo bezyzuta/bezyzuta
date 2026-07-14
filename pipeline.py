@@ -117,6 +117,18 @@ class Config:
     # out-of-process in its own env. Empty = use the main interpreter (only
     # works if whisperx is somehow installed here too — usually it can't be).
     whisperx_python: str
+    # Local AI image-to-video (LTX-Video) for the music-snippet mode. Heavy
+    # diffusion deps conflict with the main venv (torch/numpy), so it runs in
+    # its OWN venv via subprocess — ltxv_python points at that interpreter.
+    # All opt-in; falls back to the Ken-Burns still on any failure.
+    use_ltx_video: bool
+    ltxv_python: str
+    ltxv_model: str
+    ltxv_steps: int
+    ltxv_frames: int
+    ltxv_width: int
+    ltxv_height: int
+    ltxv_fps: int
     # Max height for the downloaded gameplay source. 1080 default; drop to 720
     # for much faster downloads (a vertical short is cropped+scaled anyway).
     download_max_height: int
@@ -220,7 +232,7 @@ class Config:
         return cls(
             output_dir=Path(data["output_dir"]).expanduser(),
             tts_reference_audio=data.get("tts_reference_audio", ""),
-            tts_de_clone=bool(data.get("tts_de_clone", False)),
+            tts_de_clone=bool(data.get("tts_de_clone", True)),
             tts_reference_audio_de=data.get("tts_reference_audio_de", ""),
             tts_exaggeration=float(data.get("tts_exaggeration", 0.5)),
             tts_cfg_weight=float(data.get("tts_cfg_weight", 0.5)),
@@ -230,6 +242,14 @@ class Config:
             whisper_model=data.get("whisper_model", "small"),
             use_whisperx=bool(data.get("use_whisperx", False)),
             whisperx_python=str(data.get("whisperx_python", "")).strip(),
+            use_ltx_video=bool(data.get("use_ltx_video", False)),
+            ltxv_python=str(data.get("ltxv_python", "")).strip(),
+            ltxv_model=str(data.get("ltxv_model", "Lightricks/LTX-Video")).strip(),
+            ltxv_steps=int(data.get("ltxv_steps", 30)),
+            ltxv_frames=int(data.get("ltxv_frames", 97)),
+            ltxv_width=int(data.get("ltxv_width", 480)),
+            ltxv_height=int(data.get("ltxv_height", 832)),
+            ltxv_fps=int(data.get("ltxv_fps", 24)),
             download_max_height=int(data.get("download_max_height", 1080)),
             target_w=int(w),
             target_h=int(h),
@@ -430,12 +450,22 @@ def ytdlp_cookie_args(cfg) -> list:
 def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
     """Turn a raw yt-dlp failure into an actionable hint for the GUI."""
     low = (output or "").lower()
+    # Missing JS runtime: yt-dlp needs one (Deno recommended) to solve
+    # YouTube's player challenges. Without it formats go missing and the
+    # bot-check fires far more often — fixing this often fixes the
+    # "not a bot" error too.
+    js_hint = ""
+    if "js runtime" in low or "jsruntime" in low or " ejs " in low or "/ejs" in low:
+        js_hint = ("\n\n→ yt-dlp braucht eine JavaScript-Runtime für YouTube. "
+                   "Einmalig installieren:  winget install DenoLand.Deno  "
+                   "— danach Terminal/GUI neu starten. Das behebt oft auch "
+                   "den 'not a bot'-Fehler gleich mit.")
     # Cookie DB locked (browser is running) or encrypted (Chrome v127+ App-Bound
     # Encryption, yt-dlp #7271). Almost always: the browser we read cookies from
     # is open. Closing it fixes the common case; a cookies.txt export sidesteps
     # both the lock and the newer encryption entirely.
     if "could not copy" in low and "cookie" in low:
-        return ("\n\n→ yt-dlp kommt nicht an die Browser-Cookies: der Browser "
+        return js_hint + ("\n\n→ yt-dlp kommt nicht an die Browser-Cookies: der Browser "
                 "läuft (DB gesperrt) oder Chrome verschlüsselt sie (v127+). "
                 "Browser GANZ schließen und neu starten — oder am stabilsten "
                 "eine cookies.txt exportieren und in config.json "
@@ -444,45 +474,101 @@ def _ytdlp_error_hint(output: str, had_cookies: bool) -> str:
     if any(s in low for s in ("sign in to confirm", "not a bot", "429",
                               "too many requests", "confirm you")):
         if had_cookies:
-            return ("\n\n→ YouTube blockt trotz Cookies. Browser GANZ schließen "
+            return js_hint + ("\n\n→ YouTube blockt trotz Cookies. Browser GANZ schließen "
                     "(damit yt-dlp die Cookies lesen kann), ein paar Minuten "
                     "warten (429), oder eine frische cookies.txt exportieren.")
-        return ("\n\n→ YouTube verlangt Login. In config.json setzen: "
-                '"youtube_cookies_from_browser": "chrome"  (oder firefox/edge/brave) '
-                "und den Browser vorm Start KOMPLETT schließen.")
+        return js_hint + ("\n\n→ YouTube verlangt Login. Am stabilsten: cookies.txt "
+                "exportieren (Browser-Extension 'Get cookies.txt LOCALLY') und in "
+                'config.json "youtube_cookies_file" setzen. Alternativ '
+                '"youtube_cookies_from_browser": "firefox" — bei Chrome/Edge '
+                "scheitert das oft an der Cookie-Verschlüsselung (v127+).")
     if "requested format is not available" in low or "format" in low and "not available" in low:
-        return "\n\n→ Format nicht verfügbar — evtl. ist das Video privat/gelöscht/region-locked."
+        return js_hint + "\n\n→ Format nicht verfügbar — evtl. ist das Video privat/gelöscht/region-locked."
     if "video unavailable" in low or "private video" in low:
-        return "\n\n→ Video ist privat/gelöscht/nicht verfügbar."
-    return ""
+        return js_hint + "\n\n→ Video ist privat/gelöscht/nicht verfügbar."
+    return js_hint
+
+
+_YTDLP_EJS_PROBED = None  # cache: does the installed yt-dlp support --remote-components?
+
+
+def _ytdlp_ejs_args() -> list:
+    """Return the flag that lets yt-dlp auto-download the EJS JS-challenge
+    solver (YouTube now returns HTTP 403 without a solved 'n challenge').
+    Probes --help once and caches; returns [] when the installed yt-dlp is too
+    old to know the flag, so we never break the call with an unknown argument."""
+    global _YTDLP_EJS_PROBED
+    if _YTDLP_EJS_PROBED is None:
+        try:
+            r = subprocess.run([sys.executable, "-m", "yt_dlp", "--help"],
+                               capture_output=True, text=True, timeout=30)
+            _YTDLP_EJS_PROBED = "--remote-components" in (r.stdout or "")
+        except Exception:
+            _YTDLP_EJS_PROBED = False
+    return ["--remote-components", "ejs:github"] if _YTDLP_EJS_PROBED else []
 
 
 def download_gameplay(url: str, out_dir: Path, cookies: list | None = None,
-                      max_height: int = 1080) -> Path:
+                      max_height: int = 1080, on_step=None) -> Path:
+    """Download the source video. Strategy that dodges the recurring Chrome-
+    cookie pain: try CLEAN (no cookies) first — most public/no-copyright
+    gameplay downloads fine and never touches the lockable/encrypted browser
+    cookie DB. Only if YouTube throws the bot-wall ("sign in to confirm…")
+    do we retry WITH the configured cookies. So cookies become a safety net,
+    not the default path that breaks every time the browser is open."""
+    def log(m):
+        if on_step:
+            try: on_step(m)
+            except Exception: pass
+
     out_dir.mkdir(parents=True, exist_ok=True)
     template = str(out_dir / "%(id)s.%(ext)s")
     h = max(360, int(max_height or 1080))
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        *(cookies or []),
-        "--no-playlist",                       # never accidentally pull a whole playlist
-        "--concurrent-fragments", "5",         # download DASH fragments in parallel — big speedup
-        "--retries", "3", "--fragment-retries", "3",
-        "-f", f"bv*[height<={h}]+ba/b[height<={h}]",
-        "--merge-output-format", "mp4",
-        "-o", template,
-        url,
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
+
+    # Attempt order: clean first, then cookies (only if configured).
+    attempts: list = [[]]
+    if cookies:
+        attempts.append(cookies)
+
+    last = ""
+    for i, ck in enumerate(attempts):
+        if ck:
+            log("      YouTube verlangt Login — versuche es jetzt mit Cookies…")
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            *ck,
+            "--no-playlist",                       # never accidentally pull a whole playlist
+            # YouTube now requires solving a JS "n challenge" or it returns
+            # HTTP 403. Let yt-dlp auto-fetch the EJS solver script; it still
+            # needs a JS runtime (Deno) on PATH — start-gui.bat installs it.
+            *_ytdlp_ejs_args(),
+            "--concurrent-fragments", "5",         # download DASH fragments in parallel — big speedup
+            "--retries", "3", "--fragment-retries", "3",
+            "-f", f"bv*[height<={h}]+ba/b[height<={h}]",
+            "--merge-output-format", "mp4",
+            "-o", template,
+            url,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode == 0:
+            files = sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if files:
+                return files[0]
+            last = "yt-dlp meldete Erfolg, aber keine mp4 gefunden"
+            continue
         combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
-        tail = combined[-700:]
-        hint = _ytdlp_error_hint(combined, bool(cookies))
-        raise RuntimeError(f"yt-dlp download failed (exit {proc.returncode}):\n{tail}{hint}")
-    files = sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not files:
-        raise RuntimeError("yt-dlp produced no mp4")
-    return files[0]
+        last = combined[-700:]
+        # Retry with cookies ONLY when this failure is the bot-wall — for any
+        # other error (private/deleted/region/format) cookies won't help.
+        low = combined.lower()
+        is_botwall = any(s in low for s in (
+            "sign in to confirm", "not a bot", "429",
+            "too many requests", "confirm you", "use --cookies"))
+        if i == 0 and cookies and not is_botwall:
+            break  # clean attempt failed for a non-auth reason; cookies are useless here
+
+    hint = _ytdlp_error_hint(last, bool(cookies))
+    raise RuntimeError(f"yt-dlp download failed:\n{last}{hint}")
 
 
 def list_channel_videos(channel_url: str, limit: int = 50, cookies: list | None = None) -> list:
@@ -1776,14 +1862,35 @@ def _spell_numbers_for_tts(text: str, lang: str) -> str:
     """Replace bare integers with spoken words so the TTS doesn't mangle them
     (e.g. German Chatterbox read '1979' as 'neunzehnhundert neunzehn
     siebenundneunzig'). 4-digit values that look like years use year reading.
+    Decimals are read out properly ('3,5' → 'drei Komma fünf', '3.5' →
+    'three point five') instead of collapsing to a wrong integer.
     Leaves numbers with adjacent letters/units untouched only loosely — runs
     of pure digits (optionally with a thousands dot) are converted."""
     de = (lang or "de").lower().startswith("de")
     num = _de_number if de else _en_number
     year = _de_year if de else _en_year
+    # Decimal/thousands separators are swapped between the two languages.
+    dec_sep = "," if de else "."
+    thou_sep = "." if de else ","
+    dec_word = " Komma " if de else " point "
+    digit_words = _DE_ONES[:10] if de else _EN_ONES[:10]
 
     def repl(m: "re.Match") -> str:
         raw = m.group(0)
+        # Decimal number ("3,5" de / "3.5" en): integer part + separator word
+        # + fraction digits read one by one. Only for 1-3 fraction digits —
+        # longer runs after the separator are usually thousands groups.
+        if dec_sep in raw:
+            int_part, _, frac_part = raw.partition(dec_sep)
+            int_digits = int_part.replace(thou_sep, "")
+            if (int_digits.isdigit() and frac_part.isdigit()
+                    and 1 <= len(frac_part) <= 3
+                    and not (de is False and len(frac_part) == 3)):
+                try:
+                    frac_words = " ".join(digit_words[int(d)] for d in frac_part)
+                    return num(int(int_digits)) + dec_word + frac_words
+                except Exception:
+                    return raw
         digits = raw.replace(".", "").replace(",", "")
         if not digits.isdigit():
             return raw
@@ -1797,6 +1904,56 @@ def _spell_numbers_for_tts(text: str, lang: str) -> str:
 
     # Pure-digit runs (allow German thousands dots / English commas inside).
     return re.sub(r"\d[\d.,]*\d|\d", repl, text)
+
+
+# Abbreviations & symbols the TTS models reliably mumble. Spelled out before
+# synthesis. German list is the important one (Chatterbox Multilingual garbles
+# these the most); English gets a minimal set since that model is near-perfect.
+_DE_TTS_ABBREV = [
+    (re.compile(r"\bz\.\s?B\."), "zum Beispiel"),
+    (re.compile(r"\bd\.\s?h\."), "das heißt"),
+    (re.compile(r"\bu\.\s?a\."), "unter anderem"),
+    (re.compile(r"\busw\."), "und so weiter"),
+    (re.compile(r"\bbzw\."), "beziehungsweise"),
+    (re.compile(r"\bca\."), "circa"),
+    (re.compile(r"\bevtl\."), "eventuell"),
+    (re.compile(r"\bggf\."), "gegebenenfalls"),
+    (re.compile(r"\binkl\."), "inklusive"),
+    (re.compile(r"\bMio\."), "Millionen"),
+    (re.compile(r"\bMrd\."), "Milliarden"),
+    (re.compile(r"\bNr\."), "Nummer"),
+    (re.compile(r"\bkm/h\b"), "Kilometer pro Stunde"),
+    (re.compile(r"°\s?C\b"), " Grad Celsius"),
+    (re.compile(r"%"), " Prozent"),
+    (re.compile(r"€"), " Euro"),
+    (re.compile(r"\$"), " Dollar"),
+    (re.compile(r"\s&\s"), " und "),
+]
+
+_EN_TTS_ABBREV = [
+    (re.compile(r"\betc\."), "et cetera"),
+    (re.compile(r"\be\.g\."), "for example"),
+    (re.compile(r"\bi\.e\."), "that is"),
+    (re.compile(r"%"), " percent"),
+    (re.compile(r"€"), " euros"),
+    (re.compile(r"\$"), " dollars"),
+    (re.compile(r"\s&\s"), " and "),
+]
+
+
+def _spell_abbreviations_for_tts(text: str, lang: str) -> str:
+    """Expand abbreviations and currency/unit symbols into spoken words.
+    Must run BEFORE _spell_numbers_for_tts: currency symbols that PRECEDE a
+    number ('$50', '€ 100') are first moved behind it so the spoken order is
+    natural ('50 Dollar' instead of 'Dollar fünfzig')."""
+    if not text:
+        return text
+    text = re.sub(r"([€$])\s*(\d[\d.,]*\d|\d)", r"\2 \1", text)
+    rules = _DE_TTS_ABBREV if (lang or "de").lower().startswith("de") else _EN_TTS_ABBREV
+    for pat, repl in rules:
+        text = pat.sub(repl, text)
+    # Tidy doubled spaces left behind by symbol replacements.
+    return re.sub(r"[ \t]{2,}", " ", text)
 
 
 def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
@@ -1835,8 +1992,11 @@ def synthesize_voiceover(text: str, cfg: Config, out_path: Path) -> Path:
         print("      WARN: TTS set to German but text scans as English — "
               "overriding to Chatterbox so the pronunciation matches.")
         lang = "en"
-    # Spell out digits in the resolved language so the TTS doesn't garble them
-    # ("1979" → "neunzehnhundertneunundsiebzig" instead of digit soup).
+    # Spell out abbreviations/symbols first (moves '€50' → '50 €' before the
+    # digits get worded), then digits in the resolved language, so the TTS
+    # doesn't garble either ("1979" → "neunzehnhundertneunundsiebzig",
+    # "z.B. 3,5%" → "zum Beispiel drei Komma fünf Prozent").
+    text = _spell_abbreviations_for_tts(text, lang)
     text = _spell_numbers_for_tts(text, lang)
     if lang == "de":
         # German voice cloning (opt-in) → Chatterbox Multilingual. Uses a
@@ -3089,6 +3249,9 @@ def _subject_pct_to_crop_offset(subject_pct: float) -> float:
             t = (pct - x1) / (x2 - x1)
             return y1 + t * (y2 - y1)
     return 0.5
+
+
+def _gemini_vision_score(thumb_path: Path, prompt: str, cfg) -> tuple:
     """Send one image to Gemini and return (text, err)."""
     import base64
     if not cfg.gemini_api_key:
@@ -4892,6 +5055,25 @@ _PHOTO_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 bezyzuta-shorts/1.0")
 
 
+def _image_is_too_blank(im) -> bool:
+    """True if the image is (near-)pure black or a flat single colour — the
+    tell-tale of a generator that returned a failed/blank frame (the black
+    middle-images bug). Tolerant of legitimately DARK images that still carry
+    bright content (a glowing dot, a subscribe button on a dark screen): those
+    have a high max-luminance and real variation, so they pass."""
+    try:
+        from PIL import ImageStat
+        g = im.convert("L")
+        _lo, hi = g.getextrema()
+        if hi < 10:                      # even the brightest pixel is ~black
+            return True
+        if ImageStat.Stat(g).stddev[0] < 2.0:   # essentially one flat colour
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def _save_square_image(data: bytes, out_path: Path) -> bool:
     """Center-crop image bytes to a square RGBA PNG (<=1024). Returns True on
     success. Shared by all free-photo fetchers."""
@@ -4901,6 +5083,8 @@ def _save_square_image(data: bytes, out_path: Path) -> bool:
         from PIL import Image
         import io
         im = Image.open(io.BytesIO(data)).convert("RGBA")
+        if _image_is_too_blank(im):       # reject black/blank frames → caller falls back
+            return False
         w, h = im.size
         side = min(w, h)
         im = im.crop(((w - side) // 2, (h - side) // 2,
@@ -4942,6 +5126,8 @@ def _save_aspect_image(data: bytes, out_path: Path, ar: float = 16 / 9,
         from PIL import Image
         import io
         im = Image.open(io.BytesIO(data)).convert("RGBA")
+        if _image_is_too_blank(im):       # reject black/blank frames → caller falls back
+            return False
         w, h = im.size
         if w / h > ar:           # too wide → crop width
             new_w = int(round(h * ar))
@@ -5680,6 +5866,113 @@ def apply_playback_speed(video_path: Path, speed: float) -> None:
         str(tmp),
     ])
     tmp.replace(video_path)
+
+
+def apply_auto_editor(media_path: Path, margin: float = 0.18,
+                      threshold: float = 0.04, on_step=None,
+                      is_audio: bool = False) -> bool:
+    """Cut silent/dead-air stretches out of `media_path` in place using the
+    `auto-editor` package (https://github.com/WyattBlue/auto-editor).
+
+    Two modes:
+      • is_audio=True  → trims the bare VOICEOVER mp3 BEFORE music is mixed.
+        This is the better path for shorts: the voice track has real silence
+        in the pauses, so the pauses get cut cleanly, and everything built
+        afterwards (captions, image schedule, SFX, music) lands on the tight
+        voice automatically. (Once music is under it the track is never
+        'silent', so cutting the finished video would barely trim anything.)
+      • is_audio=False → trims the finished mp4 (picture+voice+captions cut
+        together). Used as a fallback when there's no voiceover to trim.
+
+    `margin` keeps a short pad of silence around each kept chunk so speech
+    isn't clipped / machine-gun-tight; `threshold` is the loudness level below
+    which a stretch counts as silence (0.04 = 4%).
+
+    Best-effort: if auto-editor isn't installed or errors, the original file is
+    left untouched and we return False — a render is never blocked by it.
+    """
+    def log(msg: str) -> None:
+        if on_step:
+            try:
+                on_step(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+
+    margin = max(0.0, float(margin))
+    threshold = max(0.0, min(1.0, float(threshold)))
+    suffix = ".autoedit" + media_path.suffix
+    tmp = media_path.with_suffix(suffix)
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+    cmd = [
+        sys.executable, "-m", "auto_editor", str(media_path),
+        "--edit", f"audio:threshold={threshold * 100:.0f}%",
+        "--margin", f"{margin:.2f}sec",
+        "--no-open",
+        "--output", str(tmp),
+    ]
+    if not is_audio:
+        # NVENC if available, else x264 — matches the rest of the pipeline.
+        cmd[len(cmd)-2:len(cmd)-2] = [
+            "--video-codec", ("h264_nvenc" if _nvenc_available() else "libx264"),
+        ]
+    kind = "Stimme" if is_audio else "Video"
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except FileNotFoundError:
+        log("      auto-editor: nicht installiert — überspringe "
+            "(installieren mit:  .venv\\Scripts\\python.exe -m pip install auto-editor )")
+        return False
+    except subprocess.TimeoutExpired:
+        log(f"      auto-editor: Timeout (>15min) — behalte ungeschnittene {kind}")
+        return False
+    except Exception as e:
+        log(f"      auto-editor: Fehler ({str(e)[:160]}) — behalte ungeschnittene {kind}")
+        return False
+
+    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size < 256:
+        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-4:])
+        low = (proc.stderr or "").lower()
+        # `python -m auto_editor` returns exit 1 (not FileNotFoundError) when
+        # the package isn't installed — surface the install command instead.
+        if "no module named auto_editor" in low:
+            log("      auto-editor: nicht installiert — überspringe "
+                "(installieren mit:  .venv\\Scripts\\python.exe -m pip install auto-editor )")
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+            return False
+        # auto-editor exits non-zero when it would output an EMPTY file (i.e.
+        # the whole clip is "silent" by the threshold) — keep the original.
+        if "resulted in an empty" in low or "empty" in tail.lower():
+            log("      auto-editor: alles unter der Stille-Schwelle — behalte "
+                "Original (Schwelle evtl. zu hoch)")
+        else:
+            log(f"      auto-editor fehlgeschlagen (exit {proc.returncode}): {tail[:200]} "
+                f"— behalte ungeschnittene {kind}")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        return False
+
+    old_dur = _media_duration(media_path)
+    new_dur = _media_duration(tmp)
+    tmp.replace(media_path)
+    if old_dur > 0 and new_dur > 0:
+        log(f"      auto-editor: Pausen rausgeschnitten ({kind}) — {old_dur:.1f}s → "
+            f"{new_dur:.1f}s ({new_dur - old_dur:+.1f}s)")
+    else:
+        log(f"      auto-editor: Pausen rausgeschnitten ({kind})")
+    return True
 
 
 def apply_voice_tempo(voice_path: Path, tempo: float) -> Path:
@@ -6493,6 +6786,26 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
     dur_min = int(src_dur // 60)
     dur_sec_rem = int(src_dur % 60)
     third = src_dur / 3.0
+    region_lo = min(s[0] for s in segments) if segments else 0.0
+    if n_clips == 1:
+        # Per-region call (transcript chunk): no distribution rule — it would
+        # bias the single pick toward a fixed part of the region. Content only.
+        rule1 = (
+            f"REGEL 1 — AUSWAHL:\n"
+            f"- Dieses Transkript deckt den Bereich {int(region_lo)}s bis {int(src_dur)}s ab.\n"
+            f"- Finde den EINEN viralsten Moment irgendwo in diesem Bereich — "
+            f"Anfang, Mitte oder Ende, rein nach Inhalt entscheiden.\n\n"
+        )
+    else:
+        rule1 = (
+            f"REGEL 1 — VERTEILUNG (kritisch!):\n"
+            f"- Die {n_clips} Momente müssen ÜBER DAS GANZE VIDEO verteilt sein (0 bis {int(src_dur)}s).\n"
+            f"- Picke NICHT alle nur aus dem Anfang. Auch der mittlere und späte Teil hat "
+            f"  virale Momente — such sie aktiv.\n"
+            f"- Faustregel: ~{max(1, n_clips//3)} Momente aus 0–{int(third):.0f}s, "
+            f"~{max(1, n_clips//3)} aus {int(third):.0f}–{int(2*third):.0f}s, "
+            f"~{max(1, n_clips - 2*(n_clips//3))} aus {int(2*third):.0f}–{int(src_dur):.0f}s.\n\n"
+        )
     prompt = (
         f"Du analysierst ein deutsches Voll-Transkript eines Podcasts/Talks/Streams "
         f"und findest die {n_clips} viralsten Momente für YouTube Shorts.\n\n"
@@ -6500,13 +6813,7 @@ def _find_moments_single_call(segments: list, n_clips: int, target_duration: flo
         f"Transkript-Format pro Zeile: 'MM:SS.ss-MM:SS.ss  Text'\n\n"
         f"=== TRANSKRIPT ===\n{transcript}\n=== ENDE ===\n\n"
         f"Finde EXAKT {n_clips} Momente. Beachte BEIDE Regeln strikt:\n\n"
-        f"REGEL 1 — VERTEILUNG (kritisch!):\n"
-        f"- Die {n_clips} Momente müssen ÜBER DAS GANZE VIDEO verteilt sein (0 bis {int(src_dur)}s).\n"
-        f"- Picke NICHT alle nur aus dem Anfang. Auch der mittlere und späte Teil hat "
-        f"  virale Momente — such sie aktiv.\n"
-        f"- Faustregel: ~{n_clips//3} Momente aus 0–{int(third):.0f}s, "
-        f"~{n_clips//3} aus {int(third):.0f}–{int(2*third):.0f}s, "
-        f"~{n_clips - 2*(n_clips//3)} aus {int(2*third):.0f}–{int(src_dur):.0f}s.\n\n"
+        f"{rule1}"
         f"REGEL 2 — LÄNGE (kritisch!):\n"
         f"- Jeder Moment muss MINDESTENS 25 Sekunden lang sein (lieber 30–60s).\n"
         f"- Schneide NIE mitten im Satz — IMMER am Ende eines vollständigen Gedankens.\n"
@@ -6731,7 +7038,8 @@ def run_multiclip(job: dict, cfg: "Config", on_step=None) -> list:
     else:
         step(f"[MULTI 1/4] download source: {source_url}")
         raw = download_gameplay(source_url, work_root, cookies=ytdlp_cookie_args(cfg),
-                                max_height=int(getattr(cfg, 'download_max_height', 1080)))
+                                max_height=int(getattr(cfg, 'download_max_height', 1080)),
+                                on_step=step)
         if state:
             state.mark_done(Step.MULTI_DOWNLOAD, {"raw_path": raw})
 
@@ -7039,7 +7347,8 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
     else:
         step(f"[1/5] download: {source_url}")
         raw = download_gameplay(source_url, work / "source", cookies=ytdlp_cookie_args(cfg),
-                                max_height=int(getattr(cfg, 'download_max_height', 1080)))
+                                max_height=int(getattr(cfg, 'download_max_height', 1080)),
+                                on_step=step)
         if state:
             state.mark_done(Step.DOWNLOAD, {"raw_path": raw})
 
@@ -7161,6 +7470,18 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             step(f"      voice tempo: {voice_tempo:.2f}x "
                  f"({'langsamer' if voice_tempo < 1 else 'schneller'})")
             apply_voice_tempo(vo, voice_tempo)
+        # Opt-in: cut speech pauses out of the bare voice NOW, before music is
+        # mixed and before we measure the duration — so captions, image
+        # schedule, SFX and music all build on the tightened voice and stay in
+        # sync. (Cutting the finished video instead barely works once music
+        # fills every pause.)
+        if bool(job.get("auto_editor", False)):
+            step("      auto-editor: schneide Sprechpausen aus der Stimme")
+            apply_auto_editor(
+                vo, margin=float(job.get("auto_editor_margin", 0.18)),
+                threshold=float(job.get("auto_editor_threshold", 0.04)),
+                on_step=step, is_audio=True,
+            )
         vo_dur = probe_duration(vo)
         # Long-form length is only correct once we measure the REAL spoken
         # duration: the wps estimate that sized the script is unreliable (the
@@ -7805,6 +8126,10 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             audio_for_compose = mix_voice_with_music(
                 audio_for_compose, track, music_pct, work / "audio_final.mp3",
                 start_offset=offset,
+                # Music plays at a CONSTANT level by default (no ducking under
+                # the voice — the user found the pumping annoying). Re-enable
+                # per job with "music_ducking": true.
+                sidechain=bool(job.get("music_ducking", False)),
             )
             using_bgm = True
 
@@ -7911,6 +8236,17 @@ def run_one(job: dict, cfg: Config, on_step=None) -> Path:
             effects=effects_plan,
             faceless=faceless_mode,
         )
+        # Opt-in fallback: with NO voiceover there's no voice to trim earlier,
+        # so cut dead air from the finished video here instead. (When voice is
+        # enabled, the trim already happened on the bare voice track above.)
+        if bool(job.get("auto_editor", False)) and not enable_voice:
+            step("      auto-editor: schneide Stille/Pausen aus dem fertigen Video")
+            apply_auto_editor(
+                out,
+                margin=float(job.get("auto_editor_margin", 0.18)),
+                threshold=float(job.get("auto_editor_threshold", 0.04)),
+                on_step=step, is_audio=False,
+            )
         speed = float(job.get("playback_speed", 1.0))
         if abs(speed - 1.0) > 0.01:
             step(f"      retiming final video to {speed:.2f}x playback speed")

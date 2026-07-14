@@ -16,9 +16,15 @@ class _Cfg:
 
 
 def _png_bytes(color=(200, 50, 50, 255), size=(800, 600)):
-    from PIL import Image
+    from PIL import Image, ImageDraw
+    # Not a flat single colour: real photos always have variation, and the
+    # pipeline now rejects flat/black frames as failed generations. Add a
+    # contrasting quadrant so the fixture looks like a real image.
+    im = Image.new("RGBA", size, color)
+    ImageDraw.Draw(im).rectangle((0, 0, size[0] // 2, size[1] // 2),
+                                 fill=(255, 255, 255, 255))
     buf = io.BytesIO()
-    Image.new("RGBA", size, color).save(buf, format="PNG")
+    im.save(buf, format="PNG")
     return buf.getvalue()
 
 

@@ -59,3 +59,76 @@ def test_hint_for_bot_wall_without_cookies():
 
 def test_no_hint_for_unknown_error():
     assert pipeline._ytdlp_error_hint("some unrelated failure", False) == ""
+
+
+# ── download_gameplay cookie-retry strategy ──────────────────────────────────
+import tempfile
+from pathlib import Path
+from unittest import mock
+
+
+def _proc(rc, err=""):
+    return mock.Mock(returncode=rc, stdout="", stderr=err)
+
+
+def _write_mp4(cmd):
+    out_dir = Path(cmd[cmd.index("-o") + 1]).parent
+    (out_dir / "vid.mp4").write_bytes(b"x" * 2048)
+
+
+def test_public_video_downloads_clean_without_touching_cookies():
+    calls = []
+
+    def run(cmd, *a, **k):
+        calls.append(cmd)
+        _write_mp4(cmd)
+        return _proc(0)
+
+    with tempfile.TemporaryDirectory() as d:
+        with mock.patch("subprocess.run", side_effect=run):
+            out = pipeline.download_gameplay(
+                "http://yt/x", Path(d),
+                cookies=["--cookies-from-browser", "chrome"])
+    assert out.name == "vid.mp4"
+    assert len(calls) == 1
+    assert "--cookies-from-browser" not in calls[0]
+
+
+def test_botwall_triggers_cookie_retry():
+    calls = []
+
+    def run(cmd, *a, **k):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return _proc(1, "Sign in to confirm you're not a bot. Use --cookies")
+        _write_mp4(cmd)
+        return _proc(0)
+
+    with tempfile.TemporaryDirectory() as d:
+        with mock.patch("subprocess.run", side_effect=run):
+            out = pipeline.download_gameplay(
+                "http://yt/x", Path(d),
+                cookies=["--cookies-from-browser", "chrome"])
+    assert out.name == "vid.mp4"
+    assert len(calls) == 2
+    assert "--cookies-from-browser" not in calls[0]
+    assert "--cookies-from-browser" in calls[1]
+
+
+def test_non_botwall_error_does_not_retry_with_cookies():
+    calls = []
+
+    def run(cmd, *a, **k):
+        calls.append(cmd)
+        return _proc(1, "ERROR: Video unavailable. This video is private.")
+
+    with tempfile.TemporaryDirectory() as d:
+        with mock.patch("subprocess.run", side_effect=run):
+            try:
+                pipeline.download_gameplay(
+                    "http://yt/x", Path(d),
+                    cookies=["--cookies-from-browser", "chrome"])
+                assert False, "should have raised"
+            except RuntimeError:
+                pass
+    assert len(calls) == 1  # cookies would not help a private video
